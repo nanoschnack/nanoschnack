@@ -8,3 +8,12 @@ dependencies = [
     "numpy>=1.24.0",
     "torch>=2.9.1",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "jupytext>=1.16.0",
+    "pre-commit>=3.7.0",
+]
+
+[tool.jupytext]
+formats = "ipynb,py:percent"

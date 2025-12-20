@@ -24,6 +24,6 @@ torch.backends.mps.is_built()
 
 # %%
 device = torch.device("mps")
-x = torch.randn(1024,1024, device=device)
+x = torch.randn(1024, 1024, device=device)
 
 # %%

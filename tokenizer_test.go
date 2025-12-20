@@ -1,6 +1,9 @@
 package tokenizer
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // helper to build a simple iterator over a slice.
 func sliceIter(items []string) func() (string, bool) {
@@ -15,25 +18,38 @@ func sliceIter(items []string) func() (string, bool) {
 	}
 }
 
+// inspired by https://github.com/karpathy/minbpe?tab=readme-ov-file#quick-start
+//
+//from minbpe import BasicTokenizer
+//tokenizer = BasicTokenizer()
+//text = "aaabdaaabac"
+//tokenizer.train(text, 256 + 3) # 256 are the byte tokens, then do 3 merges
+//print(tokenizer.encode(text))
+//# [258, 100, 258, 97, 99]
+//print(tokenizer.decode([258, 100, 258, 97, 99]))
+//# aaabdaaabac
+//tokenizer.save("toy")
+//# writes two files: toy.model (for loading) and toy.vocab (for viewing)
 func TestTrainAndEncodeSimple(t *testing.T) {
 	tok := NewTokenizer()
-	iter := sliceIter([]string{"aa"})
+	iter := sliceIter([]string{"aaabdaaabac"})
 
-	if err := tok.TrainFromIterator(iter, 257, 16, ".+"); err != nil {
+	if err := tok.TrainFromIterator(iter, 256+3, 16, ".+"); err != nil {
 		t.Fatalf("train failed: %v", err)
 	}
 
-	if got := len(tok.Merges); got != 1 {
-		t.Fatalf("expected 1 merge, got %d", got)
+	if got := len(tok.Merges); got != 3 {
+		t.Fatalf("expected 3 merges, got %d", got)
 	}
 
-	encoded, err := tok.Encode("aa")
+	got, err := tok.Encode("aaabdaaabac")
 	if err != nil {
 		t.Fatalf("encode failed: %v", err)
 	}
 
-	if len(encoded) != 1 || encoded[0] != 256 {
-		t.Fatalf("expected single merged token 256, got %v", encoded)
+	want := []uint32{258, 100, 258, 97, 99}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("want %v, got %v", want, got)
 	}
 }
 

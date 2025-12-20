@@ -34,7 +34,7 @@ func TestTrainAndEncodeSimple(t *testing.T) {
 	tok := NewTokenizer()
 	iter := sliceIter([]string{"aaabdaaabac"})
 
-	if err := tok.TrainFromIterator(iter, 256+3, 16, ".+"); err != nil {
+	if err := tok.TrainFromIterator(iter, 256+3, 16, GPT4Pattern); err != nil {
 		t.Fatalf("train failed: %v", err)
 	}
 

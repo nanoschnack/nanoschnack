@@ -11,8 +11,22 @@ import (
 	"github.com/dlclark/regexp2"
 )
 
-// Default GPT-4 style regex pattern for splitting text
-const GPT4Pattern = `'(?:[sS][dDmMtT]|[lL][lL]|[vV][eE]|[rR][eE])|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+`
+// Default GPT-4 style regex pattern for splitting text.
+// Note: regexp2 (Go/.NET syntax) does not support possessive quantifiers, so we
+// use atomic groups to approximate the PCRE-style pattern used elsewhere.
+//
+// Here’s what GPT4Pattern is doing (left-to-right alternatives, first match wins):
+//
+//  - '(?i:[sdmt]|ll|ve|re): contractions starting with an apostrophe followed by s/d/m/t or the suffixes ll/ve/re (case-insensitive inside the group).
+//  - (?>[^\r\n\p{L}\p{N}]?)\p{L}+: a word: optional leading non-letter/number (e.g., a leading period in “.word”), then one or more Unicode letters. The atomic group (?>) prevents
+//    backtracking.
+//  - \p{N}{1,3}: a number chunk of 1–3 Unicode digits (splits long numbers into 3-digit pieces).
+//  -  ?(?>[^\s\p{L}\p{N}]+)[\r\n]*: optional leading space, then a run of symbols/punctuation (no letters/numbers/whitespace), then optional trailing newlines—captures things like " --"
+//    or " ##\n".
+//  - \s*[\r\n]: optional whitespace followed by a newline (CR or LF) to ensure newlines are isolated.
+//  - \s+(?!\S): trailing whitespace at end of string (whitespace not followed by a non-space).
+//  - \s+: any remaining whitespace runs.
+const GPT4Pattern = `'(?i:[sdmt]|ll|ve|re)|(?>[^\r\n\p{L}\p{N}]?)\p{L}+|\p{N}{1,3}| ?(?>[^\s\p{L}\p{N}]+)[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+`
 
 type Pair struct {
 	A uint32

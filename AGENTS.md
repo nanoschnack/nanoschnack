@@ -1,0 +1,5 @@
+- Always escalate a permission error in a command to the user.
+- Never touch the git index.lock. If escalation does not help, just retry.
+- Never commit the checkout blindly with `-A`. Always add files explicitly, potentially multiple at a time.
+- Commit in sensible chunks. Don't mix multiple topics into one commit.
+- Use a commit title convention: "area/subarea: short what has been done". E.g. "model/nanoschnack: do x".

@@ -1,0 +1,19 @@
+[project]
+name = "nanoschnack"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "ipykernel>=7.1.0",
+    "numpy>=1.24.0",
+    "torch>=2.9.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupytext>=1.16.0",
+    "pre-commit>=3.7.0",
+]
+
+[tool.jupytext]
+formats = "ipynb,py:percent"

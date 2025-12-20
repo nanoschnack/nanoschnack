@@ -1,0 +1,24 @@
+name: Jupytext Sync Check
+
+on:
+  pull_request:
+
+jobs:
+  jupytext-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install jupytext
+        run: python -m pip install --upgrade pip jupytext
+
+      - name: Verify paired percent scripts are in sync
+        run: |
+          rg --files -g '*.ipynb' -0 | xargs -0 -r jupytext --sync
+          git diff --exit-code

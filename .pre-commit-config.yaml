@@ -3,6 +3,6 @@ repos:
     hooks:
       - id: jupytext-sync
         name: jupytext sync ipynb<->md
-        entry: jupytext --sync
+        entry: scripts/jupytext-sync.sh
         language: system
         files: \.ipynb$

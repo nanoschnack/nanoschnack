@@ -22,8 +22,29 @@ import torch
 torch.backends.mps.is_available()
 torch.backends.mps.is_built()
 
+# %% [markdown]
+# ## Trying out MPS
+
 # %%
 device = torch.device("mps")
 x = torch.randn(1024,1024, device=device)
 
+# %% [markdown]
+# ## Loading a tokenizer with Hugging Face's tokenizer library
+#
+# Compare: https://github.com/huggingface/tokenizers
+
 # %%
+from huggingface_hub import hf_hub_download
+from tokenizers import Tokenizer
+
+tokenizer_path = hf_hub_download(repo_id="openai-community/gpt2", filename="tokenizer.json")
+
+
+# %% [markdown]
+# ## Testing the tokenizer
+
+# %%
+tokenizer = Tokenizer.from_file(tokenizer_path)
+output = tokenizer.encode("Hello, World!")
+print(output.ids)

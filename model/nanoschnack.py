@@ -10,7 +10,7 @@
 # ---
 
 # %% [markdown]
-# # NanoSchnack LLM
+# # NanoSchnack Model
 #
 # ## Setup
 #

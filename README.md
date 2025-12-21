@@ -37,7 +37,7 @@ pre-commit install
 The training data is sourced from the `pdelobelle/fineweb-german-edu-mt` dataset:
 https://huggingface.co/datasets/pdelobelle/fineweb-german-edu-mt
 
-Training downloads shards automatically into `data/` as needed.
+Training downloads parquet shards on demand into `data/` and caches them locally.
 
 ## Training
 
@@ -47,7 +47,14 @@ Open the training notebook and run the cells:
 jupyter lab model/training.ipynb
 ```
 
-The notebook uses streaming parquet loading from `data/*.parquet` and writes checkpoints to `checkpoints/`.
+You can also run the generated script (kept in sync with the notebook):
+
+```sh
+python model/training.py
+```
+
+Training loads one shard at a time, shuffles within the shard, and writes checkpoints to `checkpoints/`.
+Resuming training uses the stored shard position from the latest checkpoint.
 
 ## Inference (chat)
 

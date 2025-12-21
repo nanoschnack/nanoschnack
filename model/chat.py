@@ -103,7 +103,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         pass
 
     history = ""
-    print("Type '/quit' to exit.")
+    print("Type '/help' for commands.")
 
     while True:
         try:
@@ -113,8 +113,15 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
             break
         if not user_text:
             continue
+        if user_text == "/help":
+            print("Commands: /help, /quit, /exit, /reset")
+            continue
         if user_text in {"/quit", "/exit"}:
             break
+        if user_text == "/reset":
+            history = ""
+            print("History cleared.")
+            continue
 
         history += f"User: {user_text}\nAssistant:"
         print("bot> ", end="", flush=True)

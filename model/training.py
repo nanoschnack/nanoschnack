@@ -86,6 +86,9 @@ model = GPT(
 # ## Load the Training Data
 
 # %%
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+
 # Resolve model paths so relative data/checkpoint locations are stable.
 try:
     from model import setup_paths
@@ -93,15 +96,12 @@ except ModuleNotFoundError:
     from __init__ import setup_paths
 model_dir, data_dir, checkpoint_dir = setup_paths()
 
-from datasets import load_dataset
-from torch.utils.data import DataLoader
 # Load dataset in streaming mode (does not load everything into memory at once)
-# Note(sttts): I am using https://huggingface.co/datasets/pdelobelle/fineweb-german-edu-mt.
 raw_ds = load_dataset(
-    "parquet",
-    data_files={"train": str(data_dir / "*.parquet")},
+    "pdelobelle/fineweb-german-edu-mt",
     split="train",
     streaming=True,
+    cache_dir=str(data_dir),
 )
 
 # Shuffle the dataset with a buffer for approximate shuffling

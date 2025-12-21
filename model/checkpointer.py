@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 import torch
 
@@ -69,6 +70,7 @@ class Checkpointer:
 
     def save_latest(self, epoch, step, global_step, load_position, total_samples):
         # Persist the latest training state to disk.
+        start_time = time.time()
         ckpt = {
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -89,4 +91,8 @@ class Checkpointer:
         tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
         torch.save(ckpt, tmp_path)
         tmp_path.replace(self.path)
-        print(f"Saved checkpoint to {self.path} at epoch {epoch + 1}, step {step}.")
+        elapsed = time.time() - start_time
+        print(
+            f"Saved checkpoint to {self.path} at epoch {epoch + 1}, step {step} "
+            f"({elapsed:.2f}s)."
+        )

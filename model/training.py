@@ -44,6 +44,7 @@ tokenizer = load_tokenizer()
 
 # %%
 from gpt import GPT
+from autotune import find_max_batch_size
 from config import (
     BATCH_SIZE,
     CHECKPOINT_INTERVAL_SECS,
@@ -165,7 +166,15 @@ dataset = shuffled.map(tokenizer_batch, batched=True)
 dataset = dataset.with_format(type="torch")
 
 # Tokenize the dataset
-batch_size = BATCH_SIZE
+tuned_batch_size = find_max_batch_size(
+    model,
+    vocab_size=tokenizer.get_vocab_size(),
+    seq_len=context_len,
+    device=device,
+    start=BATCH_SIZE,
+)
+batch_size = tuned_batch_size or BATCH_SIZE
+print(f"Tuned batch_size={batch_size}")
 loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
 # %% [markdown]

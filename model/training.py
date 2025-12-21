@@ -110,7 +110,7 @@ shuffled = raw_ds.shuffle(buffer_size=10_000, seed=42) # lazy shuffle (approxima
 # do or not do chunking of the input text, instead of truncating.
 if False:
     max_len = context_len
-    stride = context_len/4  # overlap; set to 0 for no overlap
+    stride = context_len//4  # overlap; set to 0 for no overlap
 
     tokenizer.disable_truncation()
     tokenizer.disable_padding()
@@ -119,7 +119,7 @@ if False:
     def chunk_ids(ids, max_len, stride):
         if len(ids) == 0:
             return []
-        step = int(max_len - stride)
+        step = max_len - stride
         chunks = []
         for start in range(0, len(ids), step):
             chunk = ids[start:start + max_len]

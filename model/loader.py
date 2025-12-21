@@ -1,7 +1,9 @@
 """Helpers for loading datasets in shard-sized chunks."""
 
 from pathlib import Path
+import math
 import os
+import random
 from concurrent.futures import ThreadPoolExecutor
 
 from datasets import load_dataset
@@ -71,6 +73,58 @@ class ShardedDataset:
             filename=filename,
             local_dir=str(self.data_dir),
         )
+
+
+class ChunkEstimator:
+    """Estimate chunk counts per document without materializing chunked datasets."""
+
+    def __init__(self, tokenizer, max_len, stride, sample_size=1000, seed=42, text_key="text"):
+        if stride >= max_len:
+            raise ValueError("stride must be smaller than max_len")
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.stride = stride
+        self.sample_size = sample_size
+        self.seed = seed
+        self.text_key = text_key
+
+    def estimate_dataset(self, dataset):
+        # Sample texts and estimate chunks per document.
+        sample = self._sample_texts(dataset)
+        avg_chunks = self._average_chunks(sample)
+        return avg_chunks, int(math.ceil(avg_chunks * len(dataset)))
+
+    def _sample_texts(self, dataset):
+        # Return a deterministic random sample of texts.
+        if len(dataset) == 0:
+            return []
+
+        # Clamp to dataset size to avoid index errors.
+        sample_size = min(self.sample_size, len(dataset))
+        rng = random.Random(self.seed)
+        indices = [rng.randrange(len(dataset)) for _ in range(sample_size)]
+        return [dataset[idx][self.text_key] for idx in indices]
+
+    def _average_chunks(self, texts):
+        # Average chunk counts across sampled texts.
+        if not texts:
+            return 0.0
+
+        # Estimate chunks from tokenized lengths.
+        total = 0
+        for text in texts:
+            token_count = len(self.tokenizer.encode(text).ids)
+            total += self._chunk_count(token_count)
+        return total / len(texts)
+
+    def _chunk_count(self, token_count):
+        # Map token counts into chunk counts for the given stride.
+        if token_count <= 0:
+            return 0
+        if token_count <= self.max_len:
+            return 1
+        step = self.max_len - self.stride
+        return 1 + int(math.ceil((token_count - self.max_len) / step))
 
 
 def chunk_ids(ids, max_len, stride, pad_id):

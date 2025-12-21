@@ -88,20 +88,28 @@ model = GPT(
 
 # %%
 from datasets.utils.logging import enable_progress_bar, set_verbosity_warning
-from loader import ShardedBatchLoader, build_chunking_tokenizer, build_tokenizer
+from loader import ChunkEstimator, ShardedBatchLoader, build_chunking_tokenizer, build_tokenizer
 
 # Download shards on demand and shuffle within each shard.
 set_verbosity_warning()
 enable_progress_bar()
 
 # do or not do chunking of the input text, instead of truncating.
-if False:
+if True:
     max_len = context_len
     stride = context_len//4  # overlap; set to 0 for no overlap
 
     tokenizer.disable_truncation()
     tokenizer.disable_padding()
 
+    # Estimate chunk counts from a sample of each shard.
+    estimator = ChunkEstimator(
+        tokenizer,
+        max_len=max_len,
+        stride=stride,
+    )
+
+    # Build a tokenizer that chunks long sequences on the fly.
     tokenizer_batch = build_chunking_tokenizer(
         tokenizer,
         pad_id=pad_id,
@@ -114,6 +122,7 @@ else:
     tokenizer.enable_padding(length=context_len, pad_id=pad_id, pad_token="[PAD]")
 
     # Wrap Hugging Face tokenizer for batch processing
+    estimator = None
     tokenizer_batch = build_tokenizer(tokenizer)
 
 # Tokenize the dataset
@@ -159,6 +168,12 @@ import time
 # Set up optimizer, learning-rate scheduler, and loss function
 epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
 estimated_total_samples = sharded_loader.estimate_total_samples()
+
+# Replace the estimate with chunk-aware counts when enabled.
+if estimator is not None:
+    raw_shard = sharded_loader.shards.load_shard(0)
+    _avg_chunks, est_total = estimator.estimate_dataset(raw_shard)
+    estimated_total_samples = est_total * sharded_loader.num_shards
 steps_per_epoch = math.ceil(estimated_total_samples / batch_size)
 total_steps = steps_per_epoch * epochs
 print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)

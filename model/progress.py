@@ -29,6 +29,7 @@ class ProgressLogger:
         self.last_log_time = self.start_time
         self.last_plot_time = self.start_time
         self.samples_since_log = 0
+        self.total_samples = 0
         self.loss_history = deque()
 
     def tick(self, loss_value, batch_size, epoch, step):
@@ -40,11 +41,13 @@ class ProgressLogger:
 
         # Log throughput and loss at the configured interval.
         self.samples_since_log += batch_size
+        self.total_samples += batch_size
         if now - self.last_log_time >= self.log_interval:
             elapsed = now - self.last_log_time
             samples_per_sec = self.samples_since_log / elapsed if elapsed > 0 else 0.0
             print(
                 f"Epoch {epoch+1} (Step {step+1}, Global {self.global_step+1}), "
+                f"Samples {self.total_samples:,}, "
                 f"Loss: {loss_value:.4f}, Samples/s: {samples_per_sec:.1f}"
             )
             self.last_log_time = now

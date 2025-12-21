@@ -80,22 +80,19 @@ def sample_next_token(logits, temperature, top_k):
     return int(torch.multinomial(probs, num_samples=1).item())
 
 
-def generate_reply(model, tokenizer, prompt, context_len, max_new_tokens, temperature, top_k, device):
-    # Run autoregressive decoding for a single reply.
+def generate_reply_stream(model, tokenizer, prompt, context_len, max_new_tokens, temperature, top_k, device):
+    # Stream tokens from autoregressive decoding for a single reply.
     prompt_ids = tokenizer.encode(prompt).ids
     input_ids = torch.tensor([prompt_ids[-context_len:]], device=device, dtype=torch.long)
 
-    new_ids = []
     with torch.no_grad():
         for _ in range(max_new_tokens):
             logits = model(input_ids)[:, -1, :].squeeze(0)
             next_id = sample_next_token(logits, temperature, top_k)
-            new_ids.append(next_id)
+            yield tokenizer.decode([next_id])
             input_ids = torch.cat([input_ids, torch.tensor([[next_id]], device=device)], dim=1)
             if input_ids.size(1) > context_len:
                 input_ids = input_ids[:, -context_len:]
-
-    return tokenizer.decode(new_ids).strip()
 
 
 def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, device):
@@ -106,7 +103,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         pass
 
     history = ""
-    print("Type '/quit' to exit.")
+    print("Type '/help' for commands.")
 
     while True:
         try:
@@ -116,22 +113,65 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
             break
         if not user_text:
             continue
+        if user_text == "/help":
+            print("Commands: /help, /quit, /exit, /reset, /temp <value>, /topk <value>")
+            continue
+        if user_text.startswith("/temp"):
+            parts = user_text.split(maxsplit=1)
+            if len(parts) != 2:
+                print(f"Temperature: {temperature}")
+            else:
+                try:
+                    temperature = float(parts[1])
+                    print(f"Temperature set to {temperature}")
+                except ValueError:
+                    print("Temperature must be a number.")
+            continue
+        if user_text.startswith("/topk"):
+            parts = user_text.split(maxsplit=1)
+            if len(parts) != 2:
+                print(f"Top-k: {top_k}")
+            else:
+                try:
+                    top_k = int(parts[1])
+                    if top_k < 0:
+                        raise ValueError
+                    print(f"Top-k set to {top_k}")
+                except ValueError:
+                    print("Top-k must be a non-negative integer.")
+            continue
         if user_text in {"/quit", "/exit"}:
             break
+        if user_text == "/reset":
+            history = ""
+            print("History cleared.")
+            continue
 
         history += f"User: {user_text}\nAssistant:"
-        reply = generate_reply(
-            model,
-            tokenizer,
-            history,
-            context_len=context_len,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_k=top_k,
-            device=device,
-        )
-        print(f"bot> {reply}")
-        history += f" {reply}\n"
+        print("bot> ", end="", flush=True)
+        reply_parts = []
+        try:
+            for token in generate_reply_stream(
+                model,
+                tokenizer,
+                history,
+                context_len=context_len,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                device=device,
+            ):
+                print(token, end="", flush=True)
+                reply_parts.append(token)
+        except KeyboardInterrupt:
+            print()
+        reply = "".join(reply_parts).strip()
+        if reply:
+            history += f" {reply}\n"
+        else:
+            history += "\n"
+        if reply_parts:
+            print()
 
 
 def main():
@@ -163,6 +203,7 @@ def main():
         args.max_new_tokens,
         args.temperature,
         args.top_k,
+        model=model,
     )
 
     # Validate that the requested context length fits the trained model.

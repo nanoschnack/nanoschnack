@@ -8,15 +8,15 @@ import torch
 
 # Maximum sequence length used to size positional embeddings.
 # Keep this aligned between training and inference.
-CONTEXT_LEN = 256
+CONTEXT_LEN = 1024
 
 # Embedding dimensionality for token and position representations.
 # Larger values increase model capacity and compute cost.
-EMBED_SIZE = 512
+EMBED_SIZE = 768
 
 # Number of Transformer encoder layers in the model.
 # Higher values deepen the network and increase training time.
-NUM_LAYERS = 3
+NUM_LAYERS = 12
 
 # Number of attention heads per Transformer layer.
 # Must divide EMBED_SIZE evenly.
@@ -24,7 +24,7 @@ NUM_HEADS = 8
 
 # Feed-forward hidden size inside each Transformer layer.
 # Often 4x EMBED_SIZE for Transformer blocks.
-HIDDEN_SIZE = 2048
+HIDDEN_SIZE = 3072
 
 ###
 ### Training defaults

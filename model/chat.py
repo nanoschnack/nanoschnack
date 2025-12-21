@@ -7,25 +7,60 @@ try:
 except ModuleNotFoundError:
     from __init__ import setup_paths
 
-from config import CONTEXT_LEN, MAX_NEW_TOKENS, TEMPERATURE, TOP_K
+from config import (
+    CONTEXT_LEN,
+    EMBED_SIZE,
+    HIDDEN_SIZE,
+    MAX_NEW_TOKENS,
+    NUM_HEADS,
+    NUM_LAYERS,
+    TEMPERATURE,
+    TOP_K,
+)
 from device import pick_device
 from gpt import GPT
 from tokenizer import load_tokenizer
 
 
-def load_model(checkpoint_path, vocab_size, context_len, device):
+def load_model(checkpoint_path, vocab_size, device):
     # Construct the model and optionally load weights from checkpoint.
-    model = GPT(vocab_size=vocab_size, context_len=context_len).to(device).eval()
+    model_config = {
+        "context_len": CONTEXT_LEN,
+        "embed_size": EMBED_SIZE,
+        "num_layers": NUM_LAYERS,
+        "num_heads": NUM_HEADS,
+        "hidden_size": HIDDEN_SIZE,
+    }
+    state_dict = None
 
-    if checkpoint_path is None:
-        return model
+    if checkpoint_path is not None:
+        ckpt = torch.load(checkpoint_path, map_location=device)
+        if isinstance(ckpt, dict) and "model" in ckpt:
+            state_dict = ckpt["model"]
+            if "config" in ckpt:
+                model_config.update(ckpt["config"])
+        else:
+            state_dict = ckpt
 
-    ckpt = torch.load(checkpoint_path, map_location=device)
-    if "model" in ckpt:
-        model.load_state_dict(ckpt["model"])
-    else:
-        model.load_state_dict(ckpt)
-    return model
+    if state_dict is not None:
+        if "position_embedding.weight" in state_dict:
+            model_config["context_len"] = state_dict["position_embedding.weight"].shape[0]
+        if "token_embedding.weight" in state_dict:
+            vocab_size = state_dict["token_embedding.weight"].shape[0]
+
+    model = GPT(
+        vocab_size=vocab_size,
+        embed_size=model_config["embed_size"],
+        num_layers=model_config["num_layers"],
+        num_heads=model_config["num_heads"],
+        hidden_size=model_config["hidden_size"],
+        context_len=model_config["context_len"],
+    ).to(device).eval()
+
+    if state_dict is not None:
+        model.load_state_dict(state_dict)
+
+    return model, model_config["context_len"]
 
 
 def sample_next_token(logits, temperature, top_k):
@@ -115,15 +150,16 @@ def main():
         if not checkpoint_path.exists():
             checkpoint_path = None
 
-    # Validate that the requested context length fits the trained model.
-    if args.context_len > CONTEXT_LEN:
-        raise ValueError(
-            f"--context-len ({args.context_len}) exceeds trained context length ({CONTEXT_LEN})."
-        )
-
     device = pick_device()
     tokenizer = load_tokenizer()
-    model = load_model(checkpoint_path, tokenizer.get_vocab_size(), CONTEXT_LEN, device)
+
+    model, model_context_len = load_model(checkpoint_path, tokenizer.get_vocab_size(), device)
+
+    # Validate that the requested context length fits the trained model.
+    if args.context_len > model_context_len:
+        raise ValueError(
+            f"--context-len ({args.context_len}) exceeds trained context length ({model_context_len})."
+        )
 
     run_repl(
         model,

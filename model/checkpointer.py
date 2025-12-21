@@ -2,6 +2,8 @@ from pathlib import Path
 
 import torch
 
+from config import CONTEXT_LEN, EMBED_SIZE, HIDDEN_SIZE, NUM_HEADS, NUM_LAYERS
+
 
 class Checkpointer:
     """Save and restore training state to a local checkpoint directory.
@@ -58,6 +60,13 @@ class Checkpointer:
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
+            "config": {
+                "context_len": CONTEXT_LEN,
+                "embed_size": EMBED_SIZE,
+                "num_layers": NUM_LAYERS,
+                "num_heads": NUM_HEADS,
+                "hidden_size": HIDDEN_SIZE,
+            },
             "epoch": epoch + 1,
             "step": step,
             "global_step": global_step,

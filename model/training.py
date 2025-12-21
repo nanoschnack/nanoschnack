@@ -119,7 +119,7 @@ if False:
     def chunk_ids(ids, max_len, stride):
         if len(ids) == 0:
             return []
-        step = max_len - stride
+        step = int(max_len - stride)
         chunks = []
         for start in range(0, len(ids), step):
             chunk = ids[start:start + max_len]
@@ -190,7 +190,7 @@ import time
 # Set up optimizer, learning-rate scheduler, and loss function
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10_000)
-lossFn = torch.nn.CrossEntropyLoss()
+lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)

@@ -28,6 +28,7 @@ class Checkpointer:
             return 0, 0, 0
 
         # Read checkpoint data onto the requested device.
+        print(f"Loading checkpoint from {self.path}...")
         try:
             ckpt = torch.load(self.path, map_location=self.device)
         except Exception as exc:
@@ -35,6 +36,7 @@ class Checkpointer:
             return 0, 0, 0
 
         # Restore model and optimizer state for resuming training.
+        print("Checkpoint loaded. Restoring model and optimizer state...")
         try:
             self.model.load_state_dict(ckpt["model"])
             self.optimizer.load_state_dict(ckpt["optimizer"])

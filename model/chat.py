@@ -18,7 +18,7 @@ from config import (
     TOP_K,
     print_chat_hyperparams,
 )
-from device import pick_device
+from device import device_info, pick_device, print_device_info
 from gpt import GPT
 from tokenizer import load_tokenizer
 
@@ -152,6 +152,8 @@ def main():
             checkpoint_path = None
 
     device = pick_device()
+    info = device_info(device)
+    print_device_info(info)
     tokenizer = load_tokenizer()
 
     model, model_context_len = load_model(checkpoint_path, tokenizer.get_vocab_size(), device)

@@ -18,19 +18,12 @@
 # - Verify that MPS is available (for Apple Silicon GPUs).
 
 # %%
-from pickletools import optimize
-
 import torch
-from device import pick_device
+from device import device_info, pick_device, print_device_info
 
-torch.backends.mps.is_available()
-torch.backends.mps.is_built()
-
-# %% [markdown]
-# ## Trying out MPS
-
-# %%
-device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+device = pick_device()
+info = device_info(device)
+print_device_info(info)
 
 
 # %% [markdown]
@@ -44,13 +37,6 @@ from tokenizer import load_tokenizer
 
 tokenizer = load_tokenizer()
 
-
-
-# %% [markdown]
-# ### Testing the tokenizer
-
-# %%
-print(tokenizer.encode("Hello, World!").ids)
 
 
 # %% [markdown]

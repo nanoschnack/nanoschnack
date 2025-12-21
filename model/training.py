@@ -21,6 +21,7 @@
 from pickletools import optimize
 
 import torch
+from device import pick_device
 
 torch.backends.mps.is_available()
 torch.backends.mps.is_built()
@@ -39,18 +40,18 @@ device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if 
 # - Tiktokenizer: https://tiktokenizer.vercel.app/?model=gpt2
 
 # %%
-from huggingface_hub import hf_hub_download
-from tokenizers import Tokenizer
+from tokenizer import load_tokenizer
 
-tokenizer_path = hf_hub_download(repo_id="openai-community/gpt2", filename="tokenizer.json")
+tokenizer = load_tokenizer()
+
 
 
 # %% [markdown]
 # ### Testing the tokenizer
 
 # %%
-tokenizer = Tokenizer.from_file(tokenizer_path)
 print(tokenizer.encode("Hello, World!").ids)
+
 
 # %% [markdown]
 # ## Instantiating the NanoSchnack model

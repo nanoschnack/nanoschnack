@@ -208,38 +208,49 @@ progress = ProgressLogger(
 last_ckpt_time = time.time()
 
 epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
-for epoch in range(resume_epoch, epochs):
-    for step, batch in enumerate(loader):
-        if epoch == resume_epoch and step < resume_step:
-            continue
-        # Get the input IDs and attention mask, and move them to the GPU
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
+last_epoch = resume_epoch
+last_step = resume_step
+try:
+    for epoch in range(resume_epoch, epochs):
+        last_epoch = epoch
+        for step, batch in enumerate(loader):
+            if epoch == resume_epoch and step < resume_step:
+                continue
+            last_step = step
 
-        # Next-token prediction
-        inputs = input_ids[:, :-1] # everything from the first token except the last
-        targets = input_ids[:, 1:] # everything from the second token onward
+            # Get the input IDs and attention mask, and move them to the GPU
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
 
-        # Clear accumulated gradients from the previous step (which torch does automatically otherwise)
-        optimizer.zero_grad()
+            # Next-token prediction
+            inputs = input_ids[:, :-1] # everything from the first token except the last
+            targets = input_ids[:, 1:] # everything from the second token onward
 
-        # Forward pass
-        logits = model(inputs, attention_mask=attention_mask[:, :-1])
+            # Clear accumulated gradients from the previous step (which torch does automatically otherwise)
+            optimizer.zero_grad()
 
-        # Compute (average) loss of the predicted next tokens and apply backpropagation.
-        # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)
-        loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
-        loss.backward()
+            # Forward pass
+            logits = model(inputs, attention_mask=attention_mask[:, :-1])
 
-        # Update weights, then advance the learning-rate schedule.
-        optimizer.step()
-        scheduler.step()
+            # Compute (average) loss of the predicted next tokens and apply backpropagation.
+            # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)
+            loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+            loss.backward()
 
-        # Log progress and plot loss history
-        now = time.time()
-        ckpt_interval = CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < WARMUP_WINDOW_SECS else CHECKPOINT_INTERVAL_SECS
-        if now - last_ckpt_time >= ckpt_interval:
-            checkpointer.save_latest(epoch, step, progress.global_step)
-            last_ckpt_time = now
-        progress.tick(loss.item(), input_ids.size(0), epoch, step)
+            # Update weights, then advance the learning-rate schedule.
+            optimizer.step()
+            scheduler.step()
+
+            # Log progress and plot loss history
+            now = time.time()
+            ckpt_interval = CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < WARMUP_WINDOW_SECS else CHECKPOINT_INTERVAL_SECS
+            if now - last_ckpt_time >= ckpt_interval:
+                checkpointer.save_latest(epoch, step, progress.global_step)
+                last_ckpt_time = now
+            progress.tick(loss.item(), input_ids.size(0), epoch, step)
+except KeyboardInterrupt:
+    # Save a checkpoint so training can resume from the last completed step.
+    print("Interrupted: saving checkpoint...")
+    checkpointer.save_latest(last_epoch, last_step, progress.global_step)
+    print("Interrupted: checkpoint saved, exiting.")
 

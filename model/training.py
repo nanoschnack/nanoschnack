@@ -211,9 +211,14 @@ epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rat
 last_epoch = resume_epoch
 last_step = resume_step
 try:
+    print("Starting training loop...")
     for epoch in range(resume_epoch, epochs):
         last_epoch = epoch
+        first_batch_loaded = False
         for step, batch in enumerate(loader):
+            if not first_batch_loaded:
+                print("First batch loaded. Beginning training steps...")
+                first_batch_loaded = True
             if epoch == resume_epoch and step < resume_step:
                 continue
             last_step = step

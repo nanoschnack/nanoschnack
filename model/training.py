@@ -190,8 +190,8 @@ last_step = resume_step
 current_position = resume_position
 total_samples = total_samples
 
-# Enable preview output when NANOSCHNACK_DEBUG_SAMPLE is set.
-debug_sample = os.getenv("NANOSCHNACK_DEBUG_SAMPLE")
+# Enable debug output with DEBUG levels.
+debug_level = int(os.getenv("DEBUG", "0"))
 printed_debug_sample = False
 try:
     print("Starting training loop...", flush=True)
@@ -210,7 +210,7 @@ try:
             targets = input_ids[:, 1:] # everything from the second token onward
 
             # Preview the first sample to confirm tokenization/targets.
-            if debug_sample and not printed_debug_sample:
+            if debug_level >= 2 and not printed_debug_sample:
                 input_preview = inputs[0].tolist()
                 target_preview = targets[0].tolist()
                 print(f"Input tokens: {input_preview}")
@@ -218,6 +218,12 @@ try:
                 print(f"Input text: {tokenizer.decode(input_preview)}")
                 print(f"Target text: {tokenizer.decode(target_preview)}")
                 printed_debug_sample = True
+
+            # Dump decoded inputs for every sample in the batch.
+            if debug_level >= 6:
+                for sample_index, sample_ids in enumerate(input_ids.tolist()):
+                    decoded = tokenizer.decode(sample_ids)
+                    print(f"Encoded input {sample_index}: {decoded}")
 
             # Clear accumulated gradients from the previous step (which torch does automatically otherwise)
             optimizer.zero_grad()

@@ -163,6 +163,7 @@ def main():
         args.max_new_tokens,
         args.temperature,
         args.top_k,
+        model=model,
     )
 
     # Validate that the requested context length fits the trained model.

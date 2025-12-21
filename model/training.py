@@ -70,7 +70,6 @@ tokenizer.add_special_tokens(["[PAD]"])
 pad_id = tokenizer.token_to_id("[PAD]")
 
 context_len = CONTEXT_LEN
-print_training_hyperparams()
 model = GPT(
     vocab_size=tokenizer.get_vocab_size(),
     embed_size=EMBED_SIZE,
@@ -79,6 +78,7 @@ model = GPT(
     hidden_size=HIDDEN_SIZE,
     context_len=CONTEXT_LEN,
 ).to(device).train()
+print_training_hyperparams(model)
 
 
 

@@ -1,5 +1,7 @@
 """Shared hyperparameters for training and inference."""
 
+import torch
+
 ###
 ### Model architecture
 ###
@@ -81,7 +83,23 @@ PLOT_WARMUP_SECS = 60
 LOG_INTERVAL_SECS = 10
 
 
-def print_training_hyperparams():
+def _format_param_count(count):
+    return f"{count:,}"
+
+
+def _model_param_count(model):
+    return sum(param.numel() for param in model.parameters())
+
+
+def _model_quantization(model):
+    quantized_dtypes = {torch.qint8, torch.quint8, torch.qint32}
+    dtypes = {param.dtype for param in model.parameters()}
+    if dtypes & quantized_dtypes:
+        return "int8"
+    return "none"
+
+
+def print_training_hyperparams(model=None):
     """Print the training-related hyperparameters."""
     lines = [
         "Architecture:",
@@ -101,10 +119,13 @@ def print_training_hyperparams():
         f"  checkpoint_warmup_secs={CHECKPOINT_WARMUP_SECS}",
         f"  checkpoint_interval_secs={CHECKPOINT_INTERVAL_SECS}",
     ]
+    if model is not None:
+        lines.insert(6, f"  param_count={_format_param_count(_model_param_count(model))}")
+        lines.insert(7, f"  quantization={_model_quantization(model)}")
     print("\n".join(lines))
 
 
-def print_chat_hyperparams(context_len, max_new_tokens, temperature, top_k):
+def print_chat_hyperparams(context_len, max_new_tokens, temperature, top_k, model=None):
     """Print the inference-related hyperparameters."""
     lines = [
         "Architecture:",
@@ -114,4 +135,7 @@ def print_chat_hyperparams(context_len, max_new_tokens, temperature, top_k):
         f"  temperature={temperature}",
         f"  top_k={top_k}",
     ]
+    if model is not None:
+        lines.insert(2, f"  param_count={_format_param_count(_model_param_count(model))}")
+        lines.insert(3, f"  quantization={_model_quantization(model)}")
     print("\n".join(lines))

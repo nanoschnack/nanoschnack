@@ -8,6 +8,12 @@
 
 ## Development setup
 
+Install uv:
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
 Install dev tooling (including pre-commit and jupytext):
 
 ```sh

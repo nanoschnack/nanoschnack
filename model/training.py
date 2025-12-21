@@ -86,9 +86,6 @@ print_training_hyperparams(model)
 # ## Load the Training Data
 
 # %%
-from datasets import load_dataset
-from torch.utils.data import DataLoader
-
 # Resolve model paths so relative data/checkpoint locations are stable.
 try:
     from model import setup_paths
@@ -96,16 +93,12 @@ except ModuleNotFoundError:
     from __init__ import setup_paths
 model_dir, data_dir, checkpoint_dir = setup_paths()
 
-# Load dataset in streaming mode (does not load everything into memory at once)
-raw_ds = load_dataset(
-    "pdelobelle/fineweb-german-edu-mt",
-    split="train",
-    streaming=True,
-    cache_dir=str(data_dir),
-)
+from datasets.utils.logging import enable_progress_bar, set_verbosity_warning
+from loader import ShardedBatchLoader
 
-# Shuffle the dataset with a buffer for approximate shuffling
-shuffled = raw_ds.shuffle(buffer_size=10_000, seed=42) # lazy shuffle (approximate) with a buffer
+# Download shards on demand and shuffle within each shard.
+set_verbosity_warning()
+enable_progress_bar()
 
 # do or not do chunking of the input text, instead of truncating.
 if False:
@@ -159,12 +152,6 @@ else:
             "attention_mask": [e.attention_mask for e in token_batch], # marks real tokens (1) vs padding (0)
         }
 
-# Shuffle deterministically (only way for streaming datasets)
-dataset = shuffled.map(tokenizer_batch, batched=True)
-
-# Set the dataset format to PyTorch tensors
-dataset = dataset.with_format(type="torch")
-
 # Tokenize the dataset
 tuned_batch_size = find_max_batch_size(
     model,
@@ -175,7 +162,14 @@ tuned_batch_size = find_max_batch_size(
 )
 batch_size = tuned_batch_size or BATCH_SIZE
 print(f"Tuned batch_size={batch_size}")
-loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+sharded_loader = ShardedBatchLoader(
+    repo_id="pdelobelle/fineweb-german-edu-mt",
+    data_dir=data_dir,
+    tokenizer_batch=tokenizer_batch,
+    batch_size=batch_size,
+    seed=42,
+)
+print(f"Sharded loader ready ({sharded_loader.num_shards} shards).", flush=True)
 
 # %% [markdown]
 # ## Run the Training
@@ -194,28 +188,32 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
-resume_epoch, resume_step, global_step = checkpointer.load_latest()
+resume_epoch, resume_step, global_step, resume_position, total_samples = checkpointer.load_latest()
+
+last_ckpt_time = time.time()
 
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
     ascii_loss_plot,
     start_global_step=global_step,
+    start_total_samples=total_samples,
     log_interval=LOG_INTERVAL_SECS,
     warmup_plot_interval=PLOT_WARMUP_SECS,
     plot_interval=PLOT_INTERVAL_SECS,
     warmup_window_secs=WARMUP_WINDOW_SECS,
 )
-last_ckpt_time = time.time()
 
 epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
 last_epoch = resume_epoch
 last_step = resume_step
+current_position = resume_position
+total_samples = total_samples
 try:
+    print("Starting training loop...", flush=True)
     for epoch in range(resume_epoch, epochs):
         last_epoch = epoch
-        for step, batch in enumerate(loader):
-            if epoch == resume_epoch and step < resume_step:
-                continue
+        loader = sharded_loader.iter_batches(start_position=current_position)
+        for step, (batch, current_position, shard_index, shard_len) in enumerate(loader):
             last_step = step
 
             # Get the input IDs and attention mask, and move them to the GPU
@@ -242,15 +240,37 @@ try:
             scheduler.step()
 
             # Log progress and plot loss history
+            progress.tick(
+                loss.item(),
+                input_ids.size(0),
+                epoch,
+                step,
+                shard_index=shard_index,
+                shard_count=sharded_loader.num_shards,
+                shard_len=shard_len,
+            )
+            total_samples += input_ids.size(0)
             now = time.time()
             ckpt_interval = CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < WARMUP_WINDOW_SECS else CHECKPOINT_INTERVAL_SECS
             if now - last_ckpt_time >= ckpt_interval:
-                checkpointer.save_latest(epoch, step, progress.global_step)
+                checkpointer.save_latest(
+                    epoch,
+                    step,
+                    progress.global_step,
+                    current_position,
+                    total_samples,
+                )
                 last_ckpt_time = now
-            progress.tick(loss.item(), input_ids.size(0), epoch, step)
+        current_position = (0, 0)
 except KeyboardInterrupt:
     # Save a checkpoint so training can resume from the last completed step.
     print("Interrupted: saving checkpoint...")
-    checkpointer.save_latest(last_epoch, last_step, progress.global_step)
+    checkpointer.save_latest(
+        last_epoch,
+        last_step,
+        progress.global_step,
+        current_position,
+        total_samples,
+    )
     print("Interrupted: checkpoint saved, exiting.")
 

@@ -150,7 +150,10 @@ config.print_training_hyperparams(
     hidden_size=hidden_size,
     batch_size=batch_size,
 )
-repo_ids = ["arnomatic/german-wikipedia-clean-no-lists"]
+repo_ids = [
+    "arnomatic/german-wikipedia-clean-no-lists",
+    "PatrickHaller/fineweb-2-de-1B",
+]
 
 # Build one sharded loader per dataset.
 loaders = []

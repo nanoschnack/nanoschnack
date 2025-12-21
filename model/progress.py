@@ -7,7 +7,7 @@ class ProgressLogger:
 
     Designed for streaming datasets where epoch length is unknown.
     Uses time-based intervals to control logging and plotting cadence.
-    Stores up to one hour of losses for the ASCII chart.
+    Stores up to 3600 loss samples for the ASCII chart.
     """
     def __init__(
         self,
@@ -40,10 +40,11 @@ class ProgressLogger:
         self.loss_history = deque()
 
     def tick(self, loss_value, batch_size, token_count, epoch, step, shard_index, shard_count, shard_len):
-        # Record the latest loss and retain a rolling one-hour window.
+        # Record the latest loss and retain a rolling window for plotting.
         now = time.time()
-        self.loss_history.append((now, loss_value))
-        while self.loss_history and (now - self.loss_history[0][0]) > 3600:
+        self.total_tokens += token_count
+        self.loss_history.append((self.total_tokens, loss_value))
+        if len(self.loss_history) > 3600:
             self.loss_history.popleft()
 
         # Log throughput and loss at the configured interval.
@@ -52,7 +53,6 @@ class ProgressLogger:
         self.loss_since_log += loss_value
         self.loss_steps += 1
         self.total_samples += batch_size
-        self.total_tokens += token_count
         if not self.has_logged or (now - self.last_log_time >= self.log_interval):
             elapsed = now - self.last_log_time
             avg_loss = self.loss_since_log / self.loss_steps if self.loss_steps else loss_value
@@ -65,8 +65,8 @@ class ProgressLogger:
             prefix = f"{shard_label}, {total_label}"
 
             message = (
-                f"Samples {self.total_samples:,}, "
-                f"Tokens {self.total_tokens:,}, "
+                f"Samples {self._format_count(self.total_samples)}, "
+                f"Tokens {self._format_count(self.total_tokens)}, "
                 f"Total {pct:.1f}%, "
                 f"Epoch {epoch+1}, "
                 f"Step {step+1}, "
@@ -96,3 +96,11 @@ class ProgressLogger:
 
         # Keep a global step counter for resuming logs across restarts.
         self.global_step += 1
+
+    def _format_count(self, value):
+        # Format counts with compact suffixes for readability.
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.1f}m"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}k"
+        return str(int(value))

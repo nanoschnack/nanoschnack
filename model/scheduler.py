@@ -22,7 +22,8 @@ def build_warmup_cosine(optimizer, total_steps, warmup_pct):
 
     warmup = torch.optim.lr_scheduler.LinearLR(
         optimizer,
-        start_factor=0.0,
+        # LinearLR requires a strictly positive start factor.
+        start_factor=1e-6,
         end_factor=1.0,
         total_iters=warmup_steps,
     )

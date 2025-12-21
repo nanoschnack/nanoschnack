@@ -61,6 +61,7 @@ from config import (
     PLOT_WARMUP_SECS,
     TEMPERATURE,
     TOP_K,
+    WARMUP_PCT,
     WARMUP_WINDOW_SECS,
     print_training_hyperparams,
 )
@@ -178,6 +179,7 @@ print(f"Sharded loader ready ({sharded_loader.num_shards} shards).", flush=True)
 from plot import ascii_loss_plot
 from progress import ProgressLogger
 from checkpointer import Checkpointer
+from scheduler import build_warmup_cosine
 import math
 import torch
 import time
@@ -189,7 +191,7 @@ steps_per_epoch = math.ceil(estimated_total_samples / batch_size)
 total_steps = steps_per_epoch * epochs
 print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
+scheduler = build_warmup_cosine(optimizer, total_steps, WARMUP_PCT)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.

@@ -38,6 +38,10 @@ BATCH_SIZE = 32
 # Tune alongside batch size and scheduler.
 LEARNING_RATE = 1e-4
 
+# Warmup fraction of total training steps for LR ramp-up.
+# Use values between 0.01 and 0.05 for small warmups.
+WARMUP_PCT = 0.03
+
 ###
 ### Inference defaults
 ###
@@ -111,6 +115,7 @@ def print_training_hyperparams(model=None):
         "Training:",
         f"  batch_size={BATCH_SIZE}",
         f"  learning_rate={LEARNING_RATE}",
+        f"  warmup_pct={WARMUP_PCT}",
         "Scheduling:",
         f"  log_interval_secs={LOG_INTERVAL_SECS}",
         f"  warmup_window_secs={WARMUP_WINDOW_SECS}",

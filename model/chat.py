@@ -114,7 +114,31 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if not user_text:
             continue
         if user_text == "/help":
-            print("Commands: /help, /quit, /exit, /reset")
+            print("Commands: /help, /quit, /exit, /reset, /temp <value>, /topk <value>")
+            continue
+        if user_text.startswith("/temp"):
+            parts = user_text.split(maxsplit=1)
+            if len(parts) != 2:
+                print(f"Temperature: {temperature}")
+            else:
+                try:
+                    temperature = float(parts[1])
+                    print(f"Temperature set to {temperature}")
+                except ValueError:
+                    print("Temperature must be a number.")
+            continue
+        if user_text.startswith("/topk"):
+            parts = user_text.split(maxsplit=1)
+            if len(parts) != 2:
+                print(f"Top-k: {top_k}")
+            else:
+                try:
+                    top_k = int(parts[1])
+                    if top_k < 0:
+                        raise ValueError
+                    print(f"Top-k set to {top_k}")
+                except ValueError:
+                    print("Top-k must be a non-negative integer.")
             continue
         if user_text in {"/quit", "/exit"}:
             break

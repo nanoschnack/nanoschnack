@@ -62,6 +62,14 @@ To override batch size without editing code, set `NANOSCHNACK_BATCH_SIZE`:
 NANOSCHNACK_BATCH_SIZE=16 python model/training.py
 ```
 
+For multi-GPU training with `torchrun`, set a per-process batch size and launch one process per GPU:
+
+```sh
+NANOSCHNACK_BATCH_SIZE=32 torchrun --standalone --nproc_per_node=8 model/training.py
+```
+
+Only rank 0 prints logs and writes checkpoints; other ranks stay quiet.
+
 ## Inference (chat)
 
 Run the REPL chat interface:

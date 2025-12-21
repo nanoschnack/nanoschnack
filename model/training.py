@@ -18,12 +18,30 @@
 # - Verify that MPS is available (for Apple Silicon GPUs).
 
 # %%
+import os
 import torch
+import torch.distributed as dist
 from device import device_info, pick_device, print_device_info
 
-device = pick_device()
+# Discover torchrun ranks and decide whether we are in distributed mode.
+rank = int(os.getenv("RANK", "0"))
+world_size = int(os.getenv("WORLD_SIZE", "1"))
+local_rank = int(os.getenv("LOCAL_RANK", "0"))
+is_distributed = world_size > 1
+is_main = rank == 0
+
+# Initialize the process group and pin the CUDA device when distributed.
+if is_distributed:
+    dist.init_process_group("nccl")
+    torch.cuda.set_device(local_rank)
+    device = torch.device("cuda", local_rank)
+else:
+    device = pick_device()
+
+# Print device info only once to keep torchrun output readable.
 info = device_info(device)
-print_device_info(info)
+if is_main:
+    print_device_info(info)
 
 
 # %% [markdown]
@@ -45,6 +63,7 @@ tokenizer = load_tokenizer()
 # %%
 from gpt import GPT
 from autotune import find_max_batch_size
+from torch.nn.parallel import DistributedDataParallel as DDP
 from config import (
     BATCH_SIZE,
     CHECKPOINT_INTERVAL_SECS,
@@ -108,6 +127,9 @@ model = GPT(
     hidden_size=hidden_size,
     context_len=context_len,
 ).to(device).train()
+# Wrap the model with DDP so each rank trains on its local GPU.
+if is_distributed:
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
 
 
@@ -179,9 +201,13 @@ import os
 
 # Allow overriding batch size from the environment.
 batch_size_override = os.getenv("NANOSCHNACK_BATCH_SIZE")
+# In torchrun mode, require a manual batch size to avoid autotune divergence.
 if batch_size_override:
     batch_size = int(batch_size_override)
-    print(f"Batch size override from env: {batch_size}")
+    if is_main:
+        print(f"Batch size override from env: {batch_size}")
+elif is_distributed:
+    raise ValueError("Set NANOSCHNACK_BATCH_SIZE when using torchrun.")
 else:
     tuned_batch_size = find_max_batch_size(
         model,
@@ -191,24 +217,32 @@ else:
         start=BATCH_SIZE,
     )
     batch_size = tuned_batch_size or BATCH_SIZE
-    print(f"Tuned batch_size={batch_size}")
-print_training_hyperparams(
-    model,
-    context_len=context_len,
-    embed_size=embed_size,
-    num_layers=num_layers,
-    num_heads=num_heads,
-    hidden_size=hidden_size,
-    batch_size=batch_size,
-)
+    if is_main:
+        print(f"Tuned batch_size={batch_size}")
+# Log model configuration once (rank 0 only).
+if is_main:
+    print_training_hyperparams(
+        model,
+        context_len=context_len,
+        embed_size=embed_size,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        hidden_size=hidden_size,
+        batch_size=batch_size,
+    )
+# Partition shards by rank so each worker trains on distinct data.
 sharded_loader = ShardedBatchLoader(
     repo_id="arnomatic/german-wikipedia-clean-no-lists",
     data_dir=data_dir,
     tokenizer_batch=tokenizer_batch,
     batch_size=batch_size,
     seed=42,
+    enable_logging=is_main,
+    rank=rank,
+    world_size=world_size,
 )
-print(f"Sharded loader ready ({sharded_loader.num_shards} shards).", flush=True)
+if is_main:
+    print(f"Sharded loader ready ({sharded_loader.num_shards} shards).", flush=True)
 
 # %% [markdown]
 # ## Run the Training
@@ -228,7 +262,8 @@ epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rat
 estimated_total_samples = sharded_loader.estimate_total_samples()
 steps_per_epoch = math.ceil(estimated_total_samples / batch_size)
 total_steps = steps_per_epoch * epochs
-print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)
+if is_main:
+    print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 scheduler = build_warmup_cosine(optimizer, total_steps, WARMUP_PCT)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
@@ -236,15 +271,19 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 resume_epoch, resume_step, global_step, resume_position, total_samples, resume_tokens = checkpointer.load_latest()
+if isinstance(resume_position, list):
+    resume_position = resume_position[rank]
 
 last_ckpt_time = time.time()
 
 # Initialize the progress logger to display training progress and loss
+# Only rank 0 reports progress to avoid duplicated logs.
 progress = ProgressLogger(
     ascii_loss_plot,
     start_global_step=global_step,
     start_total_samples=total_samples,
     start_total_tokens=resume_tokens,
+    enabled=is_main,
     log_interval=LOG_INTERVAL_SECS,
     warmup_plot_interval=PLOT_WARMUP_SECS,
     plot_interval=PLOT_INTERVAL_SECS,
@@ -255,13 +294,14 @@ progress = ProgressLogger(
 last_epoch = resume_epoch
 last_step = resume_step
 current_position = resume_position
-total_samples = total_samples
+total_samples = total_samples if is_main else 0
 
 # Enable preview output when NANOSCHNACK_DEBUG_SAMPLE is set.
 debug_sample = os.getenv("NANOSCHNACK_DEBUG_SAMPLE")
 printed_debug_sample = False
 try:
-    print("Starting training loop...", flush=True)
+    if is_main:
+        print("Starting training loop...", flush=True)
     for epoch in range(resume_epoch, epochs):
         last_epoch = epoch
         loader = sharded_loader.iter_batches(start_position=current_position)
@@ -306,28 +346,38 @@ try:
 
             # Log progress and plot loss history
             token_count = attention_mask[:, 1:].sum().item()
-            remaining_samples = max(estimated_total_samples * epochs - total_samples, 0)
-            progress.tick(
-                loss.item(),
-                input_ids.size(0),
-                token_count,
-                optimizer.param_groups[0]["lr"],
-                epoch,
-                step,
-                shard_index=shard_index,
-                shard_count=sharded_loader.num_shards,
-                shard_len=shard_len,
-                remaining_samples=remaining_samples,
-            )
-            total_samples += input_ids.size(0)
+            scaled_batch = input_ids.size(0) * world_size
+            scaled_tokens = token_count * world_size
+            # Update progress and bookkeeping on the main rank only.
+            if is_main:
+                remaining_samples = max(estimated_total_samples * epochs - total_samples, 0)
+                progress.tick(
+                    loss.item(),
+                    scaled_batch,
+                    scaled_tokens,
+                    optimizer.param_groups[0]["lr"],
+                    epoch,
+                    step,
+                    shard_index=shard_index,
+                    shard_count=sharded_loader.num_shards,
+                    shard_len=shard_len,
+                    remaining_samples=remaining_samples,
+                )
+                total_samples += scaled_batch
             now = time.time()
             ckpt_interval = CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < WARMUP_WINDOW_SECS else CHECKPOINT_INTERVAL_SECS
-            if now - last_ckpt_time >= ckpt_interval:
+            # Checkpoint only on rank 0 and gather positions from all ranks.
+            if is_main and now - last_ckpt_time >= ckpt_interval:
+                load_position = current_position
+                if is_distributed:
+                    positions = [None] * world_size
+                    dist.all_gather_object(positions, current_position)
+                    load_position = positions
                 checkpointer.save_latest(
                     epoch,
                     step,
                     progress.global_step,
-                    current_position,
+                    load_position,
                     total_samples,
                     progress.total_tokens,
                 )
@@ -336,14 +386,20 @@ try:
 
 except KeyboardInterrupt:
     # Save a checkpoint so training can resume from the last completed step.
-    print("Interrupted: saving checkpoint...")
-    checkpointer.save_latest(
-        last_epoch,
-        last_step,
-        progress.global_step,
-        current_position,
-        total_samples,
-        progress.total_tokens,
-    )
-    print("Interrupted: checkpoint saved, exiting.")
+    if is_main:
+        print("Interrupted: saving checkpoint...")
+        load_position = current_position
+        if is_distributed:
+            positions = [None] * world_size
+            dist.all_gather_object(positions, current_position)
+            load_position = positions
+        checkpointer.save_latest(
+            last_epoch,
+            last_step,
+            progress.global_step,
+            load_position,
+            total_samples,
+            progress.total_tokens,
+        )
+        print("Interrupted: checkpoint saved, exiting.")
 

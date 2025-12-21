@@ -15,6 +15,7 @@ class ProgressLogger:
         start_global_step=0,
         start_total_samples=0,
         start_total_tokens=0,
+        enabled=True,
         log_interval=10,
         warmup_plot_interval=60,
         plot_interval=600,
@@ -38,6 +39,7 @@ class ProgressLogger:
         self.total_samples = start_total_samples
         self.total_tokens = start_total_tokens
         self.samples_per_sec = 0.0
+        self.enabled = enabled
         self.loss_history = deque()
 
     def tick(self, loss_value, batch_size, token_count, lr, epoch, step, shard_index, shard_count, shard_len, remaining_samples):
@@ -54,7 +56,7 @@ class ProgressLogger:
         self.loss_since_log += loss_value
         self.loss_steps += 1
         self.total_samples += batch_size
-        if not self.has_logged or (now - self.last_log_time >= self.log_interval):
+        if self.enabled and (not self.has_logged or (now - self.last_log_time >= self.log_interval)):
             elapsed = now - self.last_log_time
             avg_loss = self.loss_since_log / self.loss_steps if self.loss_steps else loss_value
             samples_per_sec = self.samples_since_log / elapsed if elapsed > 0 else 0.0
@@ -94,7 +96,7 @@ class ProgressLogger:
             if (now - self.start_time) < self.warmup_window_secs
             else self.plot_interval
         )
-        if now - self.last_plot_time >= interval:
+        if self.enabled and (now - self.last_plot_time >= interval):
             print(self.plot_fn(list(self.loss_history)))
             self.last_plot_time = now
 

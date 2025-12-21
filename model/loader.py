@@ -85,6 +85,7 @@ class ShardedBatchLoader:
 
         # Track the last consumed position (shard index, sample offset).
         self.position = (0, 0)
+        self._shard_lengths = {}
 
     @property
     def num_shards(self):
@@ -107,11 +108,9 @@ class ShardedBatchLoader:
                 f"{self.shards.shard_name(shard_index)}",
                 flush=True,
             )
-            raw_ds = self.shards.load_shard(shard_index)
-            shuffled = raw_ds.shuffle(seed=self.seed + shard_index)
-            dataset = shuffled.map(self.tokenizer_batch, batched=True)
-            dataset = dataset.with_format(type="torch")
+            dataset = self._load_tokenized_shard(shard_index)
             shard_len = len(dataset)
+            self._shard_lengths[shard_index] = shard_len
 
             if shard_index == start_shard and start_offset > 0:
                 dataset_len = len(dataset)
@@ -128,3 +127,25 @@ class ShardedBatchLoader:
                 yield batch, self.position, shard_index, shard_len
 
             start_offset = 0
+
+    def estimate_total_samples(self):
+        # Estimate total sample count assuming uniform shard sizes.
+        first_len = self._get_shard_length(0)
+        return first_len * self.num_shards
+
+    def _get_shard_length(self, shard_index):
+        # Cache the tokenized shard length for progress and scheduling.
+        if shard_index in self._shard_lengths:
+            return self._shard_lengths[shard_index]
+
+        dataset = self._load_tokenized_shard(shard_index)
+        shard_len = len(dataset)
+        self._shard_lengths[shard_index] = shard_len
+        return shard_len
+
+    def _load_tokenized_shard(self, shard_index):
+        # Load, shuffle, and tokenize a shard consistently.
+        raw_ds = self.shards.load_shard(shard_index)
+        shuffled = raw_ds.shuffle(seed=self.seed + shard_index)
+        dataset = shuffled.map(self.tokenizer_batch, batched=True)
+        return dataset.with_format(type="torch")

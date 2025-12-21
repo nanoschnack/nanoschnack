@@ -178,12 +178,18 @@ print(f"Sharded loader ready ({sharded_loader.num_shards} shards).", flush=True)
 from plot import ascii_loss_plot
 from progress import ProgressLogger
 from checkpointer import Checkpointer
+import math
 import torch
 import time
 
 # Set up optimizer, learning-rate scheduler, and loss function
+epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
+estimated_total_samples = sharded_loader.estimate_total_samples()
+steps_per_epoch = math.ceil(estimated_total_samples / batch_size)
+total_steps = steps_per_epoch * epochs
+print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10_000)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
@@ -203,7 +209,6 @@ progress = ProgressLogger(
     warmup_window_secs=WARMUP_WINDOW_SECS,
 )
 
-epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
 last_epoch = resume_epoch
 last_step = resume_step
 current_position = resume_position

@@ -73,6 +73,48 @@ class ShardedDataset:
         )
 
 
+def chunk_ids(ids, max_len, stride, pad_id):
+    if len(ids) == 0:
+        return []
+    step = max_len - stride
+    chunks = []
+    for start in range(0, len(ids), step):
+        chunk = ids[start:start + max_len]
+        if len(chunk) == 0:
+            continue
+        if len(chunk) < max_len:
+            chunk = chunk + [pad_id] * (max_len - len(chunk))
+        chunks.append(chunk)
+        if start + max_len >= len(ids):
+            break
+    return chunks
+
+
+def build_chunking_tokenizer(tokenizer, pad_id, max_len, stride):
+    def tokenizer_batch(batch):
+        input_ids = []
+        attention_mask = []
+        for text in batch["text"]:
+            ids = tokenizer.encode(text).ids
+            for chunk in chunk_ids(ids, max_len=max_len, stride=stride, pad_id=pad_id):
+                input_ids.append(chunk)
+                attention_mask.append([1 if t != pad_id else 0 for t in chunk])
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    return tokenizer_batch
+
+
+def build_tokenizer(tokenizer):
+    def tokenizer_batch(batch):
+        token_batch = tokenizer.encode_batch(batch["text"])
+        return {
+            "input_ids": [e.ids for e in token_batch],
+            "attention_mask": [e.attention_mask for e in token_batch],
+        }
+
+    return tokenizer_batch
+
+
 class ShardedBatchLoader:
     """Iterate over shard-sized datasets with deterministic shuffle and resume.
 

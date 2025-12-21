@@ -88,7 +88,7 @@ model = GPT(
 
 # %%
 from datasets.utils.logging import enable_progress_bar, set_verbosity_warning
-from loader import ShardedBatchLoader
+from loader import ShardedBatchLoader, build_chunking_tokenizer, build_tokenizer
 
 # Download shards on demand and shuffle within each shard.
 set_verbosity_warning()
@@ -102,49 +102,19 @@ if False:
     tokenizer.disable_truncation()
     tokenizer.disable_padding()
 
-    # Split long sequences into fixed windows, optionally with overlap.
-    def chunk_ids(ids, max_len, stride):
-        if len(ids) == 0:
-            return []
-        step = max_len - stride
-        chunks = []
-        for start in range(0, len(ids), step):
-            chunk = ids[start:start + max_len]
-            if len(chunk) == 0:
-                continue
-            if len(chunk) < max_len:
-                chunk = chunk + [pad_id] * (max_len - len(chunk))
-            chunks.append(chunk)
-            if start + max_len >= len(ids):
-                break
-        return chunks
-
-    def tokenizer_batch(batch):
-        input_ids = []
-        attention_mask = [] # marks real tokens (1) vs padding (0)
-        for text in batch["text"]:
-            ids = tokenizer.encode(text).ids
-            for chunk in chunk_ids(ids, max_len=max_len,
-                                   stride=stride):
-                input_ids.append(chunk)
-                attention_mask.append([1 if t != pad_id else 0 for t
-                                       in chunk])
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask
-        }
+    tokenizer_batch = build_chunking_tokenizer(
+        tokenizer,
+        pad_id=pad_id,
+        max_len=max_len,
+        stride=stride,
+    )
 else:
     # Enable truncation and padding
     tokenizer.enable_truncation(max_length=context_len)
     tokenizer.enable_padding(length=context_len, pad_id=pad_id, pad_token="[PAD]")
 
     # Wrap Hugging Face tokenizer for batch processing
-    def tokenizer_batch(batch):
-        token_batch = tokenizer.encode_batch(batch["text"])
-        return {
-            "input_ids": [e.ids for e in token_batch],
-            "attention_mask": [e.attention_mask for e in token_batch], # marks real tokens (1) vs padding (0)
-        }
+    tokenizer_batch = build_tokenizer(tokenizer)
 
 # Tokenize the dataset
 tuned_batch_size = find_max_batch_size(

@@ -162,7 +162,7 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10_000)
 lossFn = torch.nn.CrossEntropyLoss()
 
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
-checkpointer = Checkpointer("checkpoints", model, optimizer, scheduler, device=device)
+checkpointer = Checkpointer("../checkpoints", model, optimizer, scheduler, device=device)
 resume_epoch, resume_step, global_step = checkpointer.load_latest()
 
 # Initialize the progress logger to display training progress and loss

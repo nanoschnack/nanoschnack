@@ -84,12 +84,22 @@ def generate_reply_stream(model, tokenizer, prompt, context_len, max_new_tokens,
     # Stream tokens from autoregressive decoding for a single reply.
     prompt_ids = tokenizer.encode(prompt).ids
     input_ids = torch.tensor([prompt_ids[-context_len:]], device=device, dtype=torch.long)
+    generated_ids = []
+    decoded_so_far = ""
 
     with torch.no_grad():
         for _ in range(max_new_tokens):
             logits = model(input_ids)[:, -1, :].squeeze(0)
             next_id = sample_next_token(logits, temperature, top_k)
-            yield tokenizer.decode([next_id])
+            generated_ids.append(next_id)
+            decoded = tokenizer.decode(generated_ids)
+            if decoded.startswith(decoded_so_far):
+                delta = decoded[len(decoded_so_far):]
+            else:
+                delta = decoded
+            decoded_so_far = decoded
+            if delta:
+                yield delta
             input_ids = torch.cat([input_ids, torch.tensor([[next_id]], device=device)], dim=1)
             if input_ids.size(1) > context_len:
                 input_ids = input_ids[:, -context_len:]

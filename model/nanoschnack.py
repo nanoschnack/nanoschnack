@@ -58,6 +58,11 @@ print(tokenizer.encode("Hello, World!").ids)
 # %%
 from gpt import GPT
 
+# add special tokens
+tokenizer.add_special_tokens(["[PAD]"])
+pad_id = tokenizer.token_to_id("[PAD]")
+
+context_len = 256
 model = GPT(vocab_size=tokenizer.get_vocab_size()).to(device).train()
 
 # %% [markdown]
@@ -79,22 +84,60 @@ raw_ds = load_dataset(
 # Shuffle the dataset with a buffer for approximate shuffling
 shuffled = raw_ds.shuffle(buffer_size=10_000, seed=42) # lazy shuffle (approximate) with a buffer
 
-# Enable truncation and padding
-tokenizer.enable_truncation(max_length=128)
-tokenizer.enable_padding(length=128, pad_id=0, pad_token="[PAD]")
+# do or not do chunking of the input text, instead of truncating.
+if False:
+    max_len = context_len
+    stride = context_len/4  # overlap; set to 0 for no overlap
 
-# Wrap Hugging Face tokenizer for batch processing
-def tokenizer_batch(batch):
-    token_batch = tokenizer.encode_batch(batch["result"])
-    return {
-        "input_ids": [e.ids for e in token_batch],
-        "attention_mask": [e.attention_mask for e in token_batch],
-    }
+    tokenizer.disable_truncation()
+    tokenizer.disable_padding()
+
+    def chunk_ids(ids, max_len, stride):
+        if len(ids) == 0:
+            return []
+        step = max_len - stride
+        chunks = []
+        for start in range(0, len(ids), step):
+            chunk = ids[start:start + max_len]
+            if len(chunk) == 0:
+                continue
+            if len(chunk) < max_len:
+                chunk = chunk + [pad_id] * (max_len - len(chunk))
+            chunks.append(chunk)
+            if start + max_len >= len(ids):
+                break
+        return chunks
+
+    def tokenizer_batch(batch):
+        input_ids = []
+        attention_mask = []
+        for text in batch["result"]:
+            ids = tokenizer.encode(text).ids
+            for chunk in chunk_ids(ids, max_len=max_len,
+                                   stride=stride):
+                input_ids.append(chunk)
+                attention_mask.append([1 if t != pad_id else 0 for t
+                                       in chunk])
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
+else:
+    # Enable truncation and padding
+    tokenizer.enable_truncation(max_length=context_len)
+    tokenizer.enable_padding(length=context_len, pad_id=pad_id, pad_token="[PAD]")
+
+    # Wrap Hugging Face tokenizer for batch processing
+    def tokenizer_batch(batch):
+        token_batch = tokenizer.encode_batch(batch["result"])
+        return {
+            "input_ids": [e.ids for e in token_batch],
+            "attention_mask": [e.attention_mask for e in token_batch],
+        }
+
 dataset = shuffled.map(tokenizer_batch, batched=True)
 dataset = dataset.with_format(type="torch")
 
 # Tokenize the dataset
-loader = DataLoader(dataset, batch_size=32, shuffle=False)
+batch_size = 32
+loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
 # %% [markdown]
 # ## Run the Training
@@ -118,7 +161,10 @@ for epoch in range(10):
 
         optimizer.zero_grad()
         logits = model(inputs)
+
+        # flatten the output and targets into lists for batch loss computation.
         loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+
         loss.backward()
         optimizer.step()
         scheduler.step()

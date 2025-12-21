@@ -36,13 +36,8 @@ pre-commit install
 
 The training data is sourced from the `pdelobelle/fineweb-german-edu-mt` dataset:
 https://huggingface.co/datasets/pdelobelle/fineweb-german-edu-mt
-Download parquet shards into `data/` so the training notebook can stream them:
 
-```sh
-mkdir -p data
-```
-
-Example: download a few shards from the dataset files listing and place them in `data/`.
+Training downloads shards automatically into `data/` as needed.
 
 ## Training
 

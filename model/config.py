@@ -103,15 +103,27 @@ def _model_quantization(model):
     return "none"
 
 
-def print_training_hyperparams(model=None):
+def print_training_hyperparams(
+    model=None,
+    context_len=None,
+    embed_size=None,
+    num_layers=None,
+    num_heads=None,
+    hidden_size=None,
+):
     """Print the training-related hyperparameters."""
+    context_len = CONTEXT_LEN if context_len is None else context_len
+    embed_size = EMBED_SIZE if embed_size is None else embed_size
+    num_layers = NUM_LAYERS if num_layers is None else num_layers
+    num_heads = NUM_HEADS if num_heads is None else num_heads
+    hidden_size = HIDDEN_SIZE if hidden_size is None else hidden_size
     lines = [
         "Architecture:",
-        f"  context_len={CONTEXT_LEN}",
-        f"  embed_size={EMBED_SIZE}",
-        f"  num_layers={NUM_LAYERS}",
-        f"  num_heads={NUM_HEADS}",
-        f"  hidden_size={HIDDEN_SIZE}",
+        f"  context_len={context_len}",
+        f"  embed_size={embed_size}",
+        f"  num_layers={num_layers}",
+        f"  num_heads={num_heads}",
+        f"  hidden_size={hidden_size}",
         "Training:",
         f"  batch_size={BATCH_SIZE}",
         f"  learning_rate={LEARNING_RATE}",

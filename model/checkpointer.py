@@ -3,9 +3,6 @@ import time
 
 import torch
 
-from config import CONTEXT_LEN, EMBED_SIZE, HIDDEN_SIZE, NUM_HEADS, NUM_LAYERS
-
-
 class Checkpointer:
     """Save and restore training state to a local checkpoint directory.
 
@@ -77,13 +74,7 @@ class Checkpointer:
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
-            "config": {
-                "context_len": CONTEXT_LEN,
-                "embed_size": EMBED_SIZE,
-                "num_layers": NUM_LAYERS,
-                "num_heads": NUM_HEADS,
-                "hidden_size": HIDDEN_SIZE,
-            },
+            "config": self._model_config(),
             "epoch": epoch + 1,
             "step": step,
             "global_step": global_step,
@@ -99,3 +90,20 @@ class Checkpointer:
             f"Saved checkpoint to {self.path} at epoch {epoch + 1}, step {step} "
             f"({elapsed:.2f}s)."
         )
+
+    def _model_config(self):
+        # Derive config values from the live model for backward-compatible resumes.
+        config = {}
+        if hasattr(self.model, "position_embedding"):
+            config["context_len"] = self.model.position_embedding.weight.shape[0]
+        if hasattr(self.model, "token_embedding"):
+            config["embed_size"] = self.model.token_embedding.weight.shape[1]
+        if hasattr(self.model, "layers"):
+            config["num_layers"] = len(self.model.layers)
+            if self.model.layers:
+                layer = self.model.layers[0]
+                if hasattr(layer, "self_attn"):
+                    config["num_heads"] = layer.self_attn.num_heads
+                if hasattr(layer, "linear1"):
+                    config["hidden_size"] = layer.linear1.out_features
+        return config

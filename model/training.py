@@ -66,27 +66,6 @@ from config import (
     print_training_hyperparams,
 )
 
-# add special tokens
-tokenizer.add_special_tokens(["[PAD]"])
-pad_id = tokenizer.token_to_id("[PAD]")
-
-context_len = CONTEXT_LEN
-model = GPT(
-    vocab_size=tokenizer.get_vocab_size(),
-    embed_size=EMBED_SIZE,
-    num_layers=NUM_LAYERS,
-    num_heads=NUM_HEADS,
-    hidden_size=HIDDEN_SIZE,
-    context_len=CONTEXT_LEN,
-).to(device).train()
-print_training_hyperparams(model)
-
-
-
-# %% [markdown]
-# ## Load the Training Data
-
-# %%
 # Resolve model paths so relative data/checkpoint locations are stable.
 try:
     from model import setup_paths
@@ -94,6 +73,56 @@ except ModuleNotFoundError:
     from __init__ import setup_paths
 model_dir, data_dir, checkpoint_dir = setup_paths()
 
+# Load checkpoint config if present to keep model sizes consistent.
+import torch
+checkpoint_path = checkpoint_dir / "latest.pt"
+checkpoint_config = {}
+checkpoint_state = None
+if checkpoint_path.exists():
+    checkpoint_state = torch.load(checkpoint_path, map_location="cpu")
+    if isinstance(checkpoint_state, dict):
+        checkpoint_config.update(checkpoint_state.get("config", {}))
+        state_dict = checkpoint_state.get("model", checkpoint_state)
+    else:
+        state_dict = checkpoint_state
+    if "position_embedding.weight" in state_dict:
+        checkpoint_config["context_len"] = state_dict["position_embedding.weight"].shape[0]
+    if "token_embedding.weight" in state_dict:
+        checkpoint_config["embed_size"] = state_dict["token_embedding.weight"].shape[1]
+
+context_len = checkpoint_config.get("context_len", CONTEXT_LEN)
+embed_size = checkpoint_config.get("embed_size", EMBED_SIZE)
+num_layers = checkpoint_config.get("num_layers", NUM_LAYERS)
+num_heads = checkpoint_config.get("num_heads", NUM_HEADS)
+hidden_size = checkpoint_config.get("hidden_size", HIDDEN_SIZE)
+
+# add special tokens
+tokenizer.add_special_tokens(["[PAD]"])
+pad_id = tokenizer.token_to_id("[PAD]")
+
+model = GPT(
+    vocab_size=tokenizer.get_vocab_size(),
+    embed_size=embed_size,
+    num_layers=num_layers,
+    num_heads=num_heads,
+    hidden_size=hidden_size,
+    context_len=context_len,
+).to(device).train()
+print_training_hyperparams(
+    model,
+    context_len=context_len,
+    embed_size=embed_size,
+    num_layers=num_layers,
+    num_heads=num_heads,
+    hidden_size=hidden_size,
+)
+
+
+
+# %% [markdown]
+# ## Load the Training Data
+
+# %%
 from datasets.utils.logging import enable_progress_bar, set_verbosity_warning
 from loader import ShardedBatchLoader
 

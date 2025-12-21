@@ -45,26 +45,7 @@ tokenizer = load_tokenizer()
 # %%
 from gpt import GPT
 from autotune import find_max_batch_size
-from config import (
-    BATCH_SIZE,
-    CHECKPOINT_INTERVAL_SECS,
-    CHECKPOINT_WARMUP_SECS,
-    CONTEXT_LEN,
-    EMBED_SIZE,
-    HIDDEN_SIZE,
-    LEARNING_RATE,
-    LOG_INTERVAL_SECS,
-    MAX_NEW_TOKENS,
-    NUM_HEADS,
-    NUM_LAYERS,
-    PLOT_INTERVAL_SECS,
-    PLOT_WARMUP_SECS,
-    TEMPERATURE,
-    TOP_K,
-    WARMUP_PCT,
-    WARMUP_WINDOW_SECS,
-    print_training_hyperparams,
-)
+import config
 
 # Resolve model paths so relative data/checkpoint locations are stable.
 try:
@@ -73,28 +54,19 @@ except ModuleNotFoundError:
     from __init__ import setup_paths
 model_dir, data_dir, checkpoint_dir = setup_paths()
 
-# Load checkpoint config if present to keep model sizes consistent.
+# Pull model sizes from the most recent checkpoint if present.
 import torch
 checkpoint_path = checkpoint_dir / "latest.pt"
-checkpoint_config = {}
-checkpoint_state = None
 if checkpoint_path.exists():
     checkpoint_state = torch.load(checkpoint_path, map_location="cpu")
-    if isinstance(checkpoint_state, dict):
-        checkpoint_config.update(checkpoint_state.get("config", {}))
-        state_dict = checkpoint_state.get("model", checkpoint_state)
-    else:
-        state_dict = checkpoint_state
-    if "position_embedding.weight" in state_dict:
-        checkpoint_config["context_len"] = state_dict["position_embedding.weight"].shape[0]
-    if "token_embedding.weight" in state_dict:
-        checkpoint_config["embed_size"] = state_dict["token_embedding.weight"].shape[1]
+    if isinstance(checkpoint_state, dict) and "config" in checkpoint_state:
+        config.apply_overrides(checkpoint_state["config"])
 
-context_len = checkpoint_config.get("context_len", CONTEXT_LEN)
-embed_size = checkpoint_config.get("embed_size", EMBED_SIZE)
-num_layers = checkpoint_config.get("num_layers", NUM_LAYERS)
-num_heads = checkpoint_config.get("num_heads", NUM_HEADS)
-hidden_size = checkpoint_config.get("hidden_size", HIDDEN_SIZE)
+context_len = config.CONTEXT_LEN
+embed_size = config.EMBED_SIZE
+num_layers = config.NUM_LAYERS
+num_heads = config.NUM_HEADS
+hidden_size = config.HIDDEN_SIZE
 
 # add special tokens
 tokenizer.add_special_tokens(["[PAD]"])
@@ -180,11 +152,11 @@ tuned_batch_size = find_max_batch_size(
     vocab_size=tokenizer.get_vocab_size(),
     seq_len=context_len,
     device=device,
-    start=BATCH_SIZE,
+    start=config.BATCH_SIZE,
 )
-batch_size = tuned_batch_size or BATCH_SIZE
+batch_size = tuned_batch_size or config.BATCH_SIZE
 print(f"Tuned batch_size={batch_size}")
-print_training_hyperparams(
+config.print_training_hyperparams(
     model,
     context_len=context_len,
     embed_size=embed_size,
@@ -212,7 +184,6 @@ from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine
 import math
 import os
-import torch
 import time
 
 # Set up optimizer, learning-rate scheduler, and loss function
@@ -221,8 +192,8 @@ estimated_total_samples = sharded_loader.estimate_total_samples()
 steps_per_epoch = math.ceil(estimated_total_samples / batch_size)
 total_steps = steps_per_epoch * epochs
 print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)
-optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-scheduler = build_warmup_cosine(optimizer, total_steps, WARMUP_PCT)
+optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
+scheduler = build_warmup_cosine(optimizer, total_steps, config.WARMUP_PCT)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
@@ -237,10 +208,10 @@ progress = ProgressLogger(
     start_global_step=global_step,
     start_total_samples=total_samples,
     start_total_tokens=resume_tokens,
-    log_interval=LOG_INTERVAL_SECS,
-    warmup_plot_interval=PLOT_WARMUP_SECS,
-    plot_interval=PLOT_INTERVAL_SECS,
-    warmup_window_secs=WARMUP_WINDOW_SECS,
+    log_interval=config.LOG_INTERVAL_SECS,
+    warmup_plot_interval=config.PLOT_WARMUP_SECS,
+    plot_interval=config.PLOT_INTERVAL_SECS,
+    warmup_window_secs=config.WARMUP_WINDOW_SECS,
 )
 
 
@@ -313,7 +284,7 @@ try:
             )
             total_samples += input_ids.size(0)
             now = time.time()
-            ckpt_interval = CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < WARMUP_WINDOW_SECS else CHECKPOINT_INTERVAL_SECS
+            ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
             if now - last_ckpt_time >= ckpt_interval:
                 checkpointer.save_latest(
                     epoch,

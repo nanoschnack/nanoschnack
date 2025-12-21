@@ -40,7 +40,7 @@ NUM_HEADS = _env_int("NUM_HEADS", 8)
 
 # Feed-forward hidden size inside each Transformer layer.
 # Often 4x EMBED_SIZE for Transformer blocks.
-HIDDEN_SIZE = _env_int("HIDDEN_SIZE", 3072)
+HIDDEN_SIZE = _env_int("HIDDEN_SIZE", 4*EMBED_SIZE)
 
 ###
 ### Training defaults
@@ -101,6 +101,25 @@ PLOT_WARMUP_SECS = _env_int("PLOT_WARMUP_SECS", 60)
 # Log cadence in seconds for progress updates.
 # Impacts console verbosity and throughput reporting.
 LOG_INTERVAL_SECS = _env_int("LOG_INTERVAL_SECS", 10)
+
+
+def apply_overrides(values):
+    if not values:
+        return
+    globals_dict = globals()
+    for key, value in values.items():
+        if key in globals_dict:
+            globals_dict[key] = value
+
+
+def snapshot():
+    return {
+        "context_len": CONTEXT_LEN,
+        "embed_size": EMBED_SIZE,
+        "num_layers": NUM_LAYERS,
+        "num_heads": NUM_HEADS,
+        "hidden_size": HIDDEN_SIZE,
+    }
 
 
 def _format_param_count(count):

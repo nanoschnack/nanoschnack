@@ -43,8 +43,8 @@ class GPT(nn.Module):
         if attention_mask is not None:
             # True marks padded positions for TransformerEncoderLayer.
             padding_mask = attention_mask == 0
-        casual = causal_mask(seq_length, x.device)
+        causal = causal_mask(seq_length, x.device)
 
-        x = self.blocks(x, mask=casual, src_key_padding_mask=padding_mask,)
+        x = self.blocks(x, mask=causal, src_key_padding_mask=padding_mask)
         x = self.ln(x)
         return self.lm(x)

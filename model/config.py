@@ -1,30 +1,46 @@
 """Shared hyperparameters for training and inference."""
 
+import os
 import torch
 
 ###
 ### Model architecture
 ###
 
+def _env_override(name, cast, default):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return cast(value)
+
+
+def _env_int(name, default):
+    return _env_override(name, int, default)
+
+
+def _env_float(name, default):
+    return _env_override(name, float, default)
+
+
 # Maximum sequence length used to size positional embeddings.
 # Keep this aligned between training and inference.
-CONTEXT_LEN = 1024
+CONTEXT_LEN = _env_int("CONTEXT_LEN", 1024)
 
 # Embedding dimensionality for token and position representations.
 # Larger values increase model capacity and compute cost.
-EMBED_SIZE = 768
+EMBED_SIZE = _env_int("EMBED_SIZE", 768)
 
 # Number of Transformer encoder layers in the model.
 # Higher values deepen the network and increase training time.
-NUM_LAYERS = 12
+NUM_LAYERS = _env_int("NUM_LAYERS", 12)
 
 # Number of attention heads per Transformer layer.
 # Must divide EMBED_SIZE evenly.
-NUM_HEADS = 8
+NUM_HEADS = _env_int("NUM_HEADS", 8)
 
 # Feed-forward hidden size inside each Transformer layer.
 # Often 4x EMBED_SIZE for Transformer blocks.
-HIDDEN_SIZE = 3072
+HIDDEN_SIZE = _env_int("HIDDEN_SIZE", 3072)
 
 ###
 ### Training defaults
@@ -32,15 +48,15 @@ HIDDEN_SIZE = 3072
 
 # Default batch size for training loops.
 # Adjust based on device memory.
-BATCH_SIZE = 32
+BATCH_SIZE = _env_int("BATCH_SIZE", 32)
 
 # Default learning rate for the optimizer.
 # Tune alongside batch size and scheduler.
-LEARNING_RATE = 1e-4
+LEARNING_RATE = _env_float("LEARNING_RATE", 1e-4)
 
 # Warmup fraction of total training steps for LR ramp-up.
 # Use values between 0.01 and 0.05 for small warmups.
-WARMUP_PCT = 0.03
+WARMUP_PCT = _env_float("WARMUP_PCT", 0.03)
 
 ###
 ### Inference defaults
@@ -48,15 +64,15 @@ WARMUP_PCT = 0.03
 
 # Default maximum number of tokens to generate per reply.
 # Increase for longer responses at higher compute cost.
-MAX_NEW_TOKENS = 128
+MAX_NEW_TOKENS = _env_int("MAX_NEW_TOKENS", 128)
 
 # Sampling temperature for inference (0 disables sampling).
 # Lower values are more deterministic.
-TEMPERATURE = 0.8
+TEMPERATURE = _env_float("TEMPERATURE", 0.8)
 
 # Top-k cutoff for sampling (0 disables top-k filtering).
 # Use 0 to sample from the full distribution.
-TOP_K = 50
+TOP_K = _env_int("TOP_K", 50)
 
 ###
 ### Logging and checkpoint cadence
@@ -64,27 +80,27 @@ TOP_K = 50
 
 # Checkpoint cadence in seconds after the warmup window.
 # Used after the initial warmup period.
-CHECKPOINT_INTERVAL_SECS = 600
+CHECKPOINT_INTERVAL_SECS = _env_int("CHECKPOINT_INTERVAL_SECS", 600)
 
 # Checkpoint cadence in seconds during the first 10 minutes.
 # Frequent saves help capture early training progress.
-CHECKPOINT_WARMUP_SECS = 60
+CHECKPOINT_WARMUP_SECS = _env_int("CHECKPOINT_WARMUP_SECS", 60)
 
 # Warmup window length in seconds before switching to standard intervals.
 # Shared by plotting and checkpoint scheduling.
-WARMUP_WINDOW_SECS = 600
+WARMUP_WINDOW_SECS = _env_int("WARMUP_WINDOW_SECS", 600)
 
 # Plot cadence in seconds after the warmup window.
 # Controls how often loss charts are printed.
-PLOT_INTERVAL_SECS = 600
+PLOT_INTERVAL_SECS = _env_int("PLOT_INTERVAL_SECS", 600)
 
 # Plot cadence in seconds during the first 10 minutes.
 # Higher frequency helps during the startup phase.
-PLOT_WARMUP_SECS = 60
+PLOT_WARMUP_SECS = _env_int("PLOT_WARMUP_SECS", 60)
 
 # Log cadence in seconds for progress updates.
 # Impacts console verbosity and throughput reporting.
-LOG_INTERVAL_SECS = 10
+LOG_INTERVAL_SECS = _env_int("LOG_INTERVAL_SECS", 10)
 
 
 def _format_param_count(count):

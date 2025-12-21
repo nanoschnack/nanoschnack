@@ -175,23 +175,15 @@ else:
         }
 
 # Tokenize the dataset
-import os
-
-# Allow overriding batch size from the environment.
-batch_size_override = os.getenv("NANOSCHNACK_BATCH_SIZE")
-if batch_size_override:
-    batch_size = int(batch_size_override)
-    print(f"Batch size override from env: {batch_size}")
-else:
-    tuned_batch_size = find_max_batch_size(
-        model,
-        vocab_size=tokenizer.get_vocab_size(),
-        seq_len=context_len,
-        device=device,
-        start=BATCH_SIZE,
-    )
-    batch_size = tuned_batch_size or BATCH_SIZE
-    print(f"Tuned batch_size={batch_size}")
+tuned_batch_size = find_max_batch_size(
+    model,
+    vocab_size=tokenizer.get_vocab_size(),
+    seq_len=context_len,
+    device=device,
+    start=BATCH_SIZE,
+)
+batch_size = tuned_batch_size or BATCH_SIZE
+print(f"Tuned batch_size={batch_size}")
 print_training_hyperparams(
     model,
     context_len=context_len,

@@ -1,6 +1,7 @@
 """Helpers for loading datasets in shard-sized chunks."""
 
 from pathlib import Path
+import os
 
 from datasets import load_dataset
 from huggingface_hub import hf_hub_download, list_repo_files
@@ -76,12 +77,14 @@ class ShardedBatchLoader:
         batch_size,
         seed=42,
         shard_limit=None,
+        num_proc=None,
     ):
         # Keep configuration for loading shards and building batches.
         self.shards = ShardedDataset(repo_id, data_dir, shard_limit=shard_limit)
         self.tokenizer_batch = tokenizer_batch
         self.batch_size = batch_size
         self.seed = seed
+        self.num_proc = num_proc or max(1, (os.cpu_count() or 1) - 1)
 
         # Track the last consumed position (shard index, sample offset).
         self.position = (0, 0)
@@ -147,5 +150,5 @@ class ShardedBatchLoader:
         # Load, shuffle, and tokenize a shard consistently.
         raw_ds = self.shards.load_shard(shard_index)
         shuffled = raw_ds.shuffle(seed=self.seed + shard_index)
-        dataset = shuffled.map(self.tokenizer_batch, batched=True)
+        dataset = shuffled.map(self.tokenizer_batch, batched=True, num_proc=self.num_proc)
         return dataset.with_format(type="torch")

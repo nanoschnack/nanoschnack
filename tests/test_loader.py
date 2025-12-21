@@ -235,5 +235,31 @@ class MultiLoaderTests(unittest.TestCase):
         self.assertEqual(dataset_indices, [0, 1, 0, 1, 1, 1])
 
 
+class LazyChunkingTests(unittest.TestCase):
+    def test_iterable_chunking_uses_estimate(self):
+        with mock.patch.object(loader_module, "ShardedDataset", FakeShardedDataset):
+            tokenizer = FakeTokenizer()
+            tokenizer_batch = loader_module.build_chunking_tokenizer(
+                tokenizer,
+                pad_id=0,
+                max_len=4,
+                stride=0,
+            )
+            loader = loader_module.ShardedBatchLoader(
+                repo_id="repo",
+                data_dir="data",
+                tokenizer_batch=tokenizer_batch,
+                batch_size=2,
+                seed=1,
+                num_proc=1,
+                prefetch=False,
+            )
+            loader.set_estimated_shard_len(5)
+            batches = list(loader.iter_batches())
+
+        shard_lens = [item[3] for item in batches]
+        self.assertEqual(shard_lens, [5, 5, 5])
+
+
 if __name__ == "__main__":
     unittest.main()

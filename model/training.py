@@ -168,13 +168,8 @@ for repo_id in repo_ids:
         )
     )
 
-# Interleave datasets when more than one is provided.
-if len(loaders) == 1:
-    sharded_loader = loaders[0]
-    use_multi_loader = False
-else:
-    sharded_loader = MultiShardedBatchLoader(loaders)
-    use_multi_loader = True
+# Interleave datasets round-robin.
+sharded_loader = MultiShardedBatchLoader(loaders)
 print(f"Sharded loader ready ({sharded_loader.num_shards} shards).", flush=True)
 
 # %% [markdown]
@@ -191,7 +186,22 @@ import time
 
 # Set up optimizer, learning-rate scheduler, and loss function
 epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
-estimated_total_samples = sharded_loader.estimate_total_samples(estimator=estimator)
+estimated_total_samples = sharded_loader.estimate_total_samples()
+
+# Report chunk estimates when chunking is enabled.
+if estimator is not None:
+    print("Estimating chunks from first shard...", flush=True)
+    estimated_total_samples = 0
+
+    for dataset_index, loader in enumerate(sharded_loader.loaders):
+        raw_shard = loader.shards.load_shard(0)
+        avg_chunks, est_total = estimator.estimate_dataset(raw_shard)
+        loader.set_estimated_shard_len(est_total)
+        estimated_total_samples += est_total * loader.num_shards
+        print(
+            f"Dataset {dataset_index + 1}/{sharded_loader.num_datasets}: "
+            f"avg_chunks={avg_chunks:.2f}, est_total={est_total}"
+        )
 
 # Chunk-aware estimates are already applied when the estimator is set.
 steps_per_epoch = math.ceil(estimated_total_samples / batch_size)
@@ -222,7 +232,7 @@ progress = ProgressLogger(
 
 last_epoch = resume_epoch
 last_step = resume_step
-if use_multi_loader and not isinstance(resume_position, list):
+if not isinstance(resume_position, list):
     resume_position = [(0, 0) for _ in range(sharded_loader.num_datasets)]
 current_position = resume_position
 total_samples = total_samples
@@ -234,17 +244,13 @@ try:
     print("Starting training loop...", flush=True)
     for epoch in range(resume_epoch, epochs):
         last_epoch = epoch
-        loader = sharded_loader.iter_batches(start_positions=current_position) if use_multi_loader else sharded_loader.iter_batches(start_position=current_position)
+        loader = sharded_loader.iter_batches(start_positions=current_position)
         for step, batch_info in enumerate(loader):
             last_step = step
 
-            # Unpack per-dataset or single-dataset batches.
-            if use_multi_loader:
-                batch, current_position, dataset_index, shard_index, shard_len = batch_info
-                shard_count = sharded_loader.loaders[dataset_index].num_shards
-            else:
-                batch, current_position, shard_index, shard_len = batch_info
-                shard_count = sharded_loader.num_shards
+            # Unpack per-dataset batches.
+            batch, current_position, dataset_index, shard_index, shard_len = batch_info
+            shard_count = sharded_loader.loaders[dataset_index].num_shards
 
             # Get the input IDs and attention mask, and move them to the GPU
             input_ids = batch["input_ids"].to(device)

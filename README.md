@@ -14,6 +14,12 @@ Install uv:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
+Quick bootstrap (RunPod or fresh VM):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nanoschnack/nanoschnack/refs/heads/main/scripts/bootstrap.sh | bash
+```
+
 Install dev tooling (including pre-commit and jupytext):
 
 ```sh
@@ -61,6 +67,16 @@ To override batch size without editing code, set `NANOSCHNACK_BATCH_SIZE`:
 ```sh
 NANOSCHNACK_BATCH_SIZE=16 python model/training.py
 ```
+
+For multi-GPU training with `torchrun`, set a per-process batch size and launch one process per GPU:
+
+```sh
+export NCCL_DEBUG=warn
+export NCCL_ASYNC_ERROR_HANDLING=1
+NANOSCHNACK_BATCH_SIZE=32 torchrun --standalone --nproc_per_node=8 model/training.py
+```
+
+Only rank 0 prints logs and writes checkpoints; other ranks stay quiet.
 
 ## Inference (chat)
 

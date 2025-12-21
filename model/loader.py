@@ -90,6 +90,9 @@ class ShardedBatchLoader:
         shard_limit=None,
         num_proc=None,
         prefetch=True,
+        enable_logging=True,
+        rank=0,
+        world_size=1,
     ):
         # Keep configuration for loading shards and building batches.
         self.shards = ShardedDataset(repo_id, data_dir, shard_limit=shard_limit)
@@ -98,6 +101,9 @@ class ShardedBatchLoader:
         self.seed = seed
         self.num_proc = num_proc or max(1, (os.cpu_count() or 1) - 1)
         self.prefetch = prefetch
+        self.enable_logging = enable_logging
+        self.rank = rank
+        self.world_size = world_size
 
         # Track the last consumed position (shard index, sample offset).
         self.position = (0, 0)
@@ -125,15 +131,19 @@ class ShardedBatchLoader:
 
         try:
             for shard_index in range(start_shard, self.num_shards):
+                if shard_index % self.world_size != self.rank:
+                    continue
                 if self.prefetch:
                     self._prefetch_next(shard_index + 1)
 
                 # Announce the upstream shard filename before loading.
-                print(
-                    f"Loading shard {shard_index + 1}/{self.num_shards}: "
-                    f"{self.shards.shard_name(shard_index)}",
-                    flush=True,
-                )
+                if self.enable_logging:
+                    print(
+                        f"Loading shard {shard_index + 1}/{self.num_shards}: "
+                        f"{self.shards.shard_name(shard_index)}",
+                        flush=True,
+                    )
+
                 dataset = self._load_tokenized_shard(shard_index)
                 shard_len = len(dataset)
                 self._shard_lengths[shard_index] = shard_len
@@ -184,6 +194,8 @@ class ShardedBatchLoader:
 
     def _prefetch_next(self, shard_index):
         # Prefetch the next shard into the local cache in the background.
+        while shard_index < self.num_shards and shard_index % self.world_size != self.rank:
+            shard_index += 1
         if shard_index >= self.num_shards:
             return
 

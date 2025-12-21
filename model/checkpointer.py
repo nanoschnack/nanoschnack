@@ -36,7 +36,8 @@ class Checkpointer:
         # Restore model and optimizer state for resuming training.
         print("Checkpoint loaded. Restoring model and optimizer state...")
         try:
-            self.model.load_state_dict(ckpt["model"])
+            model = self._unwrap_model()
+            model.load_state_dict(ckpt["model"])
             self.optimizer.load_state_dict(ckpt["optimizer"])
             self.scheduler.load_state_dict(ckpt["scheduler"])
         except Exception as exc:
@@ -49,8 +50,12 @@ class Checkpointer:
         global_step = ckpt.get("global_step", resume_step)
 
         if "load_position" in ckpt:
-            load_position = tuple(ckpt.get("load_position", (0, 0)))
-            total_samples = ckpt.get("total_samples", load_position[1])
+            load_position = ckpt.get("load_position", (0, 0))
+            if isinstance(load_position, list) and load_position and isinstance(load_position[0], list):
+                load_position = [tuple(item) for item in load_position]
+            else:
+                load_position = tuple(load_position)
+            total_samples = ckpt.get("total_samples", 0)
             total_tokens = ckpt.get("total_tokens", 0)
         else:
             shard_index = ckpt.get("shard_index", 0)
@@ -71,7 +76,7 @@ class Checkpointer:
         # Persist the latest training state to disk.
         start_time = time.time()
         ckpt = {
-            "model": self.model.state_dict(),
+            "model": self._unwrap_model().state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
             "config": self._model_config(),
@@ -91,17 +96,22 @@ class Checkpointer:
             f"({elapsed:.2f}s)."
         )
 
+    def _unwrap_model(self):
+        # Return the underlying model for DDP wrappers.
+        return getattr(self.model, "module", self.model)
+
     def _model_config(self):
         # Derive config values from the live model for backward-compatible resumes.
         config = {}
-        if hasattr(self.model, "position_embedding"):
-            config["context_len"] = self.model.position_embedding.weight.shape[0]
-        if hasattr(self.model, "token_embedding"):
-            config["embed_size"] = self.model.token_embedding.weight.shape[1]
-        if hasattr(self.model, "layers"):
-            config["num_layers"] = len(self.model.layers)
-            if self.model.layers:
-                layer = self.model.layers[0]
+        model = self._unwrap_model()
+        if hasattr(model, "position_embedding"):
+            config["context_len"] = model.position_embedding.weight.shape[0]
+        if hasattr(model, "token_embedding"):
+            config["embed_size"] = model.token_embedding.weight.shape[1]
+        if hasattr(model, "layers"):
+            config["num_layers"] = len(model.layers)
+            if model.layers:
+                layer = model.layers[0]
                 if hasattr(layer, "self_attn"):
                     config["num_heads"] = layer.self_attn.num_heads
                 if hasattr(layer, "linear1"):

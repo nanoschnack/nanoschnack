@@ -136,7 +136,10 @@ else:
             "attention_mask": [e.attention_mask for e in token_batch], # marks real tokens (1) vs padding (0)
         }
 
+# Shuffle deterministically (only way for streaming datasets)
 dataset = shuffled.map(tokenizer_batch, batched=True)
+
+# Set the dataset format to PyTorch tensors
 dataset = dataset.with_format(type="torch")
 
 # Tokenize the dataset
@@ -151,26 +154,33 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10_000)
 lossFn = torch.nn.CrossEntropyLoss()
 
+epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
 steps_per_epoch = 10
-for epoch in range(10):
+for epoch in range(epochs):
     for step, batch in enumerate(loader):
         if step >= steps_per_epoch:
             break
 
+        # Get the input IDs and attention mask, and move them to the GPU
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
 
         # Next-token prediction
-        inputs = input_ids[:, :-1]
-        targets = input_ids[:, 1:]
+        inputs = input_ids[:, :-1] # everything from the first token except the last
+        targets = input_ids[:, 1:] # everything from the second token onward
 
+        # Clear accumulated gradients from the previous step (which torch does automatically otherwise)
         optimizer.zero_grad()
+
+        # Forward pass
         logits = model(inputs, attention_mask=attention_mask[:, :-1])
 
-        # flatten the output and targets into lists for batch loss computation.
+        # Compute (average) loss of the predicted next tokens and apply backpropagation.
+        # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)
         loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
-
         loss.backward()
+
+        # Update weights, then advance the learning-rate schedule.
         optimizer.step()
         scheduler.step()
 

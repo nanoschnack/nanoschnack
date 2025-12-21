@@ -79,7 +79,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
     except Exception:
         pass
 
-    history = ""
+    use_chat_template = False
     print("Type '/help' for commands.")
 
     while True:
@@ -91,7 +91,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if not user_text:
             continue
         if user_text == "/help":
-            print("Commands: /help, /quit, /exit, /reset, /temp <value>, /topk <value>")
+            print("Commands: /help, /quit, /exit, /reset, /temp <value>, /topk <value>, /chat on|off")
             continue
         if user_text.startswith("/temp"):
             parts = user_text.split(maxsplit=1)
@@ -120,18 +120,35 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if user_text in {"/quit", "/exit"}:
             break
         if user_text == "/reset":
-            history = ""
             print("History cleared.")
             continue
+        if user_text.startswith("/chat"):
+            parts = user_text.split(maxsplit=1)
+            if len(parts) == 1:
+                use_chat_template = not use_chat_template
+            elif parts[1] in {"on", "off"}:
+                use_chat_template = parts[1] == "on"
+            else:
+                print("Usage: /chat [on|off]")
+                continue
+            print(f"Chat template {'enabled' if use_chat_template else 'disabled'}.")
+            continue
 
-        history += f"User: {user_text}\nAssistant:"
+        if user_text and user_text[-1].isalpha():
+            user_text = f"{user_text} "
+
+        if use_chat_template:
+            prompt = f"User: {user_text}\nAssistant:"
+        else:
+            prompt = user_text
+
         print("bot> ", end="", flush=True)
         reply_parts = []
         try:
             for token in generate_reply_stream(
                 model,
                 tokenizer,
-                history,
+                prompt,
                 context_len=context_len,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
@@ -142,11 +159,6 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
                 reply_parts.append(token)
         except KeyboardInterrupt:
             print()
-        reply = "".join(reply_parts).strip()
-        if reply:
-            history += f" {reply}\n"
-        else:
-            history += "\n"
         if reply_parts:
             print()
 

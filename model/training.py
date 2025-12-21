@@ -196,7 +196,7 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
-resume_epoch, resume_step, global_step, resume_position, total_samples = checkpointer.load_latest()
+resume_epoch, resume_step, global_step, resume_position, total_samples, resume_tokens = checkpointer.load_latest()
 
 last_ckpt_time = time.time()
 
@@ -205,6 +205,7 @@ progress = ProgressLogger(
     ascii_loss_plot,
     start_global_step=global_step,
     start_total_samples=total_samples,
+    start_total_tokens=resume_tokens,
     log_interval=LOG_INTERVAL_SECS,
     warmup_plot_interval=PLOT_WARMUP_SECS,
     plot_interval=PLOT_INTERVAL_SECS,
@@ -247,9 +248,11 @@ try:
             scheduler.step()
 
             # Log progress and plot loss history
+            token_count = attention_mask[:, 1:].sum().item()
             progress.tick(
                 loss.item(),
                 input_ids.size(0),
+                token_count,
                 epoch,
                 step,
                 shard_index=shard_index,
@@ -266,6 +269,7 @@ try:
                     progress.global_step,
                     current_position,
                     total_samples,
+                    progress.total_tokens,
                 )
                 last_ckpt_time = now
         current_position = (0, 0)
@@ -278,6 +282,7 @@ except KeyboardInterrupt:
         progress.global_step,
         current_position,
         total_samples,
+        progress.total_tokens,
     )
     print("Interrupted: checkpoint saved, exiting.")
 

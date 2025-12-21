@@ -14,6 +14,7 @@ class ProgressLogger:
         plot_fn,
         start_global_step=0,
         start_total_samples=0,
+        start_total_tokens=0,
         log_interval=10,
         warmup_plot_interval=60,
         plot_interval=600,
@@ -31,12 +32,14 @@ class ProgressLogger:
         self.last_plot_time = self.start_time
         self.has_logged = False
         self.samples_since_log = 0
+        self.tokens_since_log = 0
         self.loss_since_log = 0.0
         self.loss_steps = 0
         self.total_samples = start_total_samples
+        self.total_tokens = start_total_tokens
         self.loss_history = deque()
 
-    def tick(self, loss_value, batch_size, epoch, step, shard_index, shard_count, shard_len):
+    def tick(self, loss_value, batch_size, token_count, epoch, step, shard_index, shard_count, shard_len):
         # Record the latest loss and retain a rolling one-hour window.
         now = time.time()
         self.loss_history.append((now, loss_value))
@@ -45,13 +48,16 @@ class ProgressLogger:
 
         # Log throughput and loss at the configured interval.
         self.samples_since_log += batch_size
+        self.tokens_since_log += token_count
         self.loss_since_log += loss_value
         self.loss_steps += 1
         self.total_samples += batch_size
+        self.total_tokens += token_count
         if not self.has_logged or (now - self.last_log_time >= self.log_interval):
             elapsed = now - self.last_log_time
             avg_loss = self.loss_since_log / self.loss_steps if self.loss_steps else loss_value
             samples_per_sec = self.samples_since_log / elapsed if elapsed > 0 else 0.0
+            tokens_per_sec = self.tokens_since_log / elapsed if elapsed > 0 else 0.0
             estimated_total = shard_len * shard_count
             pct = min(100.0, (self.total_samples / estimated_total) * 100)
             shard_label = f"Shard {shard_index + 1}/{shard_count}"
@@ -60,18 +66,21 @@ class ProgressLogger:
 
             message = (
                 f"Samples {self.total_samples:,}, "
+                f"Tokens {self.total_tokens:,}, "
                 f"Total {pct:.1f}%, "
                 f"Epoch {epoch+1}, "
                 f"Step {step+1}, "
                 f"Global {self.global_step+1}, "
                 f"Shard {shard_index + 1}/{shard_count}, "
                 f"Loss {avg_loss:.4f}, "
-                f"Samples/s {samples_per_sec:.1f}"
+                f"Samples/s {samples_per_sec:.1f}, "
+                f"Tokens/s {tokens_per_sec:.1f}"
             )
             print(message, flush=True)
             self.last_log_time = now
             self.has_logged = True
             self.samples_since_log = 0
+            self.tokens_since_log = 0
             self.loss_since_log = 0.0
             self.loss_steps = 0
 

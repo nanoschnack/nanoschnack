@@ -25,3 +25,40 @@ Install the pre-commit hook:
 ```sh
 pre-commit install
 ```
+
+## Data download
+
+The training data is sourced from the `pdelobelle/fineweb-german-edu-mt` dataset:
+https://huggingface.co/datasets/pdelobelle/fineweb-german-edu-mt
+Download parquet shards into `data/` so the training notebook can stream them:
+
+```sh
+mkdir -p data
+```
+
+Example: download a few shards from the dataset files listing and place them in `data/`.
+
+## Training
+
+Open the training notebook and run the cells:
+
+```sh
+jupyter lab model/training.ipynb
+```
+
+The notebook uses streaming parquet loading from `data/*.parquet` and writes checkpoints to `checkpoints/`.
+
+## Inference (chat)
+
+Run the REPL chat interface:
+
+```sh
+python model/chat.py
+```
+
+Options:
+- `--checkpoint /path/to/checkpoint.pt` (defaults to `checkpoints/latest.pt` if present)
+- `--context-len 256`
+- `--max-new-tokens 128`
+- `--temperature 0.8`
+- `--top-k 50`

@@ -5,3 +5,4 @@
 - Use a commit title convention: "area/subarea: short what has been done". E.g. "model/nanoschnack: do x".
 - Ensure to run `source .venv/bin/activate` when committing so the pre-commit hook works.
 - Comment style: add a one-line comment above small blocks of logically connected lines; no blank line before the first block comment in a scope, and a blank line before each subsequent block comment; add a 3–5 line class docstring to explain purpose and constraints.
+- Note: notebook-exported `.py` files are generated; always edit the `.ipynb` and re-sync.

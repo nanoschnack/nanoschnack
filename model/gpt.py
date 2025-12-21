@@ -20,12 +20,17 @@ class GPT(nn.Module):
         ])
         self.output = nn.Linear(embed_size, vocab_size)
 
-    def forward(self, x):
+    def forward(self, x, attention_mask=None):
         seq_length = x.size(1)
         positions = torch.arange(0, seq_length).unsqueeze(0).to(x.device)
         x = self.token_embedding(x) + self.position_embedding(positions)
 
+        src_key_padding_mask = None
+        if attention_mask is not None:
+            # True marks padded positions for TransformerEncoderLayer.
+            src_key_padding_mask = attention_mask == 0
+
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, src_key_padding_mask=src_key_padding_mask)
 
         return self.output(x)

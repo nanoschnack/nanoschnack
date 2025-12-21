@@ -92,6 +92,7 @@ if False:
     tokenizer.disable_truncation()
     tokenizer.disable_padding()
 
+    # Split long sequences into fixed windows, optionally with overlap.
     def chunk_ids(ids, max_len, stride):
         if len(ids) == 0:
             return []
@@ -110,7 +111,7 @@ if False:
 
     def tokenizer_batch(batch):
         input_ids = []
-        attention_mask = []
+        attention_mask = [] # marks real tokens (1) vs padding (0)
         for text in batch["result"]:
             ids = tokenizer.encode(text).ids
             for chunk in chunk_ids(ids, max_len=max_len,
@@ -118,7 +119,10 @@ if False:
                 input_ids.append(chunk)
                 attention_mask.append([1 if t != pad_id else 0 for t
                                        in chunk])
-        return {"input_ids": input_ids, "attention_mask": attention_mask}
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask
+        }
 else:
     # Enable truncation and padding
     tokenizer.enable_truncation(max_length=context_len)
@@ -129,7 +133,7 @@ else:
         token_batch = tokenizer.encode_batch(batch["result"])
         return {
             "input_ids": [e.ids for e in token_batch],
-            "attention_mask": [e.attention_mask for e in token_batch],
+            "attention_mask": [e.attention_mask for e in token_batch], # marks real tokens (1) vs padding (0)
         }
 
 dataset = shuffled.map(tokenizer_batch, batched=True)
@@ -154,13 +158,14 @@ for epoch in range(10):
             break
 
         input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
 
         # Next-token prediction
         inputs = input_ids[:, :-1]
         targets = input_ids[:, 1:]
 
         optimizer.zero_grad()
-        logits = model(inputs)
+        logits = model(inputs, attention_mask=attention_mask[:, :-1])
 
         # flatten the output and targets into lists for batch loss computation.
         loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))

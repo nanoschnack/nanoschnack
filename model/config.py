@@ -79,3 +79,33 @@ PLOT_WARMUP_SECS = 60
 # Log cadence in seconds for progress updates.
 # Impacts console verbosity and throughput reporting.
 LOG_INTERVAL_SECS = 10
+
+
+def print_training_hyperparams():
+    """Print the training-related hyperparameters."""
+    print("Architecture:")
+    print(f"  context_len={CONTEXT_LEN}")
+    print(f"  embed_size={EMBED_SIZE}")
+    print(f"  num_layers={NUM_LAYERS}")
+    print(f"  num_heads={NUM_HEADS}")
+    print(f"  hidden_size={HIDDEN_SIZE}")
+    print("Training:")
+    print(f"  batch_size={BATCH_SIZE}")
+    print(f"  learning_rate={LEARNING_RATE}")
+    print("Scheduling:")
+    print(f"  log_interval_secs={LOG_INTERVAL_SECS}")
+    print(f"  warmup_window_secs={WARMUP_WINDOW_SECS}")
+    print(f"  plot_warmup_secs={PLOT_WARMUP_SECS}")
+    print(f"  plot_interval_secs={PLOT_INTERVAL_SECS}")
+    print(f"  checkpoint_warmup_secs={CHECKPOINT_WARMUP_SECS}")
+    print(f"  checkpoint_interval_secs={CHECKPOINT_INTERVAL_SECS}")
+
+
+def print_chat_hyperparams(context_len, max_new_tokens, temperature, top_k):
+    """Print the inference-related hyperparameters."""
+    print("Architecture:")
+    print(f"  context_len={context_len}")
+    print("Inference:")
+    print(f"  max_new_tokens={max_new_tokens}")
+    print(f"  temperature={temperature}")
+    print(f"  top_k={top_k}")

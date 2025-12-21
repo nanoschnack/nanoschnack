@@ -67,11 +67,15 @@ from config import (
     HIDDEN_SIZE,
     LEARNING_RATE,
     LOG_INTERVAL_SECS,
+    MAX_NEW_TOKENS,
     NUM_HEADS,
     NUM_LAYERS,
     PLOT_INTERVAL_SECS,
     PLOT_WARMUP_SECS,
+    TEMPERATURE,
+    TOP_K,
     WARMUP_WINDOW_SECS,
+    print_training_hyperparams,
 )
 
 # add special tokens
@@ -79,6 +83,7 @@ tokenizer.add_special_tokens(["[PAD]"])
 pad_id = tokenizer.token_to_id("[PAD]")
 
 context_len = CONTEXT_LEN
+print_training_hyperparams()
 model = GPT(
     vocab_size=tokenizer.get_vocab_size(),
     embed_size=EMBED_SIZE,
@@ -87,6 +92,7 @@ model = GPT(
     hidden_size=HIDDEN_SIZE,
     context_len=CONTEXT_LEN,
 ).to(device).train()
+
 
 
 # %% [markdown]

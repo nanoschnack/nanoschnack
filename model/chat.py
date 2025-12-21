@@ -16,6 +16,7 @@ from config import (
     NUM_LAYERS,
     TEMPERATURE,
     TOP_K,
+    print_chat_hyperparams,
 )
 from device import pick_device
 from gpt import GPT
@@ -154,6 +155,13 @@ def main():
     tokenizer = load_tokenizer()
 
     model, model_context_len = load_model(checkpoint_path, tokenizer.get_vocab_size(), device)
+
+    print_chat_hyperparams(
+        model_context_len,
+        args.max_new_tokens,
+        args.temperature,
+        args.top_k,
+    )
 
     # Validate that the requested context length fits the trained model.
     if args.context_len > model_context_len:

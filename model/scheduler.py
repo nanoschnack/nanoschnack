@@ -20,6 +20,12 @@ def build_warmup_cosine(optimizer, total_steps, warmup_pct):
     warmup_steps = min(warmup_steps, total_steps)
     cosine_steps = max(total_steps - warmup_steps, 1)
 
+    if warmup_steps == 0:
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=total_steps,
+        )
+
     warmup = torch.optim.lr_scheduler.LinearLR(
         optimizer,
         # LinearLR requires a strictly positive start factor.

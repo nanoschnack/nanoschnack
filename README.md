@@ -14,6 +14,12 @@ Install uv:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
+Quick bootstrap (RunPod or fresh VM):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nanoschnack/nanoschnack/refs/heads/main/scripts/bootstrap.sh | bash
+```
+
 Install dev tooling (including pre-commit and jupytext):
 
 ```sh

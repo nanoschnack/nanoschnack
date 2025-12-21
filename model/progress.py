@@ -31,6 +31,8 @@ class ProgressLogger:
         self.last_plot_time = self.start_time
         self.has_logged = False
         self.samples_since_log = 0
+        self.loss_since_log = 0.0
+        self.loss_steps = 0
         self.total_samples = start_total_samples
         self.loss_history = deque()
 
@@ -43,19 +45,24 @@ class ProgressLogger:
 
         # Log throughput and loss at the configured interval.
         self.samples_since_log += batch_size
+        self.loss_since_log += loss_value
+        self.loss_steps += 1
         self.total_samples += batch_size
         if not self.has_logged or (now - self.last_log_time >= self.log_interval):
             elapsed = now - self.last_log_time
+            avg_loss = self.loss_since_log / self.loss_steps if self.loss_steps else loss_value
             samples_per_sec = self.samples_since_log / elapsed if elapsed > 0 else 0.0
             print(
                 f"Epoch {epoch+1} (Step {step+1}, Global {self.global_step+1}), "
                 f"Samples {self.total_samples:,}, "
-                f"Loss: {loss_value:.4f}, Samples/s: {samples_per_sec:.1f}",
+                f"Loss: {avg_loss:.4f}, Samples/s: {samples_per_sec:.1f}",
                 flush=True,
             )
             self.last_log_time = now
             self.has_logged = True
             self.samples_since_log = 0
+            self.loss_since_log = 0.0
+            self.loss_steps = 0
 
         # Plot loss every minute for the first 10 minutes, then every 10 minutes.
         interval = (

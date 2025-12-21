@@ -40,13 +40,14 @@ def device_info(device):
 
 def print_device_info(info):
     # Print the device information in a shared format.
-    print(f"Using device: {info['device']}")
+    lines = ["Device:", f"  device={info['device']}"]
     if info["device_type"] == "cuda":
-        print(f"cuda_device={info['cuda_device']}")
-        print(f"cuda_capability={info['cuda_capability']}")
-        print(f"cuda_total_memory_bytes={info['cuda_total_memory_bytes']}")
+        lines.append(f"  cuda_device={info['cuda_device']}")
+        lines.append(f"  cuda_capability={info['cuda_capability']}")
+        lines.append(f"  cuda_total_memory_bytes={info['cuda_total_memory_bytes']}")
     elif info["device_type"] == "mps":
-        print(f"mps_device={info['mps_device']}")
-        print(f"mps_available={info['mps_available']} mps_built={info['mps_built']}")
+        lines.append(f"  mps_device={info['mps_device']}")
+        lines.append(f"  mps_available={info['mps_available']} mps_built={info['mps_built']}")
     else:
-        print(f"cpu_threads={info['cpu_threads']}")
+        lines.append(f"  cpu_threads={info['cpu_threads']}")
+    print("\n".join(lines))

@@ -13,6 +13,7 @@ class ProgressLogger:
         self,
         plot_fn,
         start_global_step=0,
+        start_total_samples=0,
         log_interval=10,
         warmup_plot_interval=60,
         plot_interval=600,
@@ -30,7 +31,7 @@ class ProgressLogger:
         self.last_plot_time = self.start_time
         self.has_logged = False
         self.samples_since_log = 0
-        self.total_samples = 0
+        self.total_samples = start_total_samples
         self.loss_history = deque()
 
     def tick(self, loss_value, batch_size, epoch, step):
@@ -49,7 +50,8 @@ class ProgressLogger:
             print(
                 f"Epoch {epoch+1} (Step {step+1}, Global {self.global_step+1}), "
                 f"Samples {self.total_samples:,}, "
-                f"Loss: {loss_value:.4f}, Samples/s: {samples_per_sec:.1f}"
+                f"Loss: {loss_value:.4f}, Samples/s: {samples_per_sec:.1f}",
+                flush=True,
             )
             self.last_log_time = now
             self.has_logged = True

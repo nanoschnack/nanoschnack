@@ -50,13 +50,24 @@ class Checkpointer:
         resume_step = ckpt.get("step", 0)
         global_step = ckpt.get("global_step", resume_step)
 
+        if "load_position" in ckpt:
+            load_position = tuple(ckpt.get("load_position", (0, 0)))
+            total_samples = ckpt.get("total_samples", load_position[1])
+        else:
+            shard_index = ckpt.get("shard_index", 0)
+            shard_offset = ckpt.get("shard_offset", ckpt.get("data_index", 0))
+            load_position = (shard_index, shard_offset)
+            total_samples = ckpt.get("total_samples", shard_offset)
         # Announce resume location for visibility.
         display_epoch = saved_epoch if saved_epoch > 0 else 1
-        print(f"Resuming from {self.path} at epoch {display_epoch}, step {resume_step}.")
+        print(
+            f"Resuming from {self.path} at epoch {display_epoch}, step {resume_step}, "
+            f"position {load_position}."
+        )
         resume_epoch = max(saved_epoch - 1, 0)
-        return resume_epoch, resume_step, global_step
+        return resume_epoch, resume_step, global_step, load_position, total_samples
 
-    def save_latest(self, epoch, step, global_step):
+    def save_latest(self, epoch, step, global_step, load_position, total_samples):
         # Persist the latest training state to disk.
         ckpt = {
             "model": self.model.state_dict(),
@@ -72,6 +83,8 @@ class Checkpointer:
             "epoch": epoch + 1,
             "step": step,
             "global_step": global_step,
+            "load_position": list(load_position),
+            "total_samples": total_samples,
         }
         tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
         torch.save(ckpt, tmp_path)

@@ -132,6 +132,18 @@ wheels = [
 ]
 
 [[package]]
+name = "asciichartpy"
+version = "1.5.25"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "setuptools" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/41/3a/b01436be647f881515ec2f253616bf4a40c1d27d02a69e7f038e27fcdf81/asciichartpy-1.5.25.tar.gz", hash = "sha256:63a305302b2aad51da288b58226009b7b0313eba7d8e2452d5a21a13fcf44d74", size = 8201, upload-time = "2020-08-17T02:07:18.292Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3f/d0/7b958df957e4827837b590944008f0b28078f552b451f7407b4b3d54f574/asciichartpy-1.5.25-py2.py3-none-any.whl", hash = "sha256:33c417a3c8ef7d0a11b98eb9ea6dd9b2c1b17559e539b207a17d26d4302d0258", size = 7228, upload-time = "2020-08-17T02:07:16.386Z" },
+]
+
+[[package]]
 name = "asttokens"
 version = "3.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1010,6 +1022,7 @@ name = "nanoschnack"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "asciichartpy" },
     { name = "datasets" },
     { name = "ipykernel" },
     { name = "numpy" },
@@ -1025,6 +1038,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "asciichartpy", specifier = ">=1.5.25" },
     { name = "datasets", specifier = ">=4.4.2" },
     { name = "ipykernel", specifier = ">=7.1.0" },
     { name = "jupytext", marker = "extra == 'dev'", specifier = ">=1.16.0" },

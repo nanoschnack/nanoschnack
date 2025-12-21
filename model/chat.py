@@ -80,22 +80,19 @@ def sample_next_token(logits, temperature, top_k):
     return int(torch.multinomial(probs, num_samples=1).item())
 
 
-def generate_reply(model, tokenizer, prompt, context_len, max_new_tokens, temperature, top_k, device):
-    # Run autoregressive decoding for a single reply.
+def generate_reply_stream(model, tokenizer, prompt, context_len, max_new_tokens, temperature, top_k, device):
+    # Stream tokens from autoregressive decoding for a single reply.
     prompt_ids = tokenizer.encode(prompt).ids
     input_ids = torch.tensor([prompt_ids[-context_len:]], device=device, dtype=torch.long)
 
-    new_ids = []
     with torch.no_grad():
         for _ in range(max_new_tokens):
             logits = model(input_ids)[:, -1, :].squeeze(0)
             next_id = sample_next_token(logits, temperature, top_k)
-            new_ids.append(next_id)
+            yield tokenizer.decode([next_id])
             input_ids = torch.cat([input_ids, torch.tensor([[next_id]], device=device)], dim=1)
             if input_ids.size(1) > context_len:
                 input_ids = input_ids[:, -context_len:]
-
-    return tokenizer.decode(new_ids).strip()
 
 
 def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, device):
@@ -120,18 +117,30 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
             break
 
         history += f"User: {user_text}\nAssistant:"
-        reply = generate_reply(
-            model,
-            tokenizer,
-            history,
-            context_len=context_len,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_k=top_k,
-            device=device,
-        )
-        print(f"bot> {reply}")
-        history += f" {reply}\n"
+        print("bot> ", end="", flush=True)
+        reply_parts = []
+        try:
+            for token in generate_reply_stream(
+                model,
+                tokenizer,
+                history,
+                context_len=context_len,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                device=device,
+            ):
+                print(token, end="", flush=True)
+                reply_parts.append(token)
+        except KeyboardInterrupt:
+            print()
+        reply = "".join(reply_parts).strip()
+        if reply:
+            history += f" {reply}\n"
+        else:
+            history += "\n"
+        if reply_parts:
+            print()
 
 
 def main():

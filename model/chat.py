@@ -80,6 +80,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         pass
 
     use_chat_template = False
+    show_tokens = False
     print("Type '/help' for commands.")
 
     while True:
@@ -91,7 +92,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if not user_text:
             continue
         if user_text == "/help":
-            print("Commands: /help, /quit, /exit, /reset, /temp <value>, /topk <value>, /chat on|off")
+            print("Commands: /help, /quit, /exit, /reset, /temp <value>, /topk <value>, /chat on|off, /debug on|off")
             continue
         if user_text.startswith("/temp"):
             parts = user_text.split(maxsplit=1)
@@ -133,6 +134,17 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
                 continue
             print(f"Chat template {'enabled' if use_chat_template else 'disabled'}.")
             continue
+        if user_text.startswith("/debug"):
+            parts = user_text.split(maxsplit=1)
+            if len(parts) == 1:
+                show_tokens = not show_tokens
+            elif parts[1] in {"on", "off"}:
+                show_tokens = parts[1] == "on"
+            else:
+                print("Usage: /debug [on|off]")
+                continue
+            print(f"Debug tokens {'enabled' if show_tokens else 'disabled'}.")
+            continue
 
         if user_text and user_text[-1].isalpha():
             user_text = f"{user_text} "
@@ -142,6 +154,8 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         else:
             prompt = user_text
 
+        if show_tokens:
+            print(f"tokens> {tokenizer.encode(user_text).ids}")
         print("bot> ", end="", flush=True)
         reply_parts = []
         try:

@@ -177,7 +177,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
 def main():
     parser = argparse.ArgumentParser(description="Chat with the NanoSchnack model.")
     parser.add_argument("--checkpoint", default=None, help="Path to a checkpoint (.pt).")
-    parser.add_argument("--context-len", type=int, default=CONTEXT_LEN)
+    parser.add_argument("--context-len", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=MAX_NEW_TOKENS)
     parser.add_argument("--temperature", type=float, default=TEMPERATURE)
     parser.add_argument("--top-k", type=int, default=TOP_K)
@@ -197,6 +197,11 @@ def main():
     tokenizer = load_tokenizer()
 
     model, model_context_len = load_model(checkpoint_path, tokenizer.get_vocab_size(), device)
+    if args.context_len == CONTEXT_LEN:
+        args.context_len = model_context_len
+
+    if args.context_len is None:
+        args.context_len = model_context_len
 
     print_chat_hyperparams(
         model_context_len,

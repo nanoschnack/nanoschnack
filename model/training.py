@@ -105,10 +105,10 @@ if True:
     max_len = context_len
     stride = context_len//4  # overlap; set to 0 for no overlap
 
-    tokenizer.disable_truncation()
-    tokenizer.disable_padding()
+    tokenizer.no_padding()
+    tokenizer.no_truncation()
 
-    # Estimate chunk counts from a sample of each shard.
+    # Estimate chunk counts from a sample; chunking stays in-memory.
     estimator = ChunkEstimator(
         tokenizer,
         max_len=max_len,

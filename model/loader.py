@@ -6,7 +6,7 @@ import os
 import random
 from concurrent.futures import ThreadPoolExecutor
 
-from datasets import load_dataset
+from datasets import Dataset, load_dataset
 from huggingface_hub import hf_hub_download, list_repo_files
 from torch.utils.data import DataLoader
 
@@ -150,6 +150,7 @@ def chunk_ids(ids, max_len, stride, pad_id):
 
 
 def build_chunking_tokenizer(tokenizer, pad_id, max_len, stride):
+    # Expand each document into fixed-size chunks with padding.
     def tokenizer_batch(batch):
         input_ids = []
         attention_mask = []
@@ -160,6 +161,11 @@ def build_chunking_tokenizer(tokenizer, pad_id, max_len, stride):
                 attention_mask.append([1 if t != pad_id else 0 for t in chunk])
         return {"input_ids": input_ids, "attention_mask": attention_mask}
 
+    tokenizer_batch.is_chunking = True
+    tokenizer_batch.pad_id = pad_id
+    tokenizer_batch.max_len = max_len
+    tokenizer_batch.stride = stride
+    tokenizer_batch.tokenizer = tokenizer
     return tokenizer_batch
 
 
@@ -286,7 +292,27 @@ class ShardedBatchLoader:
         # Load, shuffle, and tokenize a shard consistently.
         raw_ds = self.shards.load_shard(shard_index)
         shuffled = raw_ds.shuffle(seed=self.seed + shard_index)
-        dataset = shuffled.map(self.tokenizer_batch, batched=True, num_proc=self.num_proc)
+        if getattr(self.tokenizer_batch, "is_chunking", False):
+            # Chunking expands the number of samples, so build the dataset manually.
+            input_ids = []
+            attention_mask = []
+            tokenizer = self.tokenizer_batch.tokenizer
+            max_len = self.tokenizer_batch.max_len
+            stride = self.tokenizer_batch.stride
+            pad_id = self.tokenizer_batch.pad_id
+
+            for sample in shuffled:
+                ids = tokenizer.encode(sample["text"]).ids
+                for chunk in chunk_ids(ids, max_len=max_len, stride=stride, pad_id=pad_id):
+                    input_ids.append(chunk)
+                    attention_mask.append([1 if t != pad_id else 0 for t in chunk])
+
+            dataset = Dataset.from_dict(
+                {"input_ids": input_ids, "attention_mask": attention_mask}
+            )
+        else:
+            dataset = shuffled.map(self.tokenizer_batch, batched=True, num_proc=self.num_proc)
+
         return dataset.with_format(type="torch")
 
     def _prefetch_next(self, shard_index):

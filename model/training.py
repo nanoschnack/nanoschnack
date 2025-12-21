@@ -213,7 +213,7 @@ try:
     for epoch in range(resume_epoch, epochs):
         last_epoch = epoch
         loader = sharded_loader.iter_batches(start_position=current_position)
-        for step, (batch, current_position) in enumerate(loader):
+        for step, (batch, current_position, shard_index, shard_len) in enumerate(loader):
             last_step = step
 
             # Get the input IDs and attention mask, and move them to the GPU
@@ -240,7 +240,15 @@ try:
             scheduler.step()
 
             # Log progress and plot loss history
-            progress.tick(loss.item(), input_ids.size(0), epoch, step)
+            progress.tick(
+                loss.item(),
+                input_ids.size(0),
+                epoch,
+                step,
+                shard_index=shard_index,
+                shard_count=sharded_loader.num_shards,
+                shard_len=shard_len,
+            )
             total_samples += input_ids.size(0)
             now = time.time()
             ckpt_interval = CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < WARMUP_WINDOW_SECS else CHECKPOINT_INTERVAL_SECS

@@ -111,6 +111,7 @@ class ShardedBatchLoader:
             shuffled = raw_ds.shuffle(seed=self.seed + shard_index)
             dataset = shuffled.map(self.tokenizer_batch, batched=True)
             dataset = dataset.with_format(type="torch")
+            shard_len = len(dataset)
 
             if shard_index == start_shard and start_offset > 0:
                 dataset_len = len(dataset)
@@ -124,6 +125,6 @@ class ShardedBatchLoader:
             for batch in loader:
                 shard_offset += batch["input_ids"].size(0)
                 self.position = (shard_index, shard_offset)
-                yield batch, self.position
+                yield batch, self.position, shard_index, shard_len
 
             start_offset = 0

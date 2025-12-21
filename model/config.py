@@ -110,15 +110,19 @@ def apply_overrides(values):
     for key, value in values.items():
         if key in globals_dict:
             globals_dict[key] = value
+            continue
+        upper_key = key.upper()
+        if upper_key in globals_dict:
+            globals_dict[upper_key] = value
 
 
 def snapshot():
     return {
-        "context_len": CONTEXT_LEN,
-        "embed_size": EMBED_SIZE,
-        "num_layers": NUM_LAYERS,
-        "num_heads": NUM_HEADS,
-        "hidden_size": HIDDEN_SIZE,
+        "CONTEXT_LEN": CONTEXT_LEN,
+        "EMBED_SIZE": EMBED_SIZE,
+        "NUM_LAYERS": NUM_LAYERS,
+        "NUM_HEADS": NUM_HEADS,
+        "HIDDEN_SIZE": HIDDEN_SIZE,
     }
 
 
@@ -138,6 +142,21 @@ def _model_quantization(model):
     return "none"
 
 
+def _architecture_lines(context_len, model=None):
+    lines = [
+        "Architecture:",
+        f"  context_len={context_len}",
+        f"  embed_size={EMBED_SIZE}",
+        f"  num_layers={NUM_LAYERS}",
+        f"  num_heads={NUM_HEADS}",
+        f"  hidden_size={HIDDEN_SIZE}",
+    ]
+    if model is not None:
+        lines.append(f"  param_count={_format_param_count(_model_param_count(model))}")
+        lines.append(f"  quantization={_model_quantization(model)}")
+    return lines
+
+
 def print_training_hyperparams(
     model=None,
     context_len=None,
@@ -154,13 +173,7 @@ def print_training_hyperparams(
     num_heads = NUM_HEADS if num_heads is None else num_heads
     hidden_size = HIDDEN_SIZE if hidden_size is None else hidden_size
     batch_size = BATCH_SIZE if batch_size is None else batch_size
-    lines = [
-        "Architecture:",
-        f"  context_len={context_len}",
-        f"  embed_size={embed_size}",
-        f"  num_layers={num_layers}",
-        f"  num_heads={num_heads}",
-        f"  hidden_size={hidden_size}",
+    lines = _architecture_lines(context_len, model=model) + [
         "Training:",
         f"  batch_size={batch_size}",
         f"  learning_rate={LEARNING_RATE}",
@@ -173,23 +186,15 @@ def print_training_hyperparams(
         f"  checkpoint_warmup_secs={CHECKPOINT_WARMUP_SECS}",
         f"  checkpoint_interval_secs={CHECKPOINT_INTERVAL_SECS}",
     ]
-    if model is not None:
-        lines.insert(6, f"  param_count={_format_param_count(_model_param_count(model))}")
-        lines.insert(7, f"  quantization={_model_quantization(model)}")
     print("\n".join(lines))
 
 
 def print_chat_hyperparams(context_len, max_new_tokens, temperature, top_k, model=None):
     """Print the inference-related hyperparameters."""
-    lines = [
-        "Architecture:",
-        f"  context_len={context_len}",
+    lines = _architecture_lines(context_len, model=model) + [
         "Inference:",
         f"  max_new_tokens={max_new_tokens}",
         f"  temperature={temperature}",
         f"  top_k={top_k}",
     ]
-    if model is not None:
-        lines.insert(2, f"  param_count={_format_param_count(_model_param_count(model))}")
-        lines.insert(3, f"  quantization={_model_quantization(model)}")
     print("\n".join(lines))

@@ -39,7 +39,7 @@ class ProgressLogger:
         self.total_tokens = start_total_tokens
         self.loss_history = deque()
 
-    def tick(self, loss_value, batch_size, token_count, epoch, step, shard_index, shard_count, shard_len):
+    def tick(self, loss_value, batch_size, token_count, lr, epoch, step, shard_index, shard_count, shard_len):
         # Record the latest loss and retain a rolling window for plotting.
         now = time.time()
         self.total_tokens += token_count
@@ -73,6 +73,7 @@ class ProgressLogger:
                 f"Global {self.global_step+1}, "
                 f"Shard {shard_index + 1}/{shard_count}, "
                 f"Loss {avg_loss:.4f}, "
+                f"LR {lr:.2e}, "
                 f"Samples/s {samples_per_sec:.1f}, "
                 f"Tokens/s {tokens_per_sec:.1f}"
             )

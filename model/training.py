@@ -253,6 +253,7 @@ try:
                 loss.item(),
                 input_ids.size(0),
                 token_count,
+                optimizer.param_groups[0]["lr"],
                 epoch,
                 step,
                 shard_index=shard_index,

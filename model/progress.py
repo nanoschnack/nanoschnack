@@ -37,9 +37,10 @@ class ProgressLogger:
         self.loss_steps = 0
         self.total_samples = start_total_samples
         self.total_tokens = start_total_tokens
+        self.samples_per_sec = 0.0
         self.loss_history = deque()
 
-    def tick(self, loss_value, batch_size, token_count, lr, epoch, step, shard_index, shard_count, shard_len):
+    def tick(self, loss_value, batch_size, token_count, lr, epoch, step, shard_index, shard_count, shard_len, remaining_samples):
         # Record the latest loss and retain a rolling window for plotting.
         now = time.time()
         self.total_tokens += token_count
@@ -58,6 +59,7 @@ class ProgressLogger:
             avg_loss = self.loss_since_log / self.loss_steps if self.loss_steps else loss_value
             samples_per_sec = self.samples_since_log / elapsed if elapsed > 0 else 0.0
             tokens_per_sec = self.tokens_since_log / elapsed if elapsed > 0 else 0.0
+            self.samples_per_sec = samples_per_sec
             estimated_total = shard_len * shard_count
             pct = min(100.0, (self.total_samples / estimated_total) * 100)
             shard_label = f"Shard {shard_index + 1}/{shard_count}"
@@ -75,7 +77,8 @@ class ProgressLogger:
                 f"Loss {avg_loss:.4f}, "
                 f"LR {lr:.2e}, "
                 f"Samples/s {samples_per_sec:.1f}, "
-                f"Tokens/s {tokens_per_sec:.1f}"
+                f"Tokens/s {tokens_per_sec:.1f}, "
+                f"ETA {self._format_eta(remaining_samples, samples_per_sec)}"
             )
             print(message, flush=True)
             self.last_log_time = now
@@ -97,6 +100,17 @@ class ProgressLogger:
 
         # Keep a global step counter for resuming logs across restarts.
         self.global_step += 1
+
+    def _format_eta(self, remaining_samples, samples_per_sec):
+        # Format an ETA string from remaining samples and throughput.
+        if samples_per_sec <= 0:
+            return "?"
+        remaining_secs = remaining_samples / samples_per_sec
+        hours = int(remaining_secs // 3600)
+        minutes = int((remaining_secs % 3600) // 60)
+        if hours > 0:
+            return f"{hours}h{minutes:02d}m"
+        return f"{minutes}m"
 
     def _format_count(self, value):
         # Format counts with compact suffixes for readability.

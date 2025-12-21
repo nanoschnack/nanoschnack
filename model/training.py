@@ -220,6 +220,7 @@ progress = ProgressLogger(
     warmup_window_secs=WARMUP_WINDOW_SECS,
 )
 
+
 last_epoch = resume_epoch
 last_step = resume_step
 current_position = resume_position
@@ -260,6 +261,7 @@ try:
 
             # Log progress and plot loss history
             token_count = attention_mask[:, 1:].sum().item()
+            remaining_samples = max(estimated_total_samples * epochs - total_samples, 0)
             progress.tick(
                 loss.item(),
                 input_ids.size(0),
@@ -270,6 +272,7 @@ try:
                 shard_index=shard_index,
                 shard_count=sharded_loader.num_shards,
                 shard_len=shard_len,
+                remaining_samples=remaining_samples,
             )
             total_samples += input_ids.size(0)
             now = time.time()
@@ -285,6 +288,7 @@ try:
                 )
                 last_ckpt_time = now
         current_position = (0, 0)
+
 except KeyboardInterrupt:
     # Save a checkpoint so training can resume from the last completed step.
     print("Interrupted: saving checkpoint...")

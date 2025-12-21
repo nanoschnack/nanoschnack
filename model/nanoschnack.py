@@ -151,21 +151,29 @@ loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
 # %%
 from plot import ascii_loss_plot
+from progress import ProgressLogger
+from checkpointer import Checkpointer
+import torch
 import time
-from collections import deque
 
+# Set up optimizer, learning-rate scheduler, and loss function
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10_000)
 lossFn = torch.nn.CrossEntropyLoss()
 
+# The checkpointer will save and load model/optimizer/scheduler states to/from disk.
+checkpointer = Checkpointer("checkpoints", model, optimizer, scheduler, device=device)
+resume_epoch, resume_step, global_step = checkpointer.load_latest()
+
+# Initialize the progress logger to display training progress and loss
+progress = ProgressLogger(ascii_loss_plot, start_global_step=global_step)
+last_ckpt_time = time.time()
+
 epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
-start_time = time.time()
-last_log_time = start_time
-last_plot_time = start_time
-samples_since_log = 0
-loss_history = deque()
-for epoch in range(epochs):
+for epoch in range(resume_epoch, epochs):
     for step, batch in enumerate(loader):
+        if epoch == resume_epoch and step < resume_step:
+            continue
         # Get the input IDs and attention mask, and move them to the GPU
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
@@ -189,24 +197,11 @@ for epoch in range(epochs):
         optimizer.step()
         scheduler.step()
 
-        # Record loss for logging and plotting
+        # Log progress and plot loss history
         now = time.time()
-        loss_history.append((now, loss.item()))
-        while loss_history and (now - loss_history[0][0]) > 3600:
-            loss_history.popleft()
-
-        # Every 10 seconds, log progress
-        samples_since_log += input_ids.size(0)
-        if now - last_log_time >= 10:
-            elapsed = now - last_log_time
-            samples_per_sec = samples_since_log / elapsed if elapsed > 0 else 0.0
-            print(f"Epoch {epoch+1}, Step {step+1}, Loss: {loss.item():.4f}, Samples/s: {samples_per_sec:.1f}")
-            last_log_time = now
-            samples_since_log = 0
-
-        # Every minute (or every 10 minutes after 10 minutes), plot loss history
-        plot_interval = 60 if (now - start_time) < 600 else 600
-        if now - last_plot_time >= plot_interval:
-            print(ascii_loss_plot(list(loss_history)))
-            last_plot_time = now
+        ckpt_interval = 60 if (now - last_ckpt_time) < 600 else 600
+        if now - last_ckpt_time >= ckpt_interval:
+            checkpointer.save_latest(epoch, step, progress.global_step)
+            last_ckpt_time = now
+        progress.tick(loss.item(), input_ids.size(0), epoch, step)
 

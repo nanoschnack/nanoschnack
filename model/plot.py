@@ -2,16 +2,26 @@ import asciichartpy
 import time
 
 def ascii_loss_plot(points, width=60, height=10):
+    """Render a compact ASCII loss chart for the most recent samples.
+
+    Compresses time into a fixed-width chart, with start/mid/end time labels.
+    Accepts a list of (timestamp, loss) points and returns a formatted string.
+    """
+    # Ensure we have enough data to produce a meaningful chart.
     if len(points) < 2:
         return "loss (last hour): not enough data"
     t0, t1 = points[0][0], points[-1][0]
     if t1 == t0:
         return "loss (last hour): not enough data"
+
+    # Bucket losses into a fixed-width series for plotting.
     bins = [[] for _ in range(width)]
     span = t1 - t0
     for t, loss in points:
         idx = int((t - t0) / span * (width - 1))
         bins[idx].append(loss)
+
+    # Fill gaps with the last known value to keep the chart continuous.
     series = []
     last = None
     for b in bins:
@@ -21,12 +31,16 @@ def ascii_loss_plot(points, width=60, height=10):
             series.append(val)
         else:
             series.append(last)
+
+    # Normalize the series bounds for the header and chart.
     vals = [v for v in series if v is not None]
     if not vals:
         return "loss (last hour): not enough data"
     vmin, vmax = min(vals), max(vals)
     if vmax == vmin:
         vmax = vmin + 1e-6
+
+    # Render the chart and align timestamps under the plot area.
     t_start = time.strftime("%H:%M:%S", time.localtime(t0))
     t_end = time.strftime("%H:%M:%S", time.localtime(t1))
     t_mid = time.strftime("%H:%M:%S", time.localtime((t0 + t1) / 2))

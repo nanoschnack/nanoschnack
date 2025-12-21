@@ -56,6 +56,12 @@ python model/training.py
 Training loads one shard at a time, shuffles within the shard, and writes checkpoints to `checkpoints/`.
 Resuming training uses the stored shard position from the latest checkpoint.
 
+To override batch size without editing code, set `NANOSCHNACK_BATCH_SIZE`:
+
+```sh
+NANOSCHNACK_BATCH_SIZE=16 python model/training.py
+```
+
 ## Inference (chat)
 
 Run the REPL chat interface:

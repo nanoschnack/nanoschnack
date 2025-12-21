@@ -7,7 +7,7 @@ class GPT(nn.Module):
         self.token_embedding = nn.Embedding(vocab_size, embed_size)
         self.position_embedding = nn.Embedding(context_len, embed_size)
         self.layers = nn.ModuleList([
-            # Tranformer from "Attention is all you need" paper.
+            # Transformer from "Attention is all you need" paper.
             # TODO(sttts): this is not what nanochat uses.
             nn.TransformerEncoderLayer(
                 d_model=embed_size,
@@ -30,7 +30,11 @@ class GPT(nn.Module):
             # True marks padded positions for TransformerEncoderLayer.
             src_key_padding_mask = attention_mask == 0
 
+        # Causal mask prevents attending to future tokens. This stops training
+        # from cheating by looking ahead.
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_length).to(x.device)
+
         for layer in self.layers:
-            x = layer(x, src_key_padding_mask=src_key_padding_mask)
+            x = layer(x, src_mask=causal_mask, src_key_padding_mask=src_key_padding_mask)
 
         return self.output(x)

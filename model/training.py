@@ -243,6 +243,9 @@ try:
             loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
             loss.backward()
 
+            # Clip gradients to stabilize training (especially for larger batches).
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
             # Update weights, then advance the learning-rate schedule.
             optimizer.step()
             scheduler.step()

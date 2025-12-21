@@ -65,9 +65,9 @@ class ProgressLogger:
             prefix = f"{shard_label}, {total_label}"
 
             message = (
-                f"Samples {self._format_count(self.total_samples)}, "
                 f"Tokens {self._format_count(self.total_tokens)}, "
                 f"Total {pct:.1f}%, "
+                f"Samples {self._format_count(self.total_samples)}, "
                 f"Epoch {epoch+1}, "
                 f"Step {step+1}, "
                 f"Global {self.global_step+1}, "

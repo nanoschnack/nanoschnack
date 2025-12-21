@@ -284,6 +284,7 @@ progress = ProgressLogger(
     start_total_samples=total_samples,
     start_total_tokens=resume_tokens,
     enabled=is_main,
+    plot_enabled=is_main and not is_distributed,
     log_interval=LOG_INTERVAL_SECS,
     warmup_plot_interval=PLOT_WARMUP_SECS,
     plot_interval=PLOT_INTERVAL_SECS,

@@ -108,14 +108,6 @@ model = GPT(
     hidden_size=hidden_size,
     context_len=context_len,
 ).to(device).train()
-print_training_hyperparams(
-    model,
-    context_len=context_len,
-    embed_size=embed_size,
-    num_layers=num_layers,
-    num_heads=num_heads,
-    hidden_size=hidden_size,
-)
 
 
 
@@ -200,6 +192,15 @@ else:
     )
     batch_size = tuned_batch_size or BATCH_SIZE
     print(f"Tuned batch_size={batch_size}")
+print_training_hyperparams(
+    model,
+    context_len=context_len,
+    embed_size=embed_size,
+    num_layers=num_layers,
+    num_heads=num_heads,
+    hidden_size=hidden_size,
+    batch_size=batch_size,
+)
 sharded_loader = ShardedBatchLoader(
     repo_id="arnomatic/german-wikipedia-clean-no-lists",
     data_dir=data_dir,

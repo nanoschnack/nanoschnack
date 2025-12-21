@@ -110,6 +110,7 @@ def print_training_hyperparams(
     num_layers=None,
     num_heads=None,
     hidden_size=None,
+    batch_size=None,
 ):
     """Print the training-related hyperparameters."""
     context_len = CONTEXT_LEN if context_len is None else context_len
@@ -117,6 +118,7 @@ def print_training_hyperparams(
     num_layers = NUM_LAYERS if num_layers is None else num_layers
     num_heads = NUM_HEADS if num_heads is None else num_heads
     hidden_size = HIDDEN_SIZE if hidden_size is None else hidden_size
+    batch_size = BATCH_SIZE if batch_size is None else batch_size
     lines = [
         "Architecture:",
         f"  context_len={context_len}",
@@ -125,7 +127,7 @@ def print_training_hyperparams(
         f"  num_heads={num_heads}",
         f"  hidden_size={hidden_size}",
         "Training:",
-        f"  batch_size={BATCH_SIZE}",
+        f"  batch_size={batch_size}",
         f"  learning_rate={LEARNING_RATE}",
         f"  warmup_pct={WARMUP_PCT}",
         "Scheduling:",

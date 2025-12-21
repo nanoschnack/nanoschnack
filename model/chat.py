@@ -146,9 +146,6 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
             print(f"Debug tokens {'enabled' if show_tokens else 'disabled'}.")
             continue
 
-        if user_text and user_text[-1].isalpha():
-            user_text = f"{user_text} "
-
         if use_chat_template:
             prompt = f"User: {user_text}\nAssistant:"
         else:

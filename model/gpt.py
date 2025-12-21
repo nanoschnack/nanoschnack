@@ -32,7 +32,10 @@ class GPT(nn.Module):
 
         # Causal mask prevents attending to future tokens. This stops training
         # from cheating by looking ahead.
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_length).to(x.device)
+        causal_mask = torch.triu(
+            torch.ones(seq_length, seq_length, device=x.device, dtype=torch.bool),
+            diagonal=1,
+        )
 
         for layer in self.layers:
             x = layer(x, src_mask=causal_mask, src_key_padding_mask=src_key_padding_mask)

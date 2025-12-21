@@ -26,7 +26,7 @@ def find_max_batch_size(
 
     Uses exponential growth to find an upper bound, then binary search.
     Returns a safe batch size reduced by the provided safety factor.
-    Designed for CUDA/MPS; returns None if the start size fails.
+    Designed for CUDA; returns None if the start size fails.
     """
     if device.type != "cuda":
         return None

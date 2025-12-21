@@ -51,8 +51,15 @@ class Checkpointer:
         global_step = ckpt.get("global_step", resume_step)
 
         if "load_position" in ckpt:
-            load_position = tuple(ckpt.get("load_position", (0, 0)))
-            total_samples = ckpt.get("total_samples", load_position[1])
+            load_position = ckpt.get("load_position", (0, 0))
+            if isinstance(load_position, list):
+                if len(load_position) == 2 and all(isinstance(x, int) for x in load_position):
+                    load_position = tuple(load_position)
+                elif load_position and all(
+                    isinstance(item, list) and len(item) == 2 for item in load_position
+                ):
+                    load_position = [tuple(item) for item in load_position]
+            total_samples = ckpt.get("total_samples", 0)
             total_tokens = ckpt.get("total_tokens", 0)
         else:
             shard_index = ckpt.get("shard_index", 0)

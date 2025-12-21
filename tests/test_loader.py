@@ -71,6 +71,7 @@ class FakeDataset:
 
 class FakeShardedDataset:
     def __init__(self, repo_id, data_dir, shard_limit=None):
+        self.repo_id = repo_id
         shard_files = ["shard0.parquet", "shard1.parquet"]
         if shard_limit is not None:
             shard_files = shard_files[:shard_limit]
@@ -84,10 +85,21 @@ class FakeShardedDataset:
         return self.shard_files[shard_index]
 
     def load_shard(self, shard_index):
-        if shard_index == 0:
-            items = [{"text": "a"}, {"text": "b"}, {"text": "c"}]
+        if self.repo_id == "repo":
+            if shard_index == 0:
+                items = [{"text": "a"}, {"text": "b"}, {"text": "c"}]
+            else:
+                items = [{"text": "d"}, {"text": "e"}]
+        elif self.repo_id == "repo-a":
+            if shard_index == 0:
+                items = [{"text": "a1"}]
+            else:
+                items = [{"text": "a2"}]
         else:
-            items = [{"text": "d"}, {"text": "e"}]
+            if shard_index == 0:
+                items = [{"text": "b1"}, {"text": "b2"}]
+            else:
+                items = [{"text": "b3"}, {"text": "b4"}]
         return FakeDataset(items)
 
     def prefetch_shard(self, shard_index):
@@ -191,6 +203,36 @@ class ChunkingTests(unittest.TestCase):
         output = tokenizer_batch(batch)
         self.assertEqual(output["input_ids"], [[0, 1], [0, 1, 2]])
         self.assertEqual(output["attention_mask"], [[1, 1], [1, 1, 1]])
+
+
+class MultiLoaderTests(unittest.TestCase):
+    def test_round_robin_batches(self):
+        with mock.patch.object(loader_module, "ShardedDataset", FakeShardedDataset):
+            loader_a = loader_module.ShardedBatchLoader(
+                repo_id="repo-a",
+                data_dir="data",
+                tokenizer_batch=tokenizer_batch,
+                batch_size=1,
+                seed=1,
+                num_proc=1,
+                prefetch=False,
+            )
+            loader_b = loader_module.ShardedBatchLoader(
+                repo_id="repo-b",
+                data_dir="data",
+                tokenizer_batch=tokenizer_batch,
+                batch_size=1,
+                seed=1,
+                num_proc=1,
+                prefetch=False,
+            )
+            multi_loader = loader_module.MultiShardedBatchLoader([loader_a, loader_b])
+
+            dataset_indices = []
+            for _batch, _positions, dataset_index, _shard_index, _shard_len in multi_loader.iter_batches():
+                dataset_indices.append(dataset_index)
+
+        self.assertEqual(dataset_indices, [0, 1, 0, 1, 1, 1])
 
 
 if __name__ == "__main__":

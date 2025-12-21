@@ -88,7 +88,13 @@ model = GPT(
 
 # %%
 from datasets.utils.logging import enable_progress_bar, set_verbosity_warning
-from loader import ChunkEstimator, ShardedBatchLoader, build_chunking_tokenizer, build_tokenizer
+from loader import (
+    ChunkEstimator,
+    MultiShardedBatchLoader,
+    ShardedBatchLoader,
+    build_chunking_tokenizer,
+    build_tokenizer,
+)
 
 # Download shards on demand and shuffle within each shard.
 set_verbosity_warning()
@@ -144,13 +150,28 @@ config.print_training_hyperparams(
     hidden_size=hidden_size,
     batch_size=batch_size,
 )
-sharded_loader = ShardedBatchLoader(
-    repo_id="arnomatic/german-wikipedia-clean-no-lists",
-    data_dir=data_dir,
-    tokenizer_batch=tokenizer_batch,
-    batch_size=batch_size,
-    seed=42,
-)
+repo_ids = ["arnomatic/german-wikipedia-clean-no-lists"]
+
+# Build one sharded loader per dataset.
+loaders = []
+for repo_id in repo_ids:
+    loaders.append(
+        ShardedBatchLoader(
+            repo_id=repo_id,
+            data_dir=data_dir,
+            tokenizer_batch=tokenizer_batch,
+            batch_size=batch_size,
+            seed=42,
+        )
+    )
+
+# Interleave datasets when more than one is provided.
+if len(loaders) == 1:
+    sharded_loader = loaders[0]
+    use_multi_loader = False
+else:
+    sharded_loader = MultiShardedBatchLoader(loaders)
+    use_multi_loader = True
 print(f"Sharded loader ready ({sharded_loader.num_shards} shards).", flush=True)
 
 # %% [markdown]
@@ -167,13 +188,9 @@ import time
 
 # Set up optimizer, learning-rate scheduler, and loss function
 epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
-estimated_total_samples = sharded_loader.estimate_total_samples()
+estimated_total_samples = sharded_loader.estimate_total_samples(estimator=estimator)
 
-# Replace the estimate with chunk-aware counts when enabled.
-if estimator is not None:
-    raw_shard = sharded_loader.shards.load_shard(0)
-    _avg_chunks, est_total = estimator.estimate_dataset(raw_shard)
-    estimated_total_samples = est_total * sharded_loader.num_shards
+# Chunk-aware estimates are already applied when the estimator is set.
 steps_per_epoch = math.ceil(estimated_total_samples / batch_size)
 total_steps = steps_per_epoch * epochs
 print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)
@@ -202,6 +219,8 @@ progress = ProgressLogger(
 
 last_epoch = resume_epoch
 last_step = resume_step
+if use_multi_loader and not isinstance(resume_position, list):
+    resume_position = [(0, 0) for _ in range(sharded_loader.num_datasets)]
 current_position = resume_position
 total_samples = total_samples
 
@@ -212,9 +231,17 @@ try:
     print("Starting training loop...", flush=True)
     for epoch in range(resume_epoch, epochs):
         last_epoch = epoch
-        loader = sharded_loader.iter_batches(start_position=current_position)
-        for step, (batch, current_position, shard_index, shard_len) in enumerate(loader):
+        loader = sharded_loader.iter_batches(start_positions=current_position) if use_multi_loader else sharded_loader.iter_batches(start_position=current_position)
+        for step, batch_info in enumerate(loader):
             last_step = step
+
+            # Unpack per-dataset or single-dataset batches.
+            if use_multi_loader:
+                batch, current_position, dataset_index, shard_index, shard_len = batch_info
+                shard_count = sharded_loader.loaders[dataset_index].num_shards
+            else:
+                batch, current_position, shard_index, shard_len = batch_info
+                shard_count = sharded_loader.num_shards
 
             # Get the input IDs and attention mask, and move them to the GPU
             input_ids = batch["input_ids"].to(device)
@@ -269,7 +296,7 @@ try:
                 epoch,
                 step,
                 shard_index=shard_index,
-                shard_count=sharded_loader.num_shards,
+                shard_count=shard_count,
                 shard_len=shard_len,
                 remaining_samples=remaining_samples,
             )

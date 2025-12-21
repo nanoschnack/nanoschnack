@@ -76,7 +76,12 @@ class ShardedDataset:
 
 
 class ChunkEstimator:
-    """Estimate chunk counts per document without materializing chunked datasets."""
+    """Estimate chunk counts per document without materializing chunked datasets.
+
+    Uses a deterministic sample of each shard to approximate the average
+    number of chunks per document. The estimator scales the sample average
+    to the full dataset size to approximate total chunks.
+    """
 
     def __init__(self, tokenizer, max_len, stride, sample_size=1000, seed=42, text_key="text"):
         if stride >= max_len:
@@ -256,10 +261,16 @@ class ShardedBatchLoader:
                 self._prefetch_future = None
                 self._prefetch_index = None
 
-    def estimate_total_samples(self):
+    def estimate_total_samples(self, estimator=None):
         # Estimate total sample count assuming uniform shard sizes.
-        first_len = self._get_shard_length(0)
-        return first_len * self.num_shards
+        if estimator is None:
+            first_len = self._get_shard_length(0)
+            return first_len * self.num_shards
+
+        # Estimate chunk counts from a sample of the first shard.
+        raw_shard = self.shards.load_shard(0)
+        _avg_chunks, est_total = estimator.estimate_dataset(raw_shard)
+        return est_total * self.num_shards
 
     def _get_shard_length(self, shard_index):
         # Cache the tokenized shard length for progress and scheduling.
@@ -291,3 +302,56 @@ class ShardedBatchLoader:
             self.shards.prefetch_shard,
             shard_index,
         )
+
+
+class MultiShardedBatchLoader:
+    """Interleave batches from multiple sharded loaders.
+
+    Each dataset is iterated independently and batches are yielded in a
+    round-robin order. The iterator stops when all datasets are exhausted.
+    """
+
+    def __init__(self, loaders):
+        if not loaders:
+            raise ValueError("loaders must be non-empty")
+        self.loaders = loaders
+        self.position = [(0, 0) for _ in loaders]
+
+    @property
+    def num_shards(self):
+        # Report the sum of shards across all datasets.
+        return sum(loader.num_shards for loader in self.loaders)
+
+    @property
+    def num_datasets(self):
+        # Report the number of datasets managed by the loader.
+        return len(self.loaders)
+
+    def iter_batches(self, start_positions=None):
+        # Yield batches round-robin across datasets.
+        if start_positions is None:
+            start_positions = [(0, 0) for _ in self.loaders]
+        self.position = list(start_positions)
+
+        # Initialize iterators for each loader.
+        iterators = []
+        for idx, loader in enumerate(self.loaders):
+            iterators.append(loader.iter_batches(start_position=self.position[idx]))
+
+        active = list(range(len(iterators)))
+        while active:
+            for idx in list(active):
+                try:
+                    batch, position, shard_index, shard_len = next(iterators[idx])
+                except StopIteration:
+                    active.remove(idx)
+                    continue
+                self.position[idx] = position
+                yield batch, list(self.position), idx, shard_index, shard_len
+
+    def estimate_total_samples(self, estimator=None):
+        # Sum estimated sample counts across all datasets.
+        total = 0
+        for loader in self.loaders:
+            total += loader.estimate_total_samples(estimator=estimator)
+        return total

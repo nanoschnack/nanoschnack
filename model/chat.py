@@ -7,6 +7,7 @@ try:
 except ModuleNotFoundError:
     from __init__ import setup_paths
 
+from config import CONTEXT_LEN, MAX_NEW_TOKENS, TEMPERATURE, TOP_K
 from device import pick_device
 from gpt import GPT
 from tokenizer import load_tokenizer
@@ -100,10 +101,10 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
 def main():
     parser = argparse.ArgumentParser(description="Chat with the NanoSchnack model.")
     parser.add_argument("--checkpoint", default=None, help="Path to a checkpoint (.pt).")
-    parser.add_argument("--context-len", type=int, default=256)
-    parser.add_argument("--max-new-tokens", type=int, default=128)
-    parser.add_argument("--temperature", type=float, default=0.8)
-    parser.add_argument("--top-k", type=int, default=50)
+    parser.add_argument("--context-len", type=int, default=CONTEXT_LEN)
+    parser.add_argument("--max-new-tokens", type=int, default=MAX_NEW_TOKENS)
+    parser.add_argument("--temperature", type=float, default=TEMPERATURE)
+    parser.add_argument("--top-k", type=int, default=TOP_K)
     args = parser.parse_args()
 
     # Resolve default checkpoint location and load components.
@@ -114,9 +115,15 @@ def main():
         if not checkpoint_path.exists():
             checkpoint_path = None
 
+    # Validate that the requested context length fits the trained model.
+    if args.context_len > CONTEXT_LEN:
+        raise ValueError(
+            f"--context-len ({args.context_len}) exceeds trained context length ({CONTEXT_LEN})."
+        )
+
     device = pick_device()
     tokenizer = load_tokenizer()
-    model = load_model(checkpoint_path, tokenizer.get_vocab_size(), args.context_len, device)
+    model = load_model(checkpoint_path, tokenizer.get_vocab_size(), CONTEXT_LEN, device)
 
     run_repl(
         model,

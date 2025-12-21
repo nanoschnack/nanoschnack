@@ -58,13 +58,36 @@ print(tokenizer.encode("Hello, World!").ids)
 
 # %%
 from gpt import GPT
+from config import (
+    BATCH_SIZE,
+    CHECKPOINT_INTERVAL_SECS,
+    CHECKPOINT_WARMUP_SECS,
+    CONTEXT_LEN,
+    EMBED_SIZE,
+    HIDDEN_SIZE,
+    LEARNING_RATE,
+    LOG_INTERVAL_SECS,
+    NUM_HEADS,
+    NUM_LAYERS,
+    PLOT_INTERVAL_SECS,
+    PLOT_WARMUP_SECS,
+    WARMUP_WINDOW_SECS,
+)
 
 # add special tokens
 tokenizer.add_special_tokens(["[PAD]"])
 pad_id = tokenizer.token_to_id("[PAD]")
 
-context_len = 256
-model = GPT(vocab_size=tokenizer.get_vocab_size()).to(device).train()
+context_len = CONTEXT_LEN
+model = GPT(
+    vocab_size=tokenizer.get_vocab_size(),
+    embed_size=EMBED_SIZE,
+    num_layers=NUM_LAYERS,
+    num_heads=NUM_HEADS,
+    hidden_size=HIDDEN_SIZE,
+    context_len=CONTEXT_LEN,
+).to(device).train()
+
 
 # %% [markdown]
 # ## Load the Training Data
@@ -150,7 +173,7 @@ dataset = shuffled.map(tokenizer_batch, batched=True)
 dataset = dataset.with_format(type="torch")
 
 # Tokenize the dataset
-batch_size = 32
+batch_size = BATCH_SIZE
 loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
 # %% [markdown]
@@ -164,7 +187,7 @@ import torch
 import time
 
 # Set up optimizer, learning-rate scheduler, and loss function
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10_000)
 lossFn = torch.nn.CrossEntropyLoss()
 
@@ -173,7 +196,14 @@ checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=
 resume_epoch, resume_step, global_step = checkpointer.load_latest()
 
 # Initialize the progress logger to display training progress and loss
-progress = ProgressLogger(ascii_loss_plot, start_global_step=global_step)
+progress = ProgressLogger(
+    ascii_loss_plot,
+    start_global_step=global_step,
+    log_interval=LOG_INTERVAL_SECS,
+    warmup_plot_interval=PLOT_WARMUP_SECS,
+    plot_interval=PLOT_INTERVAL_SECS,
+    warmup_window_secs=WARMUP_WINDOW_SECS,
+)
 last_ckpt_time = time.time()
 
 epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
@@ -206,7 +236,7 @@ for epoch in range(resume_epoch, epochs):
 
         # Log progress and plot loss history
         now = time.time()
-        ckpt_interval = 60 if (now - last_ckpt_time) < 600 else 600
+        ckpt_interval = CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < WARMUP_WINDOW_SECS else CHECKPOINT_INTERVAL_SECS
         if now - last_ckpt_time >= ckpt_interval:
             checkpointer.save_latest(epoch, step, progress.global_step)
             last_ckpt_time = now

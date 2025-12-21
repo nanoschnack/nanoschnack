@@ -9,13 +9,22 @@ class ProgressLogger:
     Uses time-based intervals to control logging and plotting cadence.
     Stores up to one hour of losses for the ASCII chart.
     """
-    def __init__(self, plot_fn, start_global_step=0, log_interval=10, warmup_plot_interval=60, plot_interval=600):
+    def __init__(
+        self,
+        plot_fn,
+        start_global_step=0,
+        log_interval=10,
+        warmup_plot_interval=60,
+        plot_interval=600,
+        warmup_window_secs=600,
+    ):
         # Keep configuration and bookkeeping for periodic logging.
         self.plot_fn = plot_fn
         self.global_step = start_global_step
         self.log_interval = log_interval
         self.warmup_plot_interval = warmup_plot_interval
         self.plot_interval = plot_interval
+        self.warmup_window_secs = warmup_window_secs
         self.start_time = time.time()
         self.last_log_time = self.start_time
         self.last_plot_time = self.start_time
@@ -42,7 +51,11 @@ class ProgressLogger:
             self.samples_since_log = 0
 
         # Plot loss every minute for the first 10 minutes, then every 10 minutes.
-        interval = self.warmup_plot_interval if (now - self.start_time) < 600 else self.plot_interval
+        interval = (
+            self.warmup_plot_interval
+            if (now - self.start_time) < self.warmup_window_secs
+            else self.plot_interval
+        )
         if now - self.last_plot_time >= interval:
             print(self.plot_fn(list(self.loss_history)))
             self.last_plot_time = now

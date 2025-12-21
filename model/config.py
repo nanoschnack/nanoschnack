@@ -8,15 +8,15 @@ import torch
 
 # Maximum sequence length used to size positional embeddings.
 # Keep this aligned between training and inference.
-CONTEXT_LEN = 256
+CONTEXT_LEN = 1024
 
 # Embedding dimensionality for token and position representations.
 # Larger values increase model capacity and compute cost.
-EMBED_SIZE = 512
+EMBED_SIZE = 768
 
 # Number of Transformer encoder layers in the model.
 # Higher values deepen the network and increase training time.
-NUM_LAYERS = 3
+NUM_LAYERS = 12
 
 # Number of attention heads per Transformer layer.
 # Must divide EMBED_SIZE evenly.
@@ -24,7 +24,7 @@ NUM_HEADS = 8
 
 # Feed-forward hidden size inside each Transformer layer.
 # Often 4x EMBED_SIZE for Transformer blocks.
-HIDDEN_SIZE = 2048
+HIDDEN_SIZE = 3072
 
 ###
 ### Training defaults
@@ -37,6 +37,10 @@ BATCH_SIZE = 32
 # Default learning rate for the optimizer.
 # Tune alongside batch size and scheduler.
 LEARNING_RATE = 1e-4
+
+# Warmup fraction of total training steps for LR ramp-up.
+# Use values between 0.01 and 0.05 for small warmups.
+WARMUP_PCT = 0.03
 
 ###
 ### Inference defaults
@@ -99,18 +103,33 @@ def _model_quantization(model):
     return "none"
 
 
-def print_training_hyperparams(model=None):
+def print_training_hyperparams(
+    model=None,
+    context_len=None,
+    embed_size=None,
+    num_layers=None,
+    num_heads=None,
+    hidden_size=None,
+    batch_size=None,
+):
     """Print the training-related hyperparameters."""
+    context_len = CONTEXT_LEN if context_len is None else context_len
+    embed_size = EMBED_SIZE if embed_size is None else embed_size
+    num_layers = NUM_LAYERS if num_layers is None else num_layers
+    num_heads = NUM_HEADS if num_heads is None else num_heads
+    hidden_size = HIDDEN_SIZE if hidden_size is None else hidden_size
+    batch_size = BATCH_SIZE if batch_size is None else batch_size
     lines = [
         "Architecture:",
-        f"  context_len={CONTEXT_LEN}",
-        f"  embed_size={EMBED_SIZE}",
-        f"  num_layers={NUM_LAYERS}",
-        f"  num_heads={NUM_HEADS}",
-        f"  hidden_size={HIDDEN_SIZE}",
+        f"  context_len={context_len}",
+        f"  embed_size={embed_size}",
+        f"  num_layers={num_layers}",
+        f"  num_heads={num_heads}",
+        f"  hidden_size={hidden_size}",
         "Training:",
-        f"  batch_size={BATCH_SIZE}",
+        f"  batch_size={batch_size}",
         f"  learning_rate={LEARNING_RATE}",
+        f"  warmup_pct={WARMUP_PCT}",
         "Scheduling:",
         f"  log_interval_secs={LOG_INTERVAL_SECS}",
         f"  warmup_window_secs={WARMUP_WINDOW_SECS}",

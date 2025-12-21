@@ -34,8 +34,8 @@ pre-commit install
 
 ## Data download
 
-The training data is sourced from the `pdelobelle/fineweb-german-edu-mt` dataset:
-https://huggingface.co/datasets/pdelobelle/fineweb-german-edu-mt
+The training data is sourced from the `arnomatic/german-wikipedia-clean-no-lists` dataset:
+https://huggingface.co/datasets/arnomatic/german-wikipedia-clean-no-lists
 
 Training downloads parquet shards on demand into `data/` and caches them locally.
 
@@ -55,6 +55,12 @@ python model/training.py
 
 Training loads one shard at a time, shuffles within the shard, and writes checkpoints to `checkpoints/`.
 Resuming training uses the stored shard position from the latest checkpoint.
+
+To override batch size without editing code, set `NANOSCHNACK_BATCH_SIZE`:
+
+```sh
+NANOSCHNACK_BATCH_SIZE=16 python model/training.py
+```
 
 ## Inference (chat)
 

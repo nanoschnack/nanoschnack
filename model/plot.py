@@ -1,18 +1,17 @@
 import asciichartpy
-import time
 
 def ascii_loss_plot(points, width=60, height=10):
     """Render a compact ASCII loss chart for the most recent samples.
 
-    Compresses time into a fixed-width chart, with start/mid/end time labels.
-    Accepts a list of (timestamp, loss) points and returns a formatted string.
+    Compresses tokens into a fixed-width chart, with start/mid/end labels.
+    Accepts a list of (token_count, loss) points and returns a formatted string.
     """
     # Ensure we have enough data to produce a meaningful chart.
     if len(points) < 2:
-        return "loss (last hour): not enough data"
+        return "loss (tokens): not enough data"
     t0, t1 = points[0][0], points[-1][0]
     if t1 == t0:
-        return "loss (last hour): not enough data"
+        return "loss (tokens): not enough data"
 
     # Bucket losses into a fixed-width series for plotting.
     bins = [[] for _ in range(width)]
@@ -35,16 +34,23 @@ def ascii_loss_plot(points, width=60, height=10):
     # Normalize the series bounds for the header and chart.
     vals = [v for v in series if v is not None]
     if not vals:
-        return "loss (last hour): not enough data"
+        return "loss (tokens): not enough data"
     vmin, vmax = min(vals), max(vals)
     if vmax == vmin:
         vmax = vmin + 1e-6
 
-    # Render the chart and align timestamps under the plot area.
-    t_start = time.strftime("%H:%M:%S", time.localtime(t0))
-    t_end = time.strftime("%H:%M:%S", time.localtime(t1))
-    t_mid = time.strftime("%H:%M:%S", time.localtime((t0 + t1) / 2))
-    header = f"loss (last hour, min {vmin:.4f} max {vmax:.4f})"
+    # Render the chart and align token counts under the plot area.
+    def format_tokens(value):
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.1f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}k"
+        return str(int(value))
+
+    t_start = format_tokens(t0)
+    t_end = format_tokens(t1)
+    t_mid = format_tokens((t0 + t1) / 2)
+    header = f"loss (tokens, min {vmin:.4f} max {vmax:.4f})"
     series = [vmin if v is None else v for v in series]
     chart = asciichartpy.plot(series, {"height": height})
     chart_lines = chart.splitlines()

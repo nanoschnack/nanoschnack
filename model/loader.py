@@ -1,6 +1,8 @@
 """Helpers for loading datasets in shard-sized chunks."""
 
 from pathlib import Path
+import os
+from concurrent.futures import ThreadPoolExecutor
 
 from datasets import load_dataset
 from huggingface_hub import hf_hub_download, list_repo_files
@@ -60,6 +62,16 @@ class ShardedDataset:
         # Report the upstream shard filename for logging.
         return self.shard_files[shard_index]
 
+    def prefetch_shard(self, shard_index):
+        # Download a shard into the local cache for faster subsequent loads.
+        filename = self.shard_files[shard_index]
+        return hf_hub_download(
+            repo_id=self.repo_id,
+            repo_type="dataset",
+            filename=filename,
+            local_dir=str(self.data_dir),
+        )
+
 
 class ShardedBatchLoader:
     """Iterate over shard-sized datasets with deterministic shuffle and resume.
@@ -76,15 +88,23 @@ class ShardedBatchLoader:
         batch_size,
         seed=42,
         shard_limit=None,
+        num_proc=None,
+        prefetch=True,
     ):
         # Keep configuration for loading shards and building batches.
         self.shards = ShardedDataset(repo_id, data_dir, shard_limit=shard_limit)
         self.tokenizer_batch = tokenizer_batch
         self.batch_size = batch_size
         self.seed = seed
+        self.num_proc = num_proc or max(1, (os.cpu_count() or 1) - 1)
+        self.prefetch = prefetch
 
         # Track the last consumed position (shard index, sample offset).
         self.position = (0, 0)
+        self._shard_lengths = {}
+        self._prefetch_executor = None
+        self._prefetch_future = None
+        self._prefetch_index = None
 
     @property
     def num_shards(self):
@@ -93,6 +113,9 @@ class ShardedBatchLoader:
 
     def iter_batches(self, start_position=None):
         # Iterate over shards and yield batches with the next resume position.
+        if self.prefetch and self._prefetch_executor is None:
+            self._prefetch_executor = ThreadPoolExecutor(max_workers=1)
+
         if start_position is None:
             start_shard, start_offset = 0, 0
         else:
@@ -100,31 +123,75 @@ class ShardedBatchLoader:
 
         self.position = (start_shard, start_offset)
 
-        for shard_index in range(start_shard, self.num_shards):
-            # Announce the upstream shard filename before loading.
-            print(
-                f"Loading shard {shard_index + 1}/{self.num_shards}: "
-                f"{self.shards.shard_name(shard_index)}",
-                flush=True,
-            )
-            raw_ds = self.shards.load_shard(shard_index)
-            shuffled = raw_ds.shuffle(seed=self.seed + shard_index)
-            dataset = shuffled.map(self.tokenizer_batch, batched=True)
-            dataset = dataset.with_format(type="torch")
-            shard_len = len(dataset)
+        try:
+            for shard_index in range(start_shard, self.num_shards):
+                if self.prefetch:
+                    self._prefetch_next(shard_index + 1)
 
-            if shard_index == start_shard and start_offset > 0:
-                dataset_len = len(dataset)
-                if start_offset >= dataset_len:
-                    start_offset = 0
-                else:
-                    dataset = dataset.select(range(start_offset, dataset_len))
+                # Announce the upstream shard filename before loading.
+                print(
+                    f"Loading shard {shard_index + 1}/{self.num_shards}: "
+                    f"{self.shards.shard_name(shard_index)}",
+                    flush=True,
+                )
+                dataset = self._load_tokenized_shard(shard_index)
+                shard_len = len(dataset)
+                self._shard_lengths[shard_index] = shard_len
 
-            shard_offset = start_offset if shard_index == start_shard else 0
-            loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
-            for batch in loader:
-                shard_offset += batch["input_ids"].size(0)
-                self.position = (shard_index, shard_offset)
-                yield batch, self.position, shard_index, shard_len
+                if shard_index == start_shard and start_offset > 0:
+                    dataset_len = len(dataset)
+                    if start_offset >= dataset_len:
+                        start_offset = 0
+                    else:
+                        dataset = dataset.select(range(start_offset, dataset_len))
 
-            start_offset = 0
+                shard_offset = start_offset if shard_index == start_shard else 0
+                loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
+                for batch in loader:
+                    shard_offset += batch["input_ids"].size(0)
+                    self.position = (shard_index, shard_offset)
+                    yield batch, self.position, shard_index, shard_len
+
+                start_offset = 0
+        finally:
+            if self._prefetch_executor is not None:
+                self._prefetch_executor.shutdown(wait=False)
+                self._prefetch_executor = None
+                self._prefetch_future = None
+                self._prefetch_index = None
+
+    def estimate_total_samples(self):
+        # Estimate total sample count assuming uniform shard sizes.
+        first_len = self._get_shard_length(0)
+        return first_len * self.num_shards
+
+    def _get_shard_length(self, shard_index):
+        # Cache the tokenized shard length for progress and scheduling.
+        if shard_index in self._shard_lengths:
+            return self._shard_lengths[shard_index]
+
+        dataset = self._load_tokenized_shard(shard_index)
+        shard_len = len(dataset)
+        self._shard_lengths[shard_index] = shard_len
+        return shard_len
+
+    def _load_tokenized_shard(self, shard_index):
+        # Load, shuffle, and tokenize a shard consistently.
+        raw_ds = self.shards.load_shard(shard_index)
+        shuffled = raw_ds.shuffle(seed=self.seed + shard_index)
+        dataset = shuffled.map(self.tokenizer_batch, batched=True, num_proc=self.num_proc)
+        return dataset.with_format(type="torch")
+
+    def _prefetch_next(self, shard_index):
+        # Prefetch the next shard into the local cache in the background.
+        if shard_index >= self.num_shards:
+            return
+
+        if self._prefetch_index == shard_index and self._prefetch_future is not None:
+            return
+
+        self._prefetch_index = shard_index
+        self._prefetch_future = self._prefetch_executor.submit(
+            self.shards.prefetch_shard,
+            shard_index,
+        )

@@ -1,4 +1,5 @@
 import torch
+import gc
 
 
 def _try_batch(model, vocab_size, seq_len, batch_size, device):
@@ -20,7 +21,7 @@ def find_max_batch_size(
     device,
     start=4,
     max_batch=512,
-    safety_factor=0.9,
+    safety_factor=0.8,
 ):
     """Estimate the maximum batch size that fits in memory.
 
@@ -62,4 +63,8 @@ def find_max_batch_size(
                 raise
             hi = mid
 
-    return max(1, int(lo * safety_factor))
+    tuned = max(1, int(lo * safety_factor))
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    gc.collect()
+    return tuned

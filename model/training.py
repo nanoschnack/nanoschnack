@@ -218,6 +218,7 @@ from progress import ProgressLogger
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine
 import math
+import os
 import torch
 import time
 
@@ -254,6 +255,10 @@ last_epoch = resume_epoch
 last_step = resume_step
 current_position = resume_position
 total_samples = total_samples
+
+# Enable preview output when NANOSCHNACK_DEBUG_SAMPLE is set.
+debug_sample = os.getenv("NANOSCHNACK_DEBUG_SAMPLE")
+printed_debug_sample = False
 try:
     print("Starting training loop...", flush=True)
     for epoch in range(resume_epoch, epochs):
@@ -269,6 +274,16 @@ try:
             # Next-token prediction
             inputs = input_ids[:, :-1] # everything from the first token except the last
             targets = input_ids[:, 1:] # everything from the second token onward
+
+            # Preview the first sample to confirm tokenization/targets.
+            if debug_sample and not printed_debug_sample:
+                input_preview = inputs[0].tolist()
+                target_preview = targets[0].tolist()
+                print(f"Input tokens: {input_preview}")
+                print(f"Target tokens: {target_preview}")
+                print(f"Input text: {tokenizer.decode(input_preview)}")
+                print(f"Target text: {tokenizer.decode(target_preview)}")
+                printed_debug_sample = True
 
             # Clear accumulated gradients from the previous step (which torch does automatically otherwise)
             optimizer.zero_grad()

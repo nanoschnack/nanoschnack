@@ -19,6 +19,7 @@ def device_info(device):
         props = torch.cuda.get_device_properties(idx)
         info.update(
             {
+                "cuda_device_count": torch.cuda.device_count(),
                 "cuda_device": torch.cuda.get_device_name(idx),
                 "cuda_capability": f"{props.major}.{props.minor}",
                 "cuda_total_memory_bytes": props.total_memory,
@@ -42,6 +43,7 @@ def print_device_info(info):
     # Print the device information in a shared format.
     lines = ["Device:", f"  device={info['device']}"]
     if info["device_type"] == "cuda":
+        lines.append(f"  cuda_device_count={info['cuda_device_count']}")
         lines.append(f"  cuda_device={info['cuda_device']}")
         lines.append(f"  cuda_capability={info['cuda_capability']}")
         lines.append(f"  cuda_total_memory_bytes={info['cuda_total_memory_bytes']}")

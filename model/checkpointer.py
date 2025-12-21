@@ -26,7 +26,7 @@ class Checkpointer:
     def load_latest(self):
         # Load state from disk if present, otherwise start fresh.
         if not self.path.exists():
-            return 0, 0, 0
+            return 0, 0, 0, (0, 0), 0
 
         # Read checkpoint data onto the requested device.
         print(f"Loading checkpoint from {self.path}...")
@@ -34,7 +34,7 @@ class Checkpointer:
             ckpt = torch.load(self.path, map_location=self.device)
         except Exception as exc:
             print(f"Failed to load checkpoint {self.path}: {exc}. Starting fresh.")
-            return 0, 0, 0
+            return 0, 0, 0, (0, 0), 0
 
         # Restore model and optimizer state for resuming training.
         print("Checkpoint loaded. Restoring model and optimizer state...")
@@ -44,7 +44,7 @@ class Checkpointer:
             self.scheduler.load_state_dict(ckpt["scheduler"])
         except Exception as exc:
             print(f"Failed to restore checkpoint state from {self.path}: {exc}. Starting fresh.")
-            return 0, 0, 0
+            return 0, 0, 0, (0, 0), 0
 
         # Recover counters with safe defaults (epoch stored as 1-based).
         saved_epoch = ckpt.get("epoch", 0)

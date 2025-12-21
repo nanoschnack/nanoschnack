@@ -205,6 +205,24 @@ class ChunkedIterableDataset(IterableDataset):
                 }
 
 
+class SkippedIterableDataset(IterableDataset):
+    """Skip a fixed number of samples from an iterable dataset."""
+
+    def __init__(self, dataset, skip):
+        self.dataset = dataset
+        self.skip = skip
+
+    def __iter__(self):
+        iterator = iter(self.dataset)
+        for _ in range(self.skip):
+            try:
+                next(iterator)
+            except StopIteration:
+                return
+        for sample in iterator:
+            yield sample
+
+
 class ShardedBatchLoader:
     """Iterate over shard-sized datasets with deterministic shuffle and resume.
 
@@ -271,11 +289,15 @@ class ShardedBatchLoader:
                 shard_len = self._get_dataset_length(dataset, shard_index)
 
                 if shard_index == start_shard and start_offset > 0:
-                    dataset_len = len(dataset)
-                    if start_offset >= dataset_len:
-                        start_offset = 0
+                    if hasattr(dataset, "__len__"):
+                        dataset_len = len(dataset)
+                        if start_offset >= dataset_len:
+                            start_offset = 0
+                        else:
+                            dataset = dataset.select(range(start_offset, dataset_len))
                     else:
-                        dataset = dataset.select(range(start_offset, dataset_len))
+                        # Skip items in iterable datasets (chunked streaming).
+                        dataset = SkippedIterableDataset(dataset, start_offset)
 
                 shard_offset = start_offset if shard_index == start_shard else 0
                 loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)

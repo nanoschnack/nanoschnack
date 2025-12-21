@@ -199,8 +199,9 @@ if estimator is not None:
         loader.set_estimated_shard_len(est_total)
         estimated_total_samples += est_total * loader.num_shards
         print(
-            f"Dataset {dataset_index + 1}/{sharded_loader.num_datasets}: "
-            f"avg_chunks={avg_chunks:.2f}, est_total={est_total}"
+            f"Dataset {dataset_index + 1}/{sharded_loader.num_datasets} "
+            f"({loader.shards.repo_id}): avg_chunks={avg_chunks:.2f}, "
+            f"est_total={est_total}"
         )
 
 # Chunk-aware estimates are already applied when the estimator is set.

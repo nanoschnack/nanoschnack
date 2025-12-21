@@ -129,7 +129,7 @@ if False:
     def tokenizer_batch(batch):
         input_ids = []
         attention_mask = [] # marks real tokens (1) vs padding (0)
-        for text in batch["result"]:
+        for text in batch["text"]:
             ids = tokenizer.encode(text).ids
             for chunk in chunk_ids(ids, max_len=max_len,
                                    stride=stride):
@@ -147,7 +147,7 @@ else:
 
     # Wrap Hugging Face tokenizer for batch processing
     def tokenizer_batch(batch):
-        token_batch = tokenizer.encode_batch(batch["result"])
+        token_batch = tokenizer.encode_batch(batch["text"])
         return {
             "input_ids": [e.ids for e in token_batch],
             "attention_mask": [e.attention_mask for e in token_batch], # marks real tokens (1) vs padding (0)
@@ -172,7 +172,7 @@ else:
     batch_size = tuned_batch_size or BATCH_SIZE
     print(f"Tuned batch_size={batch_size}")
 sharded_loader = ShardedBatchLoader(
-    repo_id="pdelobelle/fineweb-german-edu-mt",
+    repo_id="arnomatic/german-wikipedia-clean-no-lists",
     data_dir=data_dir,
     tokenizer_batch=tokenizer_batch,
     batch_size=batch_size,

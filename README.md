@@ -34,8 +34,8 @@ pre-commit install
 
 ## Data download
 
-The training data is sourced from the `pdelobelle/fineweb-german-edu-mt` dataset:
-https://huggingface.co/datasets/pdelobelle/fineweb-german-edu-mt
+The training data is sourced from the `arnomatic/german-wikipedia-clean-no-lists` dataset:
+https://huggingface.co/datasets/arnomatic/german-wikipedia-clean-no-lists
 
 Training downloads parquet shards on demand into `data/` and caches them locally.
 

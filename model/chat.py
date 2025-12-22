@@ -21,7 +21,12 @@ def load_model(checkpoint_path, vocab_size, device):
         ckpt = torch.load(checkpoint_path, map_location=device)
         if isinstance(ckpt, dict) and "model" in ckpt:
             if "config" in ckpt:
-                config.apply_overrides(ckpt["config"])
+                ckpt_config = ckpt["config"]
+                config.CONTEXT_LEN = ckpt_config.get("CONTEXT_LEN", config.CONTEXT_LEN)
+                config.EMBED_SIZE = ckpt_config.get("EMBED_SIZE", config.EMBED_SIZE)
+                config.NUM_LAYERS = ckpt_config.get("NUM_LAYERS", config.NUM_LAYERS)
+                config.NUM_HEADS = ckpt_config.get("NUM_HEADS", config.NUM_HEADS)
+                config.HIDDEN_SIZE = ckpt_config.get("HIDDEN_SIZE", config.HIDDEN_SIZE)
             state_dict = ckpt["model"]
         else:
             state_dict = ckpt
@@ -203,19 +208,18 @@ def main():
     if args.context_len is None:
         args.context_len = model_context_len
 
-    config.print_chat_hyperparams(
-        model_context_len,
-        args.max_new_tokens,
-        args.temperature,
-        args.top_k,
-        model=model,
-    )
-
     # Validate that the requested context length fits the trained model.
     if args.context_len > model_context_len:
         raise ValueError(
             f"--context-len ({args.context_len}) exceeds trained context length ({model_context_len})."
         )
+
+    config.CONTEXT_LEN = args.context_len
+    config.MAX_NEW_TOKENS = args.max_new_tokens
+    config.TEMPERATURE = args.temperature
+    config.TOP_K = args.top_k
+    param_count, quantization = config.model_info(model)
+    config.print_chat_hyperparams(param_count=param_count, quantization=quantization)
 
     run_repl(
         model,

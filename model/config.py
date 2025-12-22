@@ -74,6 +74,7 @@ TEMPERATURE = _env_float("TEMPERATURE", 0.8)
 # Use 0 to sample from the full distribution.
 TOP_K = _env_int("TOP_K", 50)
 
+
 ###
 ### Logging and checkpoint cadence
 ###
@@ -103,19 +104,6 @@ PLOT_WARMUP_SECS = _env_int("PLOT_WARMUP_SECS", 60)
 LOG_INTERVAL_SECS = _env_int("LOG_INTERVAL_SECS", 10)
 
 
-def apply_overrides(values):
-    if not values:
-        return
-    globals_dict = globals()
-    for key, value in values.items():
-        if key in globals_dict:
-            globals_dict[key] = value
-            continue
-        upper_key = key.upper()
-        if upper_key in globals_dict:
-            globals_dict[upper_key] = value
-
-
 def snapshot():
     return {
         "CONTEXT_LEN": CONTEXT_LEN,
@@ -142,42 +130,38 @@ def _model_quantization(model):
     return "none"
 
 
-def _architecture_lines(context_len, model=None):
+def _architecture_lines():
     lines = [
         "Architecture:",
-        f"  context_len={context_len}",
+        f"  context_len={CONTEXT_LEN}",
         f"  embed_size={EMBED_SIZE}",
         f"  num_layers={NUM_LAYERS}",
         f"  num_heads={NUM_HEADS}",
         f"  hidden_size={HIDDEN_SIZE}",
     ]
-    if model is not None:
-        lines.append(f"  param_count={_format_param_count(_model_param_count(model))}")
-        lines.append(f"  quantization={_model_quantization(model)}")
     return lines
 
 
-def print_training_hyperparams(
-    model=None,
-    context_len=None,
-    embed_size=None,
-    num_layers=None,
-    num_heads=None,
-    hidden_size=None,
-    batch_size=None,
-):
+def model_info(model):
+    """Return model metadata for hyperparameter printouts."""
+    return _model_param_count(model), _model_quantization(model)
+
+
+def print_training_hyperparams(param_count=None, quantization=None):
     """Print the training-related hyperparameters."""
-    context_len = CONTEXT_LEN if context_len is None else context_len
-    embed_size = EMBED_SIZE if embed_size is None else embed_size
-    num_layers = NUM_LAYERS if num_layers is None else num_layers
-    num_heads = NUM_HEADS if num_heads is None else num_heads
-    hidden_size = HIDDEN_SIZE if hidden_size is None else hidden_size
-    batch_size = BATCH_SIZE if batch_size is None else batch_size
-    lines = _architecture_lines(context_len, model=model) + [
+    lines = _architecture_lines() + [
         "Training:",
-        f"  batch_size={batch_size}",
+        f"  batch_size={BATCH_SIZE}",
         f"  learning_rate={LEARNING_RATE}",
         f"  warmup_pct={WARMUP_PCT}",
+    ]
+    if param_count is not None or quantization is not None:
+        lines += [
+            "Model:",
+            f"  param_count={_format_param_count(param_count)}",
+            f"  quantization={quantization}",
+        ]
+    lines += [
         "Scheduling:",
         f"  log_interval_secs={LOG_INTERVAL_SECS}",
         f"  warmup_window_secs={WARMUP_WINDOW_SECS}",
@@ -189,12 +173,18 @@ def print_training_hyperparams(
     print("\n".join(lines))
 
 
-def print_chat_hyperparams(context_len, max_new_tokens, temperature, top_k, model=None):
+def print_chat_hyperparams(param_count=None, quantization=None):
     """Print the inference-related hyperparameters."""
-    lines = _architecture_lines(context_len, model=model) + [
+    lines = _architecture_lines() + [
         "Inference:",
-        f"  max_new_tokens={max_new_tokens}",
-        f"  temperature={temperature}",
-        f"  top_k={top_k}",
+        f"  max_new_tokens={MAX_NEW_TOKENS}",
+        f"  temperature={TEMPERATURE}",
+        f"  top_k={TOP_K}",
     ]
+    if param_count is not None or quantization is not None:
+        lines += [
+            "Model:",
+            f"  param_count={_format_param_count(param_count)}",
+            f"  quantization={quantization}",
+        ]
     print("\n".join(lines))

@@ -60,7 +60,12 @@ checkpoint_path = checkpoint_dir / "latest.pt"
 if checkpoint_path.exists():
     checkpoint_state = torch.load(checkpoint_path, map_location="cpu")
     if isinstance(checkpoint_state, dict) and "config" in checkpoint_state:
-        config.apply_overrides(checkpoint_state["config"])
+        ckpt_config = checkpoint_state["config"]
+        config.CONTEXT_LEN = ckpt_config.get("CONTEXT_LEN", config.CONTEXT_LEN)
+        config.EMBED_SIZE = ckpt_config.get("EMBED_SIZE", config.EMBED_SIZE)
+        config.NUM_LAYERS = ckpt_config.get("NUM_LAYERS", config.NUM_LAYERS)
+        config.NUM_HEADS = ckpt_config.get("NUM_HEADS", config.NUM_HEADS)
+        config.HIDDEN_SIZE = ckpt_config.get("HIDDEN_SIZE", config.HIDDEN_SIZE)
 
 context_len = config.CONTEXT_LEN
 embed_size = config.EMBED_SIZE
@@ -131,7 +136,7 @@ else:
     estimator = None
     tokenizer_batch = build_tokenizer(tokenizer)
 
-# Tokenize the dataset
+# Now with the tokenizer derive training parameters like batch size.
 tuned_batch_size = find_max_batch_size(
     model,
     vocab_size=tokenizer.get_vocab_size(),
@@ -139,31 +144,25 @@ tuned_batch_size = find_max_batch_size(
     device=device,
     start=config.BATCH_SIZE,
 )
-batch_size = tuned_batch_size or config.BATCH_SIZE
-print(f"Tuned batch_size={batch_size}")
-config.print_training_hyperparams(
-    model,
-    context_len=context_len,
-    embed_size=embed_size,
-    num_layers=num_layers,
-    num_heads=num_heads,
-    hidden_size=hidden_size,
-    batch_size=batch_size,
-)
+if tuned_batch_size:
+    config.BATCH_SIZE = tuned_batch_size
+print(f"Tuned batch_size={config.BATCH_SIZE}")
+param_count, quantization = config.model_info(model)
+config.print_training_hyperparams(param_count=param_count, quantization=quantization)
+
+# Build one sharded loader per dataset.
+loaders = []
 repo_ids = [
     "arnomatic/german-wikipedia-clean-no-lists",
     "PatrickHaller/fineweb-2-de-1B",
 ]
-
-# Build one sharded loader per dataset.
-loaders = []
 for repo_id in repo_ids:
     loaders.append(
         ShardedBatchLoader(
             repo_id=repo_id,
             data_dir=data_dir,
             tokenizer_batch=tokenizer_batch,
-            batch_size=batch_size,
+            batch_size=config.BATCH_SIZE,
             seed=42,
         )
     )
@@ -205,7 +204,7 @@ if estimator is not None:
         )
 
 # Chunk-aware estimates are already applied when the estimator is set.
-steps_per_epoch = math.ceil(estimated_total_samples / batch_size)
+steps_per_epoch = math.ceil(estimated_total_samples / config.BATCH_SIZE)
 total_steps = steps_per_epoch * epochs
 print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)

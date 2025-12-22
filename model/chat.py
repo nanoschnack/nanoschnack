@@ -7,17 +7,7 @@ try:
 except ModuleNotFoundError:
     from __init__ import setup_paths
 
-from config import (
-    CONTEXT_LEN,
-    EMBED_SIZE,
-    HIDDEN_SIZE,
-    MAX_NEW_TOKENS,
-    NUM_HEADS,
-    NUM_LAYERS,
-    TEMPERATURE,
-    TOP_K,
-    print_chat_hyperparams,
-)
+import config
 from device import device_info, pick_device, print_device_info
 from gpt import GPT
 from tokenizer import load_tokenizer
@@ -25,43 +15,30 @@ from tokenizer import load_tokenizer
 
 def load_model(checkpoint_path, vocab_size, device):
     # Construct the model and optionally load weights from checkpoint.
-    model_config = {
-        "context_len": CONTEXT_LEN,
-        "embed_size": EMBED_SIZE,
-        "num_layers": NUM_LAYERS,
-        "num_heads": NUM_HEADS,
-        "hidden_size": HIDDEN_SIZE,
-    }
     state_dict = None
 
     if checkpoint_path is not None:
         ckpt = torch.load(checkpoint_path, map_location=device)
         if isinstance(ckpt, dict) and "model" in ckpt:
-            state_dict = ckpt["model"]
             if "config" in ckpt:
-                model_config.update(ckpt["config"])
+                config.apply_overrides(ckpt["config"])
+            state_dict = ckpt["model"]
         else:
             state_dict = ckpt
 
-    if state_dict is not None:
-        if "position_embedding.weight" in state_dict:
-            model_config["context_len"] = state_dict["position_embedding.weight"].shape[0]
-        if "token_embedding.weight" in state_dict:
-            vocab_size = state_dict["token_embedding.weight"].shape[0]
-
     model = GPT(
         vocab_size=vocab_size,
-        embed_size=model_config["embed_size"],
-        num_layers=model_config["num_layers"],
-        num_heads=model_config["num_heads"],
-        hidden_size=model_config["hidden_size"],
-        context_len=model_config["context_len"],
+        embed_size=config.EMBED_SIZE,
+        num_layers=config.NUM_LAYERS,
+        num_heads=config.NUM_HEADS,
+        hidden_size=config.HIDDEN_SIZE,
+        context_len=config.CONTEXT_LEN,
     ).to(device).eval()
 
     if state_dict is not None:
         model.load_state_dict(state_dict)
 
-    return model, model_config["context_len"]
+    return model, config.CONTEXT_LEN
 
 
 def sample_next_token(logits, temperature, top_k):
@@ -102,7 +79,8 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
     except Exception:
         pass
 
-    history = ""
+    use_chat_template = False
+    show_tokens = False
     print("Type '/help' for commands.")
 
     while True:
@@ -114,7 +92,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if not user_text:
             continue
         if user_text == "/help":
-            print("Commands: /help, /quit, /exit, /reset, /temp <value>, /topk <value>")
+            print("Commands: /help, /quit, /exit, /reset, /temp <value>, /topk <value>, /chat on|off, /debug on|off")
             continue
         if user_text.startswith("/temp"):
             parts = user_text.split(maxsplit=1)
@@ -143,18 +121,45 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if user_text in {"/quit", "/exit"}:
             break
         if user_text == "/reset":
-            history = ""
             print("History cleared.")
             continue
+        if user_text.startswith("/chat"):
+            parts = user_text.split(maxsplit=1)
+            if len(parts) == 1:
+                use_chat_template = not use_chat_template
+            elif parts[1] in {"on", "off"}:
+                use_chat_template = parts[1] == "on"
+            else:
+                print("Usage: /chat [on|off]")
+                continue
+            print(f"Chat template {'enabled' if use_chat_template else 'disabled'}.")
+            continue
+        if user_text.startswith("/debug"):
+            parts = user_text.split(maxsplit=1)
+            if len(parts) == 1:
+                show_tokens = not show_tokens
+            elif parts[1] in {"on", "off"}:
+                show_tokens = parts[1] == "on"
+            else:
+                print("Usage: /debug [on|off]")
+                continue
+            print(f"Debug tokens {'enabled' if show_tokens else 'disabled'}.")
+            continue
 
-        history += f"User: {user_text}\nAssistant:"
+        if use_chat_template:
+            prompt = f"User: {user_text}\nAssistant:"
+        else:
+            prompt = user_text
+
+        if show_tokens:
+            print(f"tokens> {tokenizer.encode(user_text).ids}")
         print("bot> ", end="", flush=True)
         reply_parts = []
         try:
             for token in generate_reply_stream(
                 model,
                 tokenizer,
-                history,
+                prompt,
                 context_len=context_len,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
@@ -165,11 +170,6 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
                 reply_parts.append(token)
         except KeyboardInterrupt:
             print()
-        reply = "".join(reply_parts).strip()
-        if reply:
-            history += f" {reply}\n"
-        else:
-            history += "\n"
         if reply_parts:
             print()
 
@@ -178,9 +178,9 @@ def main():
     parser = argparse.ArgumentParser(description="Chat with the NanoSchnack model.")
     parser.add_argument("--checkpoint", default=None, help="Path to a checkpoint (.pt).")
     parser.add_argument("--context-len", type=int, default=None)
-    parser.add_argument("--max-new-tokens", type=int, default=MAX_NEW_TOKENS)
-    parser.add_argument("--temperature", type=float, default=TEMPERATURE)
-    parser.add_argument("--top-k", type=int, default=TOP_K)
+    parser.add_argument("--max-new-tokens", type=int, default=config.MAX_NEW_TOKENS)
+    parser.add_argument("--temperature", type=float, default=config.TEMPERATURE)
+    parser.add_argument("--top-k", type=int, default=config.TOP_K)
     args = parser.parse_args()
 
     # Resolve default checkpoint location and load components.
@@ -197,13 +197,13 @@ def main():
     tokenizer = load_tokenizer()
 
     model, model_context_len = load_model(checkpoint_path, tokenizer.get_vocab_size(), device)
-    if args.context_len == CONTEXT_LEN:
+    if args.context_len == config.CONTEXT_LEN:
         args.context_len = model_context_len
 
     if args.context_len is None:
         args.context_len = model_context_len
 
-    print_chat_hyperparams(
+    config.print_chat_hyperparams(
         model_context_len,
         args.max_new_tokens,
         args.temperature,

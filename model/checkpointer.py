@@ -3,6 +3,8 @@ import time
 
 import torch
 
+import config
+
 class Checkpointer:
     """Save and restore training state to a local checkpoint directory.
 
@@ -49,8 +51,15 @@ class Checkpointer:
         global_step = ckpt.get("global_step", resume_step)
 
         if "load_position" in ckpt:
-            load_position = tuple(ckpt.get("load_position", (0, 0)))
-            total_samples = ckpt.get("total_samples", load_position[1])
+            load_position = ckpt.get("load_position", (0, 0))
+            if isinstance(load_position, list):
+                if len(load_position) == 2 and all(isinstance(x, int) for x in load_position):
+                    load_position = tuple(load_position)
+                elif load_position and all(
+                    isinstance(item, list) and len(item) == 2 for item in load_position
+                ):
+                    load_position = [tuple(item) for item in load_position]
+            total_samples = ckpt.get("total_samples", 0)
             total_tokens = ckpt.get("total_tokens", 0)
         else:
             shard_index = ckpt.get("shard_index", 0)
@@ -74,7 +83,7 @@ class Checkpointer:
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict(),
-            "config": self._model_config(),
+            "config": config.snapshot(),
             "epoch": epoch + 1,
             "step": step,
             "global_step": global_step,
@@ -90,20 +99,3 @@ class Checkpointer:
             f"Saved checkpoint to {self.path} at epoch {epoch + 1}, step {step} "
             f"({elapsed:.2f}s)."
         )
-
-    def _model_config(self):
-        # Derive config values from the live model for backward-compatible resumes.
-        config = {}
-        if hasattr(self.model, "position_embedding"):
-            config["context_len"] = self.model.position_embedding.weight.shape[0]
-        if hasattr(self.model, "token_embedding"):
-            config["embed_size"] = self.model.token_embedding.weight.shape[1]
-        if hasattr(self.model, "layers"):
-            config["num_layers"] = len(self.model.layers)
-            if self.model.layers:
-                layer = self.model.layers[0]
-                if hasattr(layer, "self_attn"):
-                    config["num_heads"] = layer.self_attn.num_heads
-                if hasattr(layer, "linear1"):
-                    config["hidden_size"] = layer.linear1.out_features
-        return config

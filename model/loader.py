@@ -1,12 +1,16 @@
 """Helpers for loading datasets in shard-sized chunks."""
 
 from pathlib import Path
+import math
 import os
+import random
 from concurrent.futures import ThreadPoolExecutor
+
+import torch
 
 from datasets import load_dataset
 from huggingface_hub import hf_hub_download, list_repo_files
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset
 
 
 class ShardedDataset:
@@ -73,6 +77,152 @@ class ShardedDataset:
         )
 
 
+class ChunkEstimator:
+    """Estimate chunk counts per document without materializing chunked datasets.
+
+    Uses a deterministic sample of each shard to approximate the average
+    number of chunks per document. The estimator scales the sample average
+    to the full dataset size to approximate total chunks.
+    """
+
+    def __init__(self, tokenizer, max_len, stride, sample_size=1000, seed=42, text_key="text"):
+        if stride >= max_len:
+            raise ValueError("stride must be smaller than max_len")
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.stride = stride
+        self.sample_size = sample_size
+        self.seed = seed
+        self.text_key = text_key
+
+    def estimate_dataset(self, dataset):
+        # Sample texts and estimate chunks per document.
+        sample = self._sample_texts(dataset)
+        avg_chunks = self._average_chunks(sample)
+        return avg_chunks, int(math.ceil(avg_chunks * len(dataset)))
+
+    def _sample_texts(self, dataset):
+        # Return a deterministic random sample of texts.
+        if len(dataset) == 0:
+            return []
+
+        # Clamp to dataset size to avoid index errors.
+        sample_size = min(self.sample_size, len(dataset))
+        rng = random.Random(self.seed)
+        indices = [rng.randrange(len(dataset)) for _ in range(sample_size)]
+        return [dataset[idx][self.text_key] for idx in indices]
+
+    def _average_chunks(self, texts):
+        # Average chunk counts across sampled texts.
+        if not texts:
+            return 0.0
+
+        # Estimate chunks from tokenized lengths.
+        total = 0
+        for text in texts:
+            token_count = len(self.tokenizer.encode(text).ids)
+            total += self._chunk_count(token_count)
+        return total / len(texts)
+
+    def _chunk_count(self, token_count):
+        # Map token counts into chunk counts for the given stride.
+        if token_count <= 0:
+            return 0
+        if token_count <= self.max_len:
+            return 1
+        step = self.max_len - self.stride
+        return 1 + int(math.ceil((token_count - self.max_len) / step))
+
+
+def chunk_ids(ids, max_len, stride, pad_id):
+    if len(ids) == 0:
+        return []
+    step = max_len - stride
+    chunks = []
+    for start in range(0, len(ids), step):
+        chunk = ids[start:start + max_len]
+        if len(chunk) == 0:
+            continue
+        if len(chunk) < max_len:
+            chunk = chunk + [pad_id] * (max_len - len(chunk))
+        chunks.append(chunk)
+        if start + max_len >= len(ids):
+            break
+    return chunks
+
+
+def build_chunking_tokenizer(tokenizer, pad_id, max_len, stride):
+    # Expand each document into fixed-size chunks with padding.
+    def tokenizer_batch(batch):
+        input_ids = []
+        attention_mask = []
+        for text in batch["text"]:
+            ids = tokenizer.encode(text).ids
+            for chunk in chunk_ids(ids, max_len=max_len, stride=stride, pad_id=pad_id):
+                input_ids.append(chunk)
+                attention_mask.append([1 if t != pad_id else 0 for t in chunk])
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    tokenizer_batch.is_chunking = True
+    tokenizer_batch.pad_id = pad_id
+    tokenizer_batch.max_len = max_len
+    tokenizer_batch.stride = stride
+    tokenizer_batch.tokenizer = tokenizer
+    return tokenizer_batch
+
+
+def build_tokenizer(tokenizer):
+    def tokenizer_batch(batch):
+        token_batch = tokenizer.encode_batch(batch["text"])
+        return {
+            "input_ids": [e.ids for e in token_batch],
+            "attention_mask": [e.attention_mask for e in token_batch],
+        }
+
+    return tokenizer_batch
+
+
+class ChunkedIterableDataset(IterableDataset):
+    """Lazily yield chunked samples from a shuffled shard."""
+
+    def __init__(self, dataset, tokenizer, pad_id, max_len, stride):
+        self.dataset = dataset
+        self.tokenizer = tokenizer
+        self.pad_id = pad_id
+        self.max_len = max_len
+        self.stride = stride
+
+    def __iter__(self):
+        for sample in self.dataset:
+            ids = self.tokenizer.encode(sample["text"]).ids
+            for chunk in chunk_ids(ids, max_len=self.max_len, stride=self.stride, pad_id=self.pad_id):
+                yield {
+                    "input_ids": torch.tensor(chunk, dtype=torch.long),
+                    "attention_mask": torch.tensor(
+                        [1 if token != self.pad_id else 0 for token in chunk],
+                        dtype=torch.long,
+                    ),
+                }
+
+
+class SkippedIterableDataset(IterableDataset):
+    """Skip a fixed number of samples from an iterable dataset."""
+
+    def __init__(self, dataset, skip):
+        self.dataset = dataset
+        self.skip = skip
+
+    def __iter__(self):
+        iterator = iter(self.dataset)
+        for _ in range(self.skip):
+            try:
+                next(iterator)
+            except StopIteration:
+                return
+        for sample in iterator:
+            yield sample
+
+
 class ShardedBatchLoader:
     """Iterate over shard-sized datasets with deterministic shuffle and resume.
 
@@ -102,6 +252,7 @@ class ShardedBatchLoader:
         # Track the last consumed position (shard index, sample offset).
         self.position = (0, 0)
         self._shard_lengths = {}
+        self._estimated_shard_len = None
         self._prefetch_executor = None
         self._prefetch_future = None
         self._prefetch_index = None
@@ -135,15 +286,18 @@ class ShardedBatchLoader:
                     flush=True,
                 )
                 dataset = self._load_tokenized_shard(shard_index)
-                shard_len = len(dataset)
-                self._shard_lengths[shard_index] = shard_len
+                shard_len = self._get_dataset_length(dataset, shard_index)
 
                 if shard_index == start_shard and start_offset > 0:
-                    dataset_len = len(dataset)
-                    if start_offset >= dataset_len:
-                        start_offset = 0
+                    if hasattr(dataset, "__len__"):
+                        dataset_len = len(dataset)
+                        if start_offset >= dataset_len:
+                            start_offset = 0
+                        else:
+                            dataset = dataset.select(range(start_offset, dataset_len))
                     else:
-                        dataset = dataset.select(range(start_offset, dataset_len))
+                        # Skip items in iterable datasets (chunked streaming).
+                        dataset = SkippedIterableDataset(dataset, start_offset)
 
                 shard_offset = start_offset if shard_index == start_shard else 0
                 loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
@@ -160,10 +314,16 @@ class ShardedBatchLoader:
                 self._prefetch_future = None
                 self._prefetch_index = None
 
-    def estimate_total_samples(self):
+    def estimate_total_samples(self, estimator=None):
         # Estimate total sample count assuming uniform shard sizes.
-        first_len = self._get_shard_length(0)
-        return first_len * self.num_shards
+        if estimator is None:
+            first_len = self._get_shard_length(0)
+            return first_len * self.num_shards
+
+        # Estimate chunk counts from a sample of the first shard.
+        raw_shard = self.shards.load_shard(0)
+        _avg_chunks, est_total = estimator.estimate_dataset(raw_shard)
+        return est_total * self.num_shards
 
     def _get_shard_length(self, shard_index):
         # Cache the tokenized shard length for progress and scheduling.
@@ -171,7 +331,7 @@ class ShardedBatchLoader:
             return self._shard_lengths[shard_index]
 
         dataset = self._load_tokenized_shard(shard_index)
-        shard_len = len(dataset)
+        shard_len = self._get_dataset_length(dataset, shard_index)
         self._shard_lengths[shard_index] = shard_len
         return shard_len
 
@@ -179,8 +339,32 @@ class ShardedBatchLoader:
         # Load, shuffle, and tokenize a shard consistently.
         raw_ds = self.shards.load_shard(shard_index)
         shuffled = raw_ds.shuffle(seed=self.seed + shard_index)
+        if getattr(self.tokenizer_batch, "is_chunking", False):
+            # Chunking expands the number of samples, so stream them lazily.
+            return ChunkedIterableDataset(
+                shuffled,
+                tokenizer=self.tokenizer_batch.tokenizer,
+                pad_id=self.tokenizer_batch.pad_id,
+                max_len=self.tokenizer_batch.max_len,
+                stride=self.tokenizer_batch.stride,
+            )
         dataset = shuffled.map(self.tokenizer_batch, batched=True, num_proc=self.num_proc)
         return dataset.with_format(type="torch")
+
+    def _get_dataset_length(self, dataset, shard_index):
+        # Resolve shard length for both eager and lazy datasets.
+        if hasattr(dataset, "__len__"):
+            shard_len = len(dataset)
+        else:
+            shard_len = self._estimated_shard_len
+        if shard_len is None:
+            shard_len = 0
+        self._shard_lengths[shard_index] = shard_len
+        return shard_len
+
+    def set_estimated_shard_len(self, shard_len):
+        # Cache a shard-length estimate for lazy chunked datasets.
+        self._estimated_shard_len = shard_len
 
     def _prefetch_next(self, shard_index):
         # Prefetch the next shard into the local cache in the background.
@@ -195,3 +379,56 @@ class ShardedBatchLoader:
             self.shards.prefetch_shard,
             shard_index,
         )
+
+
+class MultiShardedBatchLoader:
+    """Interleave batches from multiple sharded loaders.
+
+    Each dataset is iterated independently and batches are yielded in a
+    round-robin order. The iterator stops when all datasets are exhausted.
+    """
+
+    def __init__(self, loaders):
+        if not loaders:
+            raise ValueError("loaders must be non-empty")
+        self.loaders = loaders
+        self.position = [(0, 0) for _ in loaders]
+
+    @property
+    def num_shards(self):
+        # Report the sum of shards across all datasets.
+        return sum(loader.num_shards for loader in self.loaders)
+
+    @property
+    def num_datasets(self):
+        # Report the number of datasets managed by the loader.
+        return len(self.loaders)
+
+    def iter_batches(self, start_positions=None):
+        # Yield batches round-robin across datasets.
+        if start_positions is None:
+            start_positions = [(0, 0) for _ in self.loaders]
+        self.position = list(start_positions)
+
+        # Initialize iterators for each loader.
+        iterators = []
+        for idx, loader in enumerate(self.loaders):
+            iterators.append(loader.iter_batches(start_position=self.position[idx]))
+
+        active = list(range(len(iterators)))
+        while active:
+            for idx in list(active):
+                try:
+                    batch, position, shard_index, shard_len = next(iterators[idx])
+                except StopIteration:
+                    active.remove(idx)
+                    continue
+                self.position[idx] = position
+                yield batch, list(self.position), idx, shard_index, shard_len
+
+    def estimate_total_samples(self, estimator=None):
+        # Sum estimated sample counts across all datasets.
+        total = 0
+        for loader in self.loaders:
+            total += loader.estimate_total_samples(estimator=estimator)
+        return total

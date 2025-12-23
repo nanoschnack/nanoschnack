@@ -28,6 +28,9 @@ print_device_info(info)
 # Switch to TF32 for 8x speedup on supported hardware, and good enough for LLM training.
 torch.set_float32_matmul_precision("high")
 
+# Switch to TF32 for 8x speedup on supported hardware, and good enough for LLM training.
+torch.set_float32_matmul_precision("high")
+
 
 # %% [markdown]
 # ## Loading a tokenizer with Hugging Face's tokenizer library

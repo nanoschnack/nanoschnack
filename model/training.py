@@ -119,24 +119,22 @@ from loader import (
     TokenEstimator,
     build_interleaved_dataset,
     build_packed_dataset,
-    load_dataset_source,
+    load_dataset_from_spec,
+    parse_dataset_specs,
+    resolve_total_rows,
+    dataset_label,
 )
 
 # Download shards on demand and shuffle within each dataset.
 set_verbosity_warning()
 enable_progress_bar()
 
-token_estimator = TokenEstimator(tokenizer)
-
 # Build packed datasets per source.
-dataset_specs = [
-    {"repo_id": "arnomatic/german-wikipedia-clean-no-lists"},
-    {"repo_id": "PatrickHaller/fineweb-2-de-1B"},
-]
+dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
 packed_datasets = []
 for spec in dataset_specs:
-    raw_streaming = load_dataset_source(
-        spec["repo_id"],
+    raw_streaming = load_dataset_from_spec(
+        spec,
         cache_dir=data_dir,
         streaming=True,
     )
@@ -144,6 +142,7 @@ for spec in dataset_specs:
         raw_streaming,
         tokenizer=tokenizer,
         block_size=config.CONTEXT_LEN,
+        text_key=spec["text_key"],
         pack_batch_size=config.PACK_BATCH_SIZE,
     )
     packed_datasets.append(packed)
@@ -209,23 +208,20 @@ estimated_total_tokens = 0
 
 print("Estimating tokens from dataset samples...", flush=True)
 for dataset_index, spec in enumerate(dataset_specs):
-    raw_dataset = load_dataset_source(
-        spec["repo_id"],
+    raw_dataset = load_dataset_from_spec(
+        spec,
         cache_dir=data_dir,
         streaming=True,
     )
-    total_rows = None
-    if raw_dataset.info and raw_dataset.info.splits:
-        split_info = raw_dataset.info.splits.get("train")
-        if split_info is not None:
-            total_rows = split_info.num_examples
+    total_rows = resolve_total_rows(raw_dataset, spec)
     if total_rows is None:
         raise ValueError("Dataset split metadata missing num_examples for token estimate.")
+    token_estimator = TokenEstimator(tokenizer, text_key=spec["text_key"])
     avg_tokens, est_total_tokens = token_estimator.estimate_streaming(raw_dataset, total_rows)
     estimated_total_tokens += est_total_tokens
     print(
         f"Dataset {dataset_index + 1}/{len(dataset_specs)} "
-        f"({spec['repo_id']}): avg_tokens={avg_tokens:.1f}, "
+        f"({dataset_label(spec)}): avg_tokens={avg_tokens:.1f}, "
         f"est_tokens={est_total_tokens}"
     )
 # Resolve model size for token budgeting.

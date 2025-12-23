@@ -183,9 +183,31 @@ if max_tokens and estimated_total_tokens > 0:
     epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
 tokens_per_sample = config.CONTEXT_LEN - 1
 tokens_per_step = config.BATCH_SIZE * tokens_per_sample
-steps_per_epoch = math.ceil(estimated_total_tokens / tokens_per_step)
-total_steps = math.ceil(target_tokens / tokens_per_step)
-print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)
+dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
+steps_per_epoch = math.ceil(min(estimated_total_tokens, target_tokens) / tokens_per_step)
+total_steps = steps_per_epoch * epochs
+dataset_tokens_label = f"{estimated_total_tokens:,}"
+target_tokens_label = f"{target_tokens:,}"
+model_tokens_label = f"{param_count:,}"
+dataset_steps_label = f"{dataset_steps:,}"
+total_steps_label = f"{total_steps:,}"
+steps_per_epoch_label = f"{steps_per_epoch:,}"
+epochs_label = f"{epochs:,}"
+print(
+    f"Dataset estimate: steps_per_epoch={dataset_steps_label} tokens={dataset_tokens_label}",
+    flush=True,
+)
+print(
+    f"Target budget:    total_steps={total_steps_label} tokens={target_tokens_label} "
+    f"(factor {config.MAX_TRAINING_FACTOR} of model size {model_tokens_label})",
+    flush=True,
+)
+print(
+    f"Plan:             epochs={epochs_label} steps_per_epoch={steps_per_epoch_label} "
+    f"total_steps={total_steps_label}",
+    flush=True,
+)
+
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
 scheduler = build_warmup_cosine(optimizer, total_steps, config.WARMUP_PCT)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)

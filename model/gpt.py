@@ -32,7 +32,8 @@ class GPT(nn.Module):
             norm_first=True, # Do what GPT-2 does: pre-norm instead of post-norm improving stability.
             activation="gelu", # Use GELU non-linearity as in GPT-2.
         )
-        self.blocks = nn.TransformerEncoder(layer, num_layers)
+        # GPT-2 style pre-norm (norm_first=True) disables nested tensor fast path, so opt out explicitly.
+        self.blocks = nn.TransformerEncoder(layer, num_layers, enable_nested_tensor=False)
         self.ln = nn.LayerNorm(embed_size)
         self.lm = nn.Linear(embed_size, vocab_size, bias=False)
 

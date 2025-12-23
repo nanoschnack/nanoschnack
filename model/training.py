@@ -89,6 +89,20 @@ model = GPT(
     hidden_size=hidden_size,
     context_len=context_len,
 ).to(device).train()
+# Now with the tokenizer derive training parameters like batch size.
+tuned_batch_size = find_max_batch_size(
+    model,
+    vocab_size=tokenizer.get_vocab_size(),
+    seq_len=context_len,
+    device=device,
+    start=config.BATCH_SIZE,
+)
+if tuned_batch_size:
+    config.BATCH_SIZE = tuned_batch_size
+print(f"Tuned batch_size={config.BATCH_SIZE}")
+param_count, quantization = config.model_info(model)
+config.print_training_hyperparams(param_count=param_count, quantization=quantization)
+
 
 # %% [markdown]
 # ## Load the Training Data

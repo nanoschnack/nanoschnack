@@ -26,6 +26,15 @@ class TokenEstimator:
         avg_tokens = self._average_tokens(sample)
         return avg_tokens, int(math.ceil(avg_tokens * len(dataset)))
 
+    def estimate_streaming(self, dataset, total_rows, sample_size=None):
+        # Estimate tokens from a streaming dataset using a fixed sample window.
+        if total_rows is None or total_rows <= 0:
+            raise ValueError("total_rows must be provided for streaming estimates")
+
+        sample = self._sample_streaming_texts(dataset, sample_size=sample_size)
+        avg_tokens = self._average_tokens(sample)
+        return avg_tokens, int(math.ceil(avg_tokens * total_rows))
+
     def _sample_texts(self, dataset):
         # Return a deterministic random sample of texts.
         if len(dataset) == 0:
@@ -36,6 +45,16 @@ class TokenEstimator:
         rng = random.Random(self.seed)
         indices = [rng.randrange(len(dataset)) for _ in range(sample_size)]
         return [dataset[idx][self.text_key] for idx in indices]
+
+    def _sample_streaming_texts(self, dataset, sample_size=None):
+        # Take the first N texts from a streaming dataset.
+        size = sample_size or self.sample_size
+        texts = []
+        for idx, sample in enumerate(dataset):
+            if idx >= size:
+                break
+            texts.append(sample[self.text_key])
+        return texts
 
     def _average_tokens(self, texts):
         # Average token counts across sampled texts.

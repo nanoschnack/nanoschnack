@@ -3,6 +3,7 @@ import random
 import unittest
 
 from datasets import Dataset
+from datasets import IterableDataset
 
 from model import loader as loader_module
 
@@ -37,6 +38,19 @@ class TokenEstimatorTests(unittest.TestCase):
         indices = [rng.randrange(len(dataset)) for _ in range(2)]
         expected_avg = sum(len(dataset[idx]["text"]) for idx in indices) / 2
         expected_total = int(math.ceil(expected_avg * len(dataset)))
+
+        self.assertEqual(avg_tokens, expected_avg)
+        self.assertEqual(est_total, expected_total)
+
+    def test_estimate_streaming(self):
+        tokenizer = FakeTokenizer()
+        items = [{"text": "aaa"}, {"text": "b"}, {"text": "cc"}]
+        dataset = IterableDataset.from_generator(lambda: iter(items))
+        estimator = loader_module.TokenEstimator(tokenizer, sample_size=2)
+        avg_tokens, est_total = estimator.estimate_streaming(dataset, total_rows=3)
+
+        expected_avg = (len(items[0]["text"]) + len(items[1]["text"])) / 2
+        expected_total = int(math.ceil(expected_avg * 3))
 
         self.assertEqual(avg_tokens, expected_avg)
         self.assertEqual(est_total, expected_total)

@@ -25,6 +25,9 @@ device = pick_device()
 info = device_info(device)
 print_device_info(info)
 
+# Switch to TF32 for 8x speedup on supported hardware, and good enough for LLM training.
+torch.set_float32_matmul_precision("high")
+
 
 # %% [markdown]
 # ## Loading a tokenizer with Hugging Face's tokenizer library
@@ -124,6 +127,7 @@ for spec in dataset_specs:
 
 train_dataset = build_interleaved_dataset(packed_datasets, seed=42)
 train_dataset = train_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42)
+train_dataset = train_dataset.with_format("torch")
 print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
 
 
@@ -149,16 +153,22 @@ for dataset_index, spec in enumerate(dataset_specs):
     raw_dataset = load_dataset_source(
         spec["repo_id"],
         cache_dir=data_dir,
-        streaming=False,
+        streaming=True,
     )
-    avg_tokens, est_total_tokens = token_estimator.estimate_dataset(raw_dataset)
+    total_rows = None
+    if raw_dataset.info and raw_dataset.info.splits:
+        split_info = raw_dataset.info.splits.get("train")
+        if split_info is not None:
+            total_rows = split_info.num_examples
+    if total_rows is None:
+        raise ValueError("Dataset split metadata missing num_examples for token estimate.")
+    avg_tokens, est_total_tokens = token_estimator.estimate_streaming(raw_dataset, total_rows)
     estimated_total_tokens += est_total_tokens
     print(
         f"Dataset {dataset_index + 1}/{len(dataset_specs)} "
         f"({spec['repo_id']}): avg_tokens={avg_tokens:.1f}, "
         f"est_tokens={est_total_tokens}"
     )
-
 tokens_per_sample = config.CONTEXT_LEN - 1
 tokens_per_step = config.BATCH_SIZE * tokens_per_sample
 steps_per_epoch = math.ceil(estimated_total_tokens / tokens_per_step)

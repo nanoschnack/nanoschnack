@@ -114,7 +114,6 @@ for spec in dataset_specs:
         cache_dir=data_dir,
         streaming=True,
     )
-    raw_streaming = raw_streaming.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42)
     packed = build_packed_dataset(
         raw_streaming,
         tokenizer=tokenizer,
@@ -124,6 +123,7 @@ for spec in dataset_specs:
     packed_datasets.append(packed)
 
 train_dataset = build_interleaved_dataset(packed_datasets, seed=42)
+train_dataset = train_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42)
 print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
 
 
@@ -161,7 +161,6 @@ for dataset_index, spec in enumerate(dataset_specs):
 
 tokens_per_sample = config.CONTEXT_LEN - 1
 tokens_per_step = config.BATCH_SIZE * tokens_per_sample
-estimated_total_samples = math.ceil(estimated_total_tokens / tokens_per_sample)
 steps_per_epoch = math.ceil(estimated_total_tokens / tokens_per_step)
 total_steps = steps_per_epoch * epochs
 print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)
@@ -171,7 +170,7 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
-resume_epoch, resume_step, global_step, sample_index, total_samples, resume_tokens = checkpointer.load_latest()
+resume_epoch, resume_step, global_step, sample_index, resume_tokens = checkpointer.load_latest()
 
 last_ckpt_time = time.time()
 
@@ -179,7 +178,7 @@ last_ckpt_time = time.time()
 progress = ProgressLogger(
     ascii_loss_plot,
     start_global_step=global_step,
-    start_total_samples=total_samples,
+    start_total_samples=sample_index,
     start_total_tokens=resume_tokens,
     log_interval=config.LOG_INTERVAL_SECS,
     warmup_plot_interval=config.PLOT_WARMUP_SECS,
@@ -255,7 +254,6 @@ try:
 
             # Log progress and plot loss history
             token_count = attention_mask[:, 1:].sum().item()
-            remaining_samples = max(estimated_total_samples * epochs - total_samples, 0)
             remaining_tokens = max(estimated_total_tokens * epochs - progress.total_tokens, 0)
             progress.tick(
                 loss.item(),
@@ -264,13 +262,8 @@ try:
                 optimizer.param_groups[0]["lr"],
                 epoch,
                 step,
-                shard_index=0,
-                shard_count=1,
-                shard_len=estimated_total_samples,
-                remaining_samples=remaining_samples,
                 remaining_tokens=remaining_tokens,
             )
-            total_samples += input_ids.size(0)
             current_position += input_ids.size(0)
             now = time.time()
             ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
@@ -280,7 +273,6 @@ try:
                     step,
                     progress.global_step,
                     current_position,
-                    total_samples,
                     progress.total_tokens,
                 )
                 last_ckpt_time = now
@@ -295,7 +287,6 @@ except KeyboardInterrupt:
         last_step,
         progress.global_step,
         current_position,
-        total_samples,
         progress.total_tokens,
     )
     print("Interrupted: checkpoint saved, exiting.")

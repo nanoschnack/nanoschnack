@@ -50,10 +50,6 @@ class ProgressLogger:
         lr,
         epoch,
         step,
-        shard_index,
-        shard_count,
-        shard_len,
-        remaining_samples,
         remaining_tokens=None,
     ):
         # Record the latest loss and retain a rolling window for plotting.
@@ -82,9 +78,8 @@ class ProgressLogger:
                     tokens_per_sec,
                 )
             else:
-                estimated_total = shard_len * shard_count
-                pct = min(100.0, (self.total_samples / estimated_total) * 100) if estimated_total else 0.0
-                eta = self._format_eta(remaining_samples, samples_per_sec)
+                pct = 0.0
+                eta = "?"
 
             message = (
                 f"Tokens {self._format_count(self.total_tokens)}, "
@@ -93,7 +88,6 @@ class ProgressLogger:
                 f"Epoch {epoch+1}, "
                 f"Step {step+1}, "
                 f"Global {self.global_step+1}, "
-                f"Shard {shard_index + 1}/{shard_count}, "
                 f"Loss {avg_loss:.4f}, "
                 f"LR {lr:.2e}, "
                 f"Samples/s {samples_per_sec:.1f}, "
@@ -121,11 +115,11 @@ class ProgressLogger:
         # Keep a global step counter for resuming logs across restarts.
         self.global_step += 1
 
-    def _format_eta(self, remaining_samples, samples_per_sec):
+    def _format_eta(self, remaining_units, units_per_sec):
         # Format an ETA string from remaining samples and throughput.
-        if samples_per_sec <= 0:
+        if units_per_sec <= 0:
             return "?"
-        remaining_secs = remaining_samples / samples_per_sec
+        remaining_secs = remaining_units / units_per_sec
         hours = int(remaining_secs // 3600)
         minutes = int((remaining_secs % 3600) // 60)
         if hours > 0:

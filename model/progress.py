@@ -19,6 +19,7 @@ class ProgressLogger:
         warmup_plot_interval=60,
         plot_interval=600,
         warmup_window_secs=600,
+        estimated_total_tokens=None,
     ):
         # Keep configuration and bookkeeping for periodic logging.
         self.plot_fn = plot_fn
@@ -37,10 +38,24 @@ class ProgressLogger:
         self.loss_steps = 0
         self.total_samples = start_total_samples
         self.total_tokens = start_total_tokens
+        self.estimated_total_tokens = estimated_total_tokens
         self.samples_per_sec = 0.0
         self.loss_history = deque()
 
-    def tick(self, loss_value, batch_size, token_count, lr, epoch, step, shard_index, shard_count, shard_len, remaining_samples):
+    def tick(
+        self,
+        loss_value,
+        batch_size,
+        token_count,
+        lr,
+        epoch,
+        step,
+        shard_index,
+        shard_count,
+        shard_len,
+        remaining_samples,
+        remaining_tokens=None,
+    ):
         # Record the latest loss and retain a rolling window for plotting.
         now = time.time()
         self.total_tokens += token_count
@@ -60,11 +75,16 @@ class ProgressLogger:
             samples_per_sec = self.samples_since_log / elapsed if elapsed > 0 else 0.0
             tokens_per_sec = self.tokens_since_log / elapsed if elapsed > 0 else 0.0
             self.samples_per_sec = samples_per_sec
-            estimated_total = shard_len * shard_count
-            pct = min(100.0, (self.total_samples / estimated_total) * 100)
-            shard_label = f"Shard {shard_index + 1}/{shard_count}"
-            total_label = f"Total {pct:.1f}%"
-            prefix = f"{shard_label}, {total_label}"
+            if self.estimated_total_tokens:
+                pct = min(100.0, (self.total_tokens / self.estimated_total_tokens) * 100)
+                eta = self._format_eta(
+                    remaining_tokens if remaining_tokens is not None else 0,
+                    tokens_per_sec,
+                )
+            else:
+                estimated_total = shard_len * shard_count
+                pct = min(100.0, (self.total_samples / estimated_total) * 100) if estimated_total else 0.0
+                eta = self._format_eta(remaining_samples, samples_per_sec)
 
             message = (
                 f"Tokens {self._format_count(self.total_tokens)}, "
@@ -78,7 +98,7 @@ class ProgressLogger:
                 f"LR {lr:.2e}, "
                 f"Samples/s {samples_per_sec:.1f}, "
                 f"Tokens/s {tokens_per_sec:.1f}, "
-                f"ETA {self._format_eta(remaining_samples, samples_per_sec)}"
+                f"ETA {eta}"
             )
             print(message, flush=True)
             self.last_log_time = now

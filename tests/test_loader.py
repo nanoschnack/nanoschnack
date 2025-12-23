@@ -1,3 +1,5 @@
+import math
+import random
 import unittest
 from unittest import mock
 
@@ -233,6 +235,28 @@ class MultiLoaderTests(unittest.TestCase):
                 dataset_indices.append(dataset_index)
 
         self.assertEqual(dataset_indices, [0, 1, 0, 1, 1, 1])
+
+
+class TokenEstimatorTests(unittest.TestCase):
+    def test_estimate_tokens_from_sample(self):
+        tokenizer = FakeTokenizer()
+        dataset = FakeDataset(
+            [
+                {"text": "aa"},
+                {"text": "bbbb"},
+                {"text": "c"},
+            ]
+        )
+        estimator = loader_module.TokenEstimator(tokenizer, sample_size=2, seed=7)
+        avg_tokens, est_total = estimator.estimate_dataset(dataset)
+
+        rng = random.Random(7)
+        indices = [rng.randrange(len(dataset)) for _ in range(2)]
+        expected_avg = sum(len(dataset[idx]["text"]) for idx in indices) / 2
+        expected_total = int(math.ceil(expected_avg * len(dataset)))
+
+        self.assertEqual(avg_tokens, expected_avg)
+        self.assertEqual(est_total, expected_total)
 
 
 class LazyChunkingTests(unittest.TestCase):

@@ -134,6 +134,49 @@ class ChunkEstimator:
         return 1 + int(math.ceil((token_count - self.max_len) / step))
 
 
+class TokenEstimator:
+    """Estimate token counts per document without materializing datasets.
+
+    Uses a deterministic sample of each shard to approximate the average
+    number of tokens per document. The estimator scales the sample average
+    to the full dataset size to approximate total tokens.
+    """
+
+    def __init__(self, tokenizer, sample_size=1000, seed=42, text_key="text"):
+        self.tokenizer = tokenizer
+        self.sample_size = sample_size
+        self.seed = seed
+        self.text_key = text_key
+
+    def estimate_dataset(self, dataset):
+        # Sample texts and estimate tokens per document.
+        sample = self._sample_texts(dataset)
+        avg_tokens = self._average_tokens(sample)
+        return avg_tokens, int(math.ceil(avg_tokens * len(dataset)))
+
+    def _sample_texts(self, dataset):
+        # Return a deterministic random sample of texts.
+        if len(dataset) == 0:
+            return []
+
+        # Clamp to dataset size to avoid index errors.
+        sample_size = min(self.sample_size, len(dataset))
+        rng = random.Random(self.seed)
+        indices = [rng.randrange(len(dataset)) for _ in range(sample_size)]
+        return [dataset[idx][self.text_key] for idx in indices]
+
+    def _average_tokens(self, texts):
+        # Average token counts across sampled texts.
+        if not texts:
+            return 0.0
+
+        # Estimate tokens from tokenized lengths.
+        total = 0
+        for text in texts:
+            total += len(self.tokenizer.encode(text).ids)
+        return total / len(texts)
+
+
 def chunk_ids(ids, max_len, stride, pad_id):
     if len(ids) == 0:
         return []

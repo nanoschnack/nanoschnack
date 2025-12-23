@@ -90,82 +90,42 @@ model = GPT(
 # %%
 from datasets.utils.logging import enable_progress_bar, set_verbosity_warning
 from loader import (
-    ChunkEstimator,
-    MultiShardedBatchLoader,
-    ShardedBatchLoader,
-    build_chunking_tokenizer,
-    build_tokenizer,
+    TokenEstimator,
+    build_interleaved_dataset,
+    build_packed_dataset,
+    load_dataset_source,
 )
 
-# Download shards on demand and shuffle within each shard.
+# Download shards on demand and shuffle within each dataset.
 set_verbosity_warning()
 enable_progress_bar()
 
-# do or not do chunking of the input text, instead of truncating.
-if True:
-    max_len = context_len
-    stride = context_len//4  # overlap; set to 0 for no overlap
+token_estimator = TokenEstimator(tokenizer)
 
-    tokenizer.no_padding()
-    tokenizer.no_truncation()
-
-    # Estimate chunk counts from a sample; chunking stays in-memory.
-    estimator = ChunkEstimator(
-        tokenizer,
-        max_len=max_len,
-        stride=stride,
-    )
-
-    # Build a tokenizer that chunks long sequences on the fly.
-    tokenizer_batch = build_chunking_tokenizer(
-        tokenizer,
-        pad_id=pad_id,
-        max_len=max_len,
-        stride=stride,
-    )
-else:
-    # Enable truncation and padding
-    tokenizer.enable_truncation(max_length=context_len)
-    tokenizer.enable_padding(length=context_len, pad_id=pad_id, pad_token="[PAD]")
-
-    # Wrap Hugging Face tokenizer for batch processing
-    estimator = None
-    tokenizer_batch = build_tokenizer(tokenizer)
-
-# Now with the tokenizer derive training parameters like batch size.
-tuned_batch_size = find_max_batch_size(
-    model,
-    vocab_size=tokenizer.get_vocab_size(),
-    seq_len=context_len,
-    device=device,
-    start=config.BATCH_SIZE,
-)
-if tuned_batch_size:
-    config.BATCH_SIZE = tuned_batch_size
-print(f"Tuned batch_size={config.BATCH_SIZE}")
-param_count, quantization = config.model_info(model)
-config.print_training_hyperparams(param_count=param_count, quantization=quantization)
-
-# Build one sharded loader per dataset.
-loaders = []
-repo_ids = [
-    "arnomatic/german-wikipedia-clean-no-lists",
-    "PatrickHaller/fineweb-2-de-1B",
+# Build packed datasets per source.
+dataset_specs = [
+    {"repo_id": "arnomatic/german-wikipedia-clean-no-lists"},
+    {"repo_id": "PatrickHaller/fineweb-2-de-1B"},
 ]
-for repo_id in repo_ids:
-    loaders.append(
-        ShardedBatchLoader(
-            repo_id=repo_id,
-            data_dir=data_dir,
-            tokenizer_batch=tokenizer_batch,
-            batch_size=config.BATCH_SIZE,
-            seed=42,
-        )
+packed_datasets = []
+for spec in dataset_specs:
+    raw_streaming = load_dataset_source(
+        spec["repo_id"],
+        cache_dir=data_dir,
+        streaming=True,
     )
+    raw_streaming = raw_streaming.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42)
+    packed = build_packed_dataset(
+        raw_streaming,
+        tokenizer=tokenizer,
+        block_size=config.CONTEXT_LEN,
+        pack_batch_size=config.PACK_BATCH_SIZE,
+    )
+    packed_datasets.append(packed)
 
-# Interleave datasets round-robin.
-sharded_loader = MultiShardedBatchLoader(loaders)
-print(f"Sharded loader ready ({sharded_loader.num_shards} shards).", flush=True)
+train_dataset = build_interleaved_dataset(packed_datasets, seed=42)
+print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
+
 
 # %% [markdown]
 # ## Run the Training
@@ -175,34 +135,34 @@ from plot import ascii_loss_plot
 from progress import ProgressLogger
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine
+from torch.utils.data import DataLoader
 import math
 import os
 import time
 
 # Set up optimizer, learning-rate scheduler, and loss function
 epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
-estimated_total_samples = sharded_loader.estimate_total_samples()
+estimated_total_tokens = 0
 
-# Report chunk estimates when chunking is enabled.
-if estimator is not None:
-    print("Estimating chunks from first shard...", flush=True)
-    estimated_total_samples = 0
+print("Estimating tokens from dataset samples...", flush=True)
+for dataset_index, spec in enumerate(dataset_specs):
+    raw_dataset = load_dataset_source(
+        spec["repo_id"],
+        cache_dir=data_dir,
+        streaming=False,
+    )
+    avg_tokens, est_total_tokens = token_estimator.estimate_dataset(raw_dataset)
+    estimated_total_tokens += est_total_tokens
+    print(
+        f"Dataset {dataset_index + 1}/{len(dataset_specs)} "
+        f"({spec['repo_id']}): avg_tokens={avg_tokens:.1f}, "
+        f"est_tokens={est_total_tokens}"
+    )
 
-    for dataset_index, loader in enumerate(sharded_loader.loaders):
-        raw_shard = loader.shards.load_shard(0)
-        avg_chunks, est_total = estimator.estimate_dataset(raw_shard)
-        loader.set_estimated_shard_len(est_total)
-        estimated_total_samples += est_total * loader.num_shards
-        print(
-            f"Dataset {dataset_index + 1}/{sharded_loader.num_datasets} "
-            f"({loader.shards.repo_id}): avg_chunks={avg_chunks:.2f}, "
-            f"est_total={est_total}"
-        )
-print(f"Estimated total samples (sentences) across datasets: {estimated_total_samples}", flush=True)
-print(f"Estimated total tokens across datasets: {estimated_total_samples * context_len}", flush=True)
-
-# Chunk-aware estimates are already applied when the estimator is set.
-steps_per_epoch = math.ceil(estimated_total_samples / config.BATCH_SIZE)
+tokens_per_sample = config.CONTEXT_LEN - 1
+tokens_per_step = config.BATCH_SIZE * tokens_per_sample
+estimated_total_samples = math.ceil(estimated_total_tokens / tokens_per_sample)
+steps_per_epoch = math.ceil(estimated_total_tokens / tokens_per_step)
 total_steps = steps_per_epoch * epochs
 print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
@@ -211,7 +171,7 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
-resume_epoch, resume_step, global_step, resume_position, total_samples, resume_tokens = checkpointer.load_latest()
+resume_epoch, resume_step, global_step, sample_index, total_samples, resume_tokens = checkpointer.load_latest()
 
 last_ckpt_time = time.time()
 
@@ -225,14 +185,15 @@ progress = ProgressLogger(
     warmup_plot_interval=config.PLOT_WARMUP_SECS,
     plot_interval=config.PLOT_INTERVAL_SECS,
     warmup_window_secs=config.WARMUP_WINDOW_SECS,
+    estimated_total_tokens=estimated_total_tokens * epochs,
 )
 
 
 last_epoch = resume_epoch
 last_step = resume_step
-if not isinstance(resume_position, list):
-    resume_position = [(0, 0) for _ in range(sharded_loader.num_datasets)]
-current_position = resume_position
+# Resume from the saved sample index.
+start_position = sample_index
+current_position = start_position
 
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
@@ -241,23 +202,22 @@ try:
     print("Starting training loop...", flush=True)
     for epoch in range(resume_epoch, epochs):
         last_epoch = epoch
-        loader = sharded_loader.iter_batches(start_positions=current_position)
-        for step, batch_info in enumerate(loader):
+        dataset_epoch = train_dataset
+        if epoch == resume_epoch and start_position > 0:
+            dataset_epoch = dataset_epoch.skip(start_position)
+        loader = DataLoader(dataset_epoch, batch_size=config.BATCH_SIZE, shuffle=False)
+        for step, batch in enumerate(loader):
             last_step = step
 
-            # Unpack per-dataset batches.
-            batch, current_position, dataset_index, shard_index, shard_len = batch_info
-            shard_count = sharded_loader.loaders[dataset_index].num_shards
-
             # Get the input IDs and attention mask, and move them to the GPU
-            input_ids = batch["input_ids"]
+            input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
             # Next-token prediction
             # input = Hello, Wor
             # target = llo, World
-            inputs = input_ids[:, :-1].to(device) # everything from the first token except the last
-            targets = input_ids[:, 1:].to(device) # everything from the second token onward
+            inputs = input_ids[:, :-1] # everything from the first token except the last
+            targets = input_ids[:, 1:] # everything from the second token onward
 
             # Preview the first sample to confirm tokenization/targets.
             if debug_level >= 2 and not printed_debug_sample:
@@ -296,6 +256,7 @@ try:
             # Log progress and plot loss history
             token_count = attention_mask[:, 1:].sum().item()
             remaining_samples = max(estimated_total_samples * epochs - total_samples, 0)
+            remaining_tokens = max(estimated_total_tokens * epochs - progress.total_tokens, 0)
             progress.tick(
                 loss.item(),
                 input_ids.size(0),
@@ -303,12 +264,14 @@ try:
                 optimizer.param_groups[0]["lr"],
                 epoch,
                 step,
-                shard_index=shard_index,
-                shard_count=shard_count,
-                shard_len=shard_len,
+                shard_index=0,
+                shard_count=1,
+                shard_len=estimated_total_samples,
                 remaining_samples=remaining_samples,
+                remaining_tokens=remaining_tokens,
             )
             total_samples += input_ids.size(0)
+            current_position += input_ids.size(0)
             now = time.time()
             ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
             if now - last_ckpt_time >= ckpt_interval:
@@ -321,7 +284,8 @@ try:
                     progress.total_tokens,
                 )
                 last_ckpt_time = now
-        current_position = (0, 0)
+        start_position = 0
+        current_position = 0
 
 except KeyboardInterrupt:
     # Save a checkpoint so training can resume from the last completed step.
@@ -335,4 +299,5 @@ except KeyboardInterrupt:
         progress.total_tokens,
     )
     print("Interrupted: checkpoint saved, exiting.")
+
 

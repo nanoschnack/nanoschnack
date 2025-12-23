@@ -158,6 +158,7 @@ print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
 
 # %%
 from plot import ascii_loss_plot
+from chat import generate_reply_stream
 from progress import ProgressLogger
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine
@@ -165,6 +166,42 @@ from torch.utils.data import DataLoader
 import math
 import os
 import time
+
+def _plot_completion():
+    # Generate a fixed-length completion for the configured prompt.
+    was_training = model.training
+    if was_training:
+        model.eval()
+    try:
+        reply_parts = []
+        for token in generate_reply_stream(
+            model,
+            tokenizer,
+            config.PLOT_COMPLETION_PROMPT,
+            context_len=config.CONTEXT_LEN,
+            max_new_tokens=config.PLOT_COMPLETION_TOKENS,
+            temperature=config.TEMPERATURE,
+            top_k=config.TOP_K,
+            device=device,
+        ):
+            reply_parts.append(token)
+        return "".join(reply_parts)
+    except Exception as exc:
+        return f" [generation failed: {exc}]"
+    finally:
+        if was_training:
+            model.train()
+
+def plot_with_completion(points):
+    # Render the loss plot first so completion failures don't block logs.
+    chart = ascii_loss_plot(points)
+
+    # Append the configured completion snapshot.
+    completion = _plot_completion()
+    return (
+        f"{chart}\n\ncompletion ({config.PLOT_COMPLETION_TOKENS} tokens)\n"
+        f"{config.PLOT_COMPLETION_PROMPT}{completion}"
+    )
 
 # Set up optimizer, learning-rate scheduler, and loss function
 epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
@@ -240,7 +277,7 @@ last_ckpt_time = time.time()
 
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
-    ascii_loss_plot,
+    plot_with_completion,
     start_global_step=global_step,
     start_total_samples=sample_index,
     start_total_tokens=resume_tokens,

@@ -13,23 +13,54 @@ from gpt import GPT
 from tokenizer import load_tokenizer
 
 
+def _apply_checkpoint_config(ckpt_config):
+    if not ckpt_config:
+        return
+    # Update model hyperparameters from checkpoint metadata.
+    for name in ("CONTEXT_LEN", "EMBED_SIZE", "NUM_LAYERS", "NUM_HEADS", "HIDDEN_SIZE"):
+        if name in ckpt_config:
+            setattr(config, name, ckpt_config[name])
+
+
+def _strip_state_dict_prefix(state_dict, prefix):
+    if not state_dict:
+        return state_dict
+    # Strip a common prefix applied by wrappers like DataParallel.
+    keys = list(state_dict.keys())
+    if all(key.startswith(prefix) for key in keys):
+        return {key[len(prefix):]: value for key, value in state_dict.items()}
+    return state_dict
+
+
+def _normalize_state_dict(state_dict):
+    # Normalize wrapper prefixes to support older checkpoint formats.
+    state_dict = _strip_state_dict_prefix(state_dict, "module.")
+    state_dict = _strip_state_dict_prefix(state_dict, "_orig_mod.")
+    return _strip_state_dict_prefix(state_dict, "model.")
+
+
+def _select_state_dict(ckpt):
+    # Extract the model weights from known checkpoint layouts.
+    if isinstance(ckpt, dict):
+        if "model" in ckpt:
+            _apply_checkpoint_config(ckpt.get("config"))
+            return ckpt["model"]
+        for key in ("model_state_dict", "state_dict"):
+            if key in ckpt:
+                return ckpt[key]
+        return None
+    return ckpt
+
+
 def load_model(checkpoint_path, vocab_size, device):
     # Construct the model and optionally load weights from checkpoint.
     state_dict = None
 
     if checkpoint_path is not None:
         ckpt = torch.load(checkpoint_path, map_location=device)
-        if isinstance(ckpt, dict) and "model" in ckpt:
-            if "config" in ckpt:
-                ckpt_config = ckpt["config"]
-                config.CONTEXT_LEN = ckpt_config.get("CONTEXT_LEN", config.CONTEXT_LEN)
-                config.EMBED_SIZE = ckpt_config.get("EMBED_SIZE", config.EMBED_SIZE)
-                config.NUM_LAYERS = ckpt_config.get("NUM_LAYERS", config.NUM_LAYERS)
-                config.NUM_HEADS = ckpt_config.get("NUM_HEADS", config.NUM_HEADS)
-                config.HIDDEN_SIZE = ckpt_config.get("HIDDEN_SIZE", config.HIDDEN_SIZE)
-            state_dict = ckpt["model"]
-        else:
-            state_dict = ckpt
+        state_dict = _select_state_dict(ckpt)
+        if state_dict is not None:
+            state_dict = _normalize_state_dict(state_dict)
 
     model = GPT(
         vocab_size=vocab_size,
@@ -41,7 +72,12 @@ def load_model(checkpoint_path, vocab_size, device):
     ).to(device).eval()
 
     if state_dict is not None:
-        model.load_state_dict(state_dict)
+        try:
+            model.load_state_dict(state_dict)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Failed to load checkpoint weights from {checkpoint_path}."
+            ) from exc
 
     return model, config.CONTEXT_LEN
 

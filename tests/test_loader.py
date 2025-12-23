@@ -1,7 +1,9 @@
+import math
+import random
 import unittest
-from unittest import mock
 
-import torch
+from datasets import Dataset
+from datasets import IterableDataset
 
 from model import loader as loader_module
 
@@ -25,240 +27,57 @@ class FakeTokenizer:
         return encodings
 
 
-class FakeDataset:
-    def __init__(self, items):
-        self._items = items
-        self.last_shuffle_seed = None
-        self.map_num_proc = None
-
-    def shuffle(self, seed):
-        self.last_shuffle_seed = seed
-        return self
-
-    def map(self, tokenizer_batch, batched=False, num_proc=None):
-        if not batched:
-            raise AssertionError("Expected batched=True in map()")
-        self.map_num_proc = num_proc
-        batch = {"text": [item["text"] for item in self._items]}
-        tokenized = tokenizer_batch(batch)
-        items = []
-        for input_ids, attention_mask in zip(
-            tokenized["input_ids"], tokenized["attention_mask"]
-        ):
-            items.append(
-                {
-                    "input_ids": torch.tensor(input_ids, dtype=torch.long),
-                    "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
-                }
-            )
-        new_dataset = FakeDataset(items)
-        new_dataset.last_shuffle_seed = self.last_shuffle_seed
-        new_dataset.map_num_proc = num_proc
-        return new_dataset
-
-    def with_format(self, type=None):
-        return self
-
-    def select(self, indices):
-        return FakeDataset([self._items[i] for i in indices])
-
-    def __len__(self):
-        return len(self._items)
-
-    def __getitem__(self, idx):
-        return self._items[idx]
-
-
-class FakeShardedDataset:
-    def __init__(self, repo_id, data_dir, shard_limit=None):
-        self.repo_id = repo_id
-        shard_files = ["shard0.parquet", "shard1.parquet"]
-        if shard_limit is not None:
-            shard_files = shard_files[:shard_limit]
-        self.shard_files = shard_files
-
-    @property
-    def num_shards(self):
-        return len(self.shard_files)
-
-    def shard_name(self, shard_index):
-        return self.shard_files[shard_index]
-
-    def load_shard(self, shard_index):
-        if self.repo_id == "repo":
-            if shard_index == 0:
-                items = [{"text": "a"}, {"text": "b"}, {"text": "c"}]
-            else:
-                items = [{"text": "d"}, {"text": "e"}]
-        elif self.repo_id == "repo-a":
-            if shard_index == 0:
-                items = [{"text": "a1"}]
-            else:
-                items = [{"text": "a2"}]
-        else:
-            if shard_index == 0:
-                items = [{"text": "b1"}, {"text": "b2"}]
-            else:
-                items = [{"text": "b3"}, {"text": "b4"}]
-        return FakeDataset(items)
-
-    def prefetch_shard(self, shard_index):
-        return self.shard_files[shard_index]
-
-
-def tokenizer_batch(batch):
-    input_ids = []
-    attention_mask = []
-    for idx, _text in enumerate(batch["text"]):
-        tokens = [idx, idx + 1, idx + 2]
-        input_ids.append(tokens)
-        attention_mask.append([1] * len(tokens))
-    return {"input_ids": input_ids, "attention_mask": attention_mask}
-
-
-class ShardedBatchLoaderTests(unittest.TestCase):
-    def _make_loader(self, batch_size=2, seed=42, num_proc=4):
-        with mock.patch.object(loader_module, "ShardedDataset", FakeShardedDataset):
-            return loader_module.ShardedBatchLoader(
-                repo_id="repo",
-                data_dir="data",
-                tokenizer_batch=tokenizer_batch,
-                batch_size=batch_size,
-                seed=seed,
-                num_proc=num_proc,
-                prefetch=False,
-            )
-
-    def test_iter_batches_tracks_positions(self):
-        loader = self._make_loader(batch_size=2)
-        positions = []
-        shard_lengths = []
-        for _batch, position, shard_index, shard_len in loader.iter_batches():
-            positions.append(position)
-            shard_lengths.append((shard_index, shard_len))
-
-        self.assertEqual(positions, [(0, 2), (0, 3), (1, 2)])
-        self.assertEqual(shard_lengths, [(0, 3), (0, 3), (1, 2)])
-
-    def test_iter_batches_start_position(self):
-        loader = self._make_loader(batch_size=2)
-        positions = []
-        for _batch, position, _shard_index, _shard_len in loader.iter_batches(start_position=(0, 2)):
-            positions.append(position)
-
-        self.assertEqual(positions, [(0, 3), (1, 2)])
-
-    def test_load_tokenized_shard_uses_seed_and_num_proc(self):
-        loader = self._make_loader(batch_size=2, seed=7, num_proc=3)
-        dataset = loader._load_tokenized_shard(1)
-        self.assertEqual(dataset.last_shuffle_seed, 8)
-        self.assertEqual(dataset.map_num_proc, 3)
-
-    def test_estimate_total_samples(self):
-        loader = self._make_loader(batch_size=2)
-        self.assertEqual(loader.estimate_total_samples(), 6)
-
-
-class ChunkingTests(unittest.TestCase):
-    def test_chunk_ids_with_padding(self):
-        ids = list(range(5))
-        chunks = loader_module.chunk_ids(ids, max_len=4, stride=2, pad_id=99)
-        self.assertEqual(chunks, [[0, 1, 2, 3], [2, 3, 4, 99]])
-
-    def test_chunk_ids_empty(self):
-        chunks = loader_module.chunk_ids([], max_len=4, stride=2, pad_id=0)
-        self.assertEqual(chunks, [])
-
-    def test_chunk_ids_no_chunk_when_short(self):
-        ids = list(range(3))
-        chunks = loader_module.chunk_ids(ids, max_len=5, stride=0, pad_id=99)
-        self.assertEqual(len(chunks), 1)
-        self.assertEqual(chunks[0], [0, 1, 2, 99, 99])
-
-    def test_chunk_ids_cover_all_tokens(self):
-        ids = list(range(10))
-        chunks = loader_module.chunk_ids(ids, max_len=4, stride=0, pad_id=99)
-        flattened = []
-        for chunk in chunks:
-            flattened.extend([token for token in chunk if token != 99])
-        self.assertEqual(flattened, ids)
-
-    def test_build_chunking_tokenizer(self):
+class TokenEstimatorTests(unittest.TestCase):
+    def test_estimate_tokens_from_sample(self):
         tokenizer = FakeTokenizer()
-        tokenizer_batch = loader_module.build_chunking_tokenizer(
-            tokenizer,
-            pad_id=99,
-            max_len=4,
-            stride=2,
+        dataset = Dataset.from_dict({"text": ["aa", "bbbb", "c"]})
+        estimator = loader_module.TokenEstimator(tokenizer, sample_size=2, seed=7)
+        avg_tokens, est_total = estimator.estimate_dataset(dataset)
+
+        rng = random.Random(7)
+        indices = [rng.randrange(len(dataset)) for _ in range(2)]
+        expected_avg = sum(len(dataset[idx]["text"]) for idx in indices) / 2
+        expected_total = int(math.ceil(expected_avg * len(dataset)))
+
+        self.assertEqual(avg_tokens, expected_avg)
+        self.assertEqual(est_total, expected_total)
+
+    def test_estimate_streaming(self):
+        tokenizer = FakeTokenizer()
+        items = [{"text": "aaa"}, {"text": "b"}, {"text": "cc"}]
+        dataset = IterableDataset.from_generator(lambda: iter(items))
+        estimator = loader_module.TokenEstimator(tokenizer, sample_size=2)
+        avg_tokens, est_total = estimator.estimate_streaming(dataset, total_rows=3)
+
+        expected_avg = (len(items[0]["text"]) + len(items[1]["text"])) / 2
+        expected_total = int(math.ceil(expected_avg * 3))
+
+        self.assertEqual(avg_tokens, expected_avg)
+        self.assertEqual(est_total, expected_total)
+
+
+class PackingTests(unittest.TestCase):
+    def test_pack_tokens(self):
+        batch = {"input_ids": [[0, 1, 2], [3, 4, 5, 6]]}
+        packed = loader_module.pack_tokens(batch, block_size=4)
+        self.assertEqual(packed["input_ids"], [[0, 1, 2, 3]])
+        self.assertEqual(packed["attention_mask"], [[1, 1, 1, 1]])
+
+
+class BuildPackedDatasetTests(unittest.TestCase):
+    def test_build_packed_dataset(self):
+        tokenizer = FakeTokenizer()
+        dataset = Dataset.from_dict({"text": ["abcd", "ef", "ghij"]})
+        packed = loader_module.build_packed_dataset(
+            dataset,
+            tokenizer=tokenizer,
+            block_size=4,
+            pack_batch_size=2,
         )
-        batch = {"text": ["hello"]}
-        output = tokenizer_batch(batch)
-        self.assertEqual(output["input_ids"], [[0, 1, 2, 3], [2, 3, 4, 99]])
-        self.assertEqual(output["attention_mask"], [[1, 1, 1, 1], [1, 1, 1, 0]])
-
-    def test_build_tokenizer(self):
-        tokenizer = FakeTokenizer()
-        tokenizer_batch = loader_module.build_tokenizer(tokenizer)
-        batch = {"text": ["hi", "hey"]}
-        output = tokenizer_batch(batch)
-        self.assertEqual(output["input_ids"], [[0, 1], [0, 1, 2]])
-        self.assertEqual(output["attention_mask"], [[1, 1], [1, 1, 1]])
-
-
-class MultiLoaderTests(unittest.TestCase):
-    def test_round_robin_batches(self):
-        with mock.patch.object(loader_module, "ShardedDataset", FakeShardedDataset):
-            loader_a = loader_module.ShardedBatchLoader(
-                repo_id="repo-a",
-                data_dir="data",
-                tokenizer_batch=tokenizer_batch,
-                batch_size=1,
-                seed=1,
-                num_proc=1,
-                prefetch=False,
-            )
-            loader_b = loader_module.ShardedBatchLoader(
-                repo_id="repo-b",
-                data_dir="data",
-                tokenizer_batch=tokenizer_batch,
-                batch_size=1,
-                seed=1,
-                num_proc=1,
-                prefetch=False,
-            )
-            multi_loader = loader_module.MultiShardedBatchLoader([loader_a, loader_b])
-
-            dataset_indices = []
-            for _batch, _positions, dataset_index, _shard_index, _shard_len in multi_loader.iter_batches():
-                dataset_indices.append(dataset_index)
-
-        self.assertEqual(dataset_indices, [0, 1, 0, 1, 1, 1])
-
-
-class LazyChunkingTests(unittest.TestCase):
-    def test_iterable_chunking_uses_estimate(self):
-        with mock.patch.object(loader_module, "ShardedDataset", FakeShardedDataset):
-            tokenizer = FakeTokenizer()
-            tokenizer_batch = loader_module.build_chunking_tokenizer(
-                tokenizer,
-                pad_id=0,
-                max_len=4,
-                stride=0,
-            )
-            loader = loader_module.ShardedBatchLoader(
-                repo_id="repo",
-                data_dir="data",
-                tokenizer_batch=tokenizer_batch,
-                batch_size=2,
-                seed=1,
-                num_proc=1,
-                prefetch=False,
-            )
-            loader.set_estimated_shard_len(5)
-            batches = list(loader.iter_batches())
-
-        shard_lens = [item[3] for item in batches]
-        self.assertEqual(shard_lens, [5, 5, 5])
+        self.assertEqual(len(packed), 2)
+        first = packed[0]
+        self.assertEqual(len(first["input_ids"]), 4)
+        self.assertEqual(first["attention_mask"].tolist(), [1, 1, 1, 1])
 
 
 if __name__ == "__main__":

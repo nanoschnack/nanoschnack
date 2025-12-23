@@ -28,11 +28,17 @@ class GPT(nn.Module):
             nhead=num_heads,
             dim_feedforward=hidden_size,
             dropout=dropout,
-            batch_first=True,  # Expect (B, T, E) from embeddings.
+            batch_first=True, # Expect (B, T, E) from embeddings.
+            norm_first=True, # Do what GPT-2 does: pre-norm instead of post-norm improving stability.
+            activation="gelu", # Use GELU non-linearity as in GPT-2.
         )
         self.blocks = nn.TransformerEncoder(layer, num_layers)
         self.ln = nn.LayerNorm(embed_size)
         self.lm = nn.Linear(embed_size, vocab_size, bias=False)
+
+        # share weights between token embedding and output projection. Original
+        # transformer paper and GPT-2 do this, and it improves performance.
+        self.tok.weight = self.lm.weight # (B, T) parameters saved: 768*50k = 38M!
 
     def forward(self, x, attention_mask=None):
         seq_length = x.size(1)

@@ -58,6 +58,12 @@ LEARNING_RATE = _env_float("LEARNING_RATE", 1e-4)
 # Use values between 0.01 and 0.05 for small warmups.
 WARMUP_PCT = _env_float("WARMUP_PCT", 0.03)
 
+# Shuffle buffer size for streaming datasets.
+SHUFFLE_BUFFER = _env_int("SHUFFLE_BUFFER", 10_000)
+
+# Batch size for dataset packing during tokenization.
+PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 1000)
+
 ###
 ### Inference defaults
 ###
@@ -154,6 +160,7 @@ def print_training_hyperparams(param_count=None, quantization=None):
         f"  batch_size={BATCH_SIZE}",
         f"  learning_rate={LEARNING_RATE}",
         f"  warmup_pct={WARMUP_PCT}",
+        f"  shuffle_buffer={SHUFFLE_BUFFER}",
     ]
     if param_count is not None or quantization is not None:
         lines += [

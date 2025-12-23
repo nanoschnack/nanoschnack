@@ -171,6 +171,9 @@ for dataset_index, spec in enumerate(dataset_specs):
         f"({spec['repo_id']}): avg_tokens={avg_tokens:.1f}, "
         f"est_tokens={est_total_tokens}"
     )
+# Resolve model size for token budgeting.
+param_count, _ = config.model_info(model)
+
 # Derive the token cap and epoch count from the configured max-training factor.
 max_tokens = 0
 if config.MAX_TRAINING_FACTOR > 0:

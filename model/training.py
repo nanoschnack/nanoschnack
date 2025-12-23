@@ -89,6 +89,19 @@ model = GPT(
     hidden_size=hidden_size,
     context_len=context_len,
 ).to(device).train()
+# Now with the tokenizer derive training parameters like batch size.
+tuned_batch_size = find_max_batch_size(
+    model,
+    vocab_size=tokenizer.get_vocab_size(),
+    seq_len=context_len,
+    device=device,
+    start=config.BATCH_SIZE,
+)
+if tuned_batch_size:
+    config.BATCH_SIZE = tuned_batch_size
+param_count, quantization = config.model_info(model)
+config.print_training_hyperparams(param_count=param_count, quantization=quantization)
+
 
 # %% [markdown]
 # ## Load the Training Data
@@ -128,10 +141,9 @@ for spec in dataset_specs:
     )
     packed_datasets.append(packed)
 
-train_dataset = build_interleaved_dataset(packed_datasets, seed=42)
-train_dataset = train_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42)
-train_dataset = train_dataset.with_format("torch")
+base_dataset = build_interleaved_dataset(packed_datasets, seed=42)
 print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
+
 
 
 # %% [markdown]
@@ -172,11 +184,43 @@ for dataset_index, spec in enumerate(dataset_specs):
         f"({spec['repo_id']}): avg_tokens={avg_tokens:.1f}, "
         f"est_tokens={est_total_tokens}"
     )
+# Resolve model size for token budgeting.
+param_count, _ = config.model_info(model)
+
+# Derive the token cap and epoch count from the configured max-training factor.
+max_tokens = 0
+if config.MAX_TRAINING_FACTOR > 0:
+    max_tokens = int(param_count * config.MAX_TRAINING_FACTOR)
+target_tokens = max_tokens if max_tokens else estimated_total_tokens
+if max_tokens and estimated_total_tokens > 0:
+    epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
 tokens_per_sample = config.CONTEXT_LEN - 1
 tokens_per_step = config.BATCH_SIZE * tokens_per_sample
-steps_per_epoch = math.ceil(estimated_total_tokens / tokens_per_step)
+dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
+steps_per_epoch = math.ceil(min(estimated_total_tokens, target_tokens) / tokens_per_step)
 total_steps = steps_per_epoch * epochs
-print(f"Estimated steps per epoch: {steps_per_epoch} (total {total_steps}).", flush=True)
+dataset_tokens_label = f"{estimated_total_tokens:,}"
+target_tokens_label = f"{target_tokens:,}"
+model_tokens_label = f"{param_count:,}"
+dataset_steps_label = f"{dataset_steps:,}"
+total_steps_label = f"{total_steps:,}"
+steps_per_epoch_label = f"{steps_per_epoch:,}"
+epochs_label = f"{epochs:,}"
+print(
+    f"Dataset estimate: steps_per_epoch={dataset_steps_label} tokens={dataset_tokens_label}",
+    flush=True,
+)
+print(
+    f"Target budget:    total_steps={total_steps_label} tokens={target_tokens_label} "
+    f"(factor {config.MAX_TRAINING_FACTOR} of model size {model_tokens_label})",
+    flush=True,
+)
+print(
+    f"Plan:             epochs={epochs_label} steps_per_epoch={steps_per_epoch_label} "
+    f"total_steps={total_steps_label}",
+    flush=True,
+)
+
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
 scheduler = build_warmup_cosine(optimizer, total_steps, config.WARMUP_PCT)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
@@ -197,9 +241,8 @@ progress = ProgressLogger(
     warmup_plot_interval=config.PLOT_WARMUP_SECS,
     plot_interval=config.PLOT_INTERVAL_SECS,
     warmup_window_secs=config.WARMUP_WINDOW_SECS,
-    estimated_total_tokens=estimated_total_tokens * epochs,
+    estimated_total_tokens=target_tokens,
 )
-
 
 last_epoch = resume_epoch
 last_step = resume_step
@@ -214,7 +257,8 @@ try:
     print("Starting training loop...", flush=True)
     for epoch in range(resume_epoch, epochs):
         last_epoch = epoch
-        dataset_epoch = train_dataset
+        dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + epoch)
+        dataset_epoch = dataset_epoch.with_format("torch")
         if epoch == resume_epoch and start_position > 0:
             dataset_epoch = dataset_epoch.skip(start_position)
         loader = DataLoader(dataset_epoch, batch_size=config.BATCH_SIZE, shuffle=False)
@@ -267,7 +311,7 @@ try:
 
             # Log progress and plot loss history
             token_count = attention_mask[:, 1:].sum().item()
-            remaining_tokens = max(estimated_total_tokens * epochs - progress.total_tokens, 0)
+            remaining_tokens = max(target_tokens - progress.total_tokens, 0)
             progress.tick(
                 loss.item(),
                 input_ids.size(0),

@@ -37,8 +37,6 @@ from tokenizer import load_tokenizer
 
 tokenizer = load_tokenizer()
 
-
-
 # %% [markdown]
 # ## Instantiating the NanoSchnack model
 
@@ -85,8 +83,6 @@ model = GPT(
     hidden_size=hidden_size,
     context_len=context_len,
 ).to(device).train()
-
-
 
 # %% [markdown]
 # ## Load the Training Data
@@ -202,6 +198,8 @@ if estimator is not None:
             f"({loader.shards.repo_id}): avg_chunks={avg_chunks:.2f}, "
             f"est_total={est_total}"
         )
+print(f"Estimated total samples (sentences) across datasets: {estimated_total_samples}", flush=True)
+print(f"Estimated total tokens across datasets: {estimated_total_samples * context_len}", flush=True)
 
 # Chunk-aware estimates are already applied when the estimator is set.
 steps_per_epoch = math.ceil(estimated_total_samples / config.BATCH_SIZE)
@@ -235,7 +233,6 @@ last_step = resume_step
 if not isinstance(resume_position, list):
     resume_position = [(0, 0) for _ in range(sharded_loader.num_datasets)]
 current_position = resume_position
-total_samples = total_samples
 
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
@@ -253,12 +250,14 @@ try:
             shard_count = sharded_loader.loaders[dataset_index].num_shards
 
             # Get the input IDs and attention mask, and move them to the GPU
-            input_ids = batch["input_ids"].to(device)
+            input_ids = batch["input_ids"]
             attention_mask = batch["attention_mask"].to(device)
 
             # Next-token prediction
-            inputs = input_ids[:, :-1] # everything from the first token except the last
-            targets = input_ids[:, 1:] # everything from the second token onward
+            # input = Hello, Wor
+            # target = llo, World
+            inputs = input_ids[:, :-1].to(device) # everything from the first token except the last
+            targets = input_ids[:, 1:].to(device) # everything from the second token onward
 
             # Preview the first sample to confirm tokenization/targets.
             if debug_level >= 2 and not printed_debug_sample:

@@ -102,8 +102,9 @@ if tuned_batch_size:
     config.BATCH_SIZE = tuned_batch_size
 
 # Compile the model for faster training.
-print("Compiling the model for faster training...")
-model = torch.compile(model)
+if device.type == "cuda":
+    print("Compiling the model for faster training...")
+    model = torch.compile(model)
 
 param_count, quantization = config.model_info(model)
 config.print_training_hyperparams(param_count=param_count, quantization=quantization)

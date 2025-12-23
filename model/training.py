@@ -172,6 +172,13 @@ for dataset_index, spec in enumerate(dataset_specs):
         f"({spec['repo_id']}): avg_tokens={avg_tokens:.1f}, "
         f"est_tokens={est_total_tokens}"
     )
+
+# Cap total tokens by model size unless disabled.
+if config.MAX_TRAINING_FACTOR > 0:
+    max_tokens = int(param_count * config.MAX_TRAINING_FACTOR)
+    if estimated_total_tokens > max_tokens:
+        print(f"Capping tokens to {max_tokens} (factor {config.MAX_TRAINING_FACTOR}).")
+        estimated_total_tokens = max_tokens
 tokens_per_sample = config.CONTEXT_LEN - 1
 tokens_per_step = config.BATCH_SIZE * tokens_per_sample
 steps_per_epoch = math.ceil(estimated_total_tokens / tokens_per_step)

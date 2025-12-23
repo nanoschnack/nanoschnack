@@ -21,6 +21,9 @@ def _env_int(name, default):
 def _env_float(name, default):
     return _env_override(name, float, default)
 
+def _env_str(name, default):
+    return _env_override(name, str, default)
+
 
 # Maximum sequence length used to size positional embeddings.
 # Keep this aligned between training and inference.
@@ -108,6 +111,12 @@ PLOT_INTERVAL_SECS = _env_int("PLOT_INTERVAL_SECS", 600)
 # Higher frequency helps during the startup phase.
 PLOT_WARMUP_SECS = _env_int("PLOT_WARMUP_SECS", 60)
 
+# Prompt used for sample completions appended to loss plots.
+PLOT_COMPLETION_PROMPT = _env_str("PLOT_COMPLETION_PROMPT", "Die Hauptstadt von Deutschland")
+
+# Number of tokens to generate for plot completions.
+PLOT_COMPLETION_TOKENS = _env_int("PLOT_COMPLETION_TOKENS", 128)
+
 # Log cadence in seconds for progress updates.
 # Impacts console verbosity and throughput reporting.
 LOG_INTERVAL_SECS = _env_int("LOG_INTERVAL_SECS", 10)
@@ -178,6 +187,8 @@ def print_training_hyperparams(param_count=None, quantization=None):
         f"  warmup_window_secs={WARMUP_WINDOW_SECS}",
         f"  plot_warmup_secs={PLOT_WARMUP_SECS}",
         f"  plot_interval_secs={PLOT_INTERVAL_SECS}",
+        f"  plot_completion_tokens={PLOT_COMPLETION_TOKENS}",
+        f"  plot_completion_prompt={PLOT_COMPLETION_PROMPT}",
         f"  checkpoint_warmup_secs={CHECKPOINT_WARMUP_SECS}",
         f"  checkpoint_interval_secs={CHECKPOINT_INTERVAL_SECS}",
     ]

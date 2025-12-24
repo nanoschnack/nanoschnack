@@ -62,6 +62,8 @@ class PackingTests(unittest.TestCase):
         packed = loader_module.pack_tokens(batch, block_size=4)
         self.assertEqual(packed["input_ids"], [[0, 1, 2, 3]])
         self.assertEqual(packed["attention_mask"], [[1, 1, 1, 1]])
+        self.assertEqual(packed["row_count"], [2])
+        self.assertEqual(packed["source_id"], [-1])
 
 
 class BuildPackedDatasetTests(unittest.TestCase):
@@ -78,6 +80,8 @@ class BuildPackedDatasetTests(unittest.TestCase):
         first = packed[0]
         self.assertEqual(len(first["input_ids"]), 4)
         self.assertEqual(first["attention_mask"].tolist(), [1, 1, 1, 1])
+        self.assertEqual(int(first["row_count"]), 2)
+        self.assertEqual(int(first["source_id"]), -1)
 
 
 if __name__ == "__main__":

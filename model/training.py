@@ -212,6 +212,7 @@ for dataset_index, spec in enumerate(dataset_specs):
         f"({dataset_label(spec)}): avg_tokens={avg_tokens:.1f}, "
         f"est_tokens={est_total_tokens}"
     )
+
 # Resolve model size for token budgeting.
 param_count, _ = config.model_info(model)
 
@@ -236,11 +237,6 @@ print(
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
 scheduler = build_warmup_cosine_tokens(optimizer, target_tokens, config.WARMUP_PCT)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
-# Advance the token-based scheduler without using the epoch argument.
-def _step_scheduler(token_count):
-    scheduler.last_epoch = token_count - 1
-    scheduler.step()
-
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 resume_epoch, resume_step, global_step, sample_index, resume_tokens = checkpointer.load_latest()
@@ -251,7 +247,13 @@ total_tokens_seen = resume_tokens
 
 # Align the scheduler with the resumed token count.
 if resume_tokens:
-    _step_scheduler(resume_tokens)
+    scheduler.last_epoch = resume_tokens
+    for group, base_lr, lr_lambda in zip(
+        optimizer.param_groups,
+        scheduler.base_lrs,
+        scheduler.lr_lambdas,
+    ):
+        group["lr"] = base_lr * lr_lambda(resume_tokens)
 
 # Normalize resume state into per-spec row offsets.
 resume_rows = {spec["spec"]: 0 for spec in dataset_specs}
@@ -411,6 +413,8 @@ try:
                 # Compute (average) loss of the predicted next tokens and apply backpropagation.
                 # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)
                 loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+
+            # Backward pass to compute gradients.
             loss.backward()
 
             # Clip gradients to stabilize training (especially for larger batches).
@@ -422,7 +426,8 @@ try:
             # Advance the token-based scheduler using observed tokens.
             token_count = attention_mask[:, 1:].sum().item()
             total_tokens_seen += token_count
-            _step_scheduler(total_tokens_seen)
+            scheduler.last_epoch = total_tokens_seen - 1
+            scheduler.step()
 
             # Log progress and plot loss history
             remaining_tokens = max(target_tokens - total_tokens_seen, 0)

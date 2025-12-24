@@ -5,6 +5,16 @@ import torch
 
 import config
 
+# Retain periodic checkpoint snapshots for easy rollback.
+SNAPSHOT_INTERVALS = (
+    ("10min", 10 * 60),
+    ("1h", 60 * 60),
+    ("2h", 2 * 60 * 60),
+    ("4h", 4 * 60 * 60),
+    ("8h", 8 * 60 * 60),
+    ("24h", 24 * 60 * 60),
+)
+
 def apply_checkpoint_config(ckpt_config):
     # Apply checkpoint hyperparameters to global config.
     if not ckpt_config:
@@ -122,6 +132,16 @@ class Checkpointer:
         self.scheduler = scheduler
         self.device = device
 
+    def _snapshot_path(self, label):
+        # Build a snapshot path for a retention label.
+        return self.directory / f"latest_{label}.pt"
+
+    def _write_checkpoint(self, path, ckpt):
+        # Write checkpoint atomically via a temp file.
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        torch.save(ckpt, tmp_path)
+        tmp_path.replace(path)
+
     def load_latest(self):
         # Load state from disk if present, otherwise start fresh.
         if not self.path.exists():
@@ -186,9 +206,18 @@ class Checkpointer:
             "sample_index": sample_index,
             "total_tokens": total_tokens,
         }
-        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        torch.save(ckpt, tmp_path)
-        tmp_path.replace(self.path)
+        # Save the rolling latest checkpoint.
+        self._write_checkpoint(self.path, ckpt)
+
+        # Save periodic snapshot copies based on the interval schedule.
+        now = time.time()
+        for label, interval in SNAPSHOT_INTERVALS:
+            snapshot_path = self._snapshot_path(label)
+            if snapshot_path.exists():
+                last_saved = snapshot_path.stat().st_mtime
+                if now - last_saved < interval:
+                    continue
+            self._write_checkpoint(snapshot_path, ckpt)
         elapsed = time.time() - start_time
         print(
             f"Saved checkpoint to {self.path} at epoch {epoch + 1}, step {step} "

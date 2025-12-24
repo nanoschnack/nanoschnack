@@ -144,6 +144,8 @@ class Checkpointer:
         if model_state is None:
             print(f"Checkpoint missing model state at {self.path}. Starting fresh.")
             return 0, 0, 0, 0, 0
+        # Normalize checkpoint prefixes before loading or remapping.
+        model_state = normalize_state_dict(model_state)
         try:
             remapped = load_model_state_dict(self.model, model_state)
         except Exception as exc:

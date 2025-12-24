@@ -10,46 +10,12 @@ except ModuleNotFoundError:
 import config
 from device import device_info, pick_device, print_device_info
 from gpt import GPT
+from checkpointer import (
+    load_model_state_dict,
+    normalize_state_dict,
+    select_state_dict,
+)
 from tokenizer import load_tokenizer
-
-
-def _apply_checkpoint_config(ckpt_config):
-    if not ckpt_config:
-        return
-    # Update model hyperparameters from checkpoint metadata.
-    for name in ("CONTEXT_LEN", "EMBED_SIZE", "NUM_LAYERS", "NUM_HEADS", "HIDDEN_SIZE"):
-        if name in ckpt_config:
-            setattr(config, name, ckpt_config[name])
-
-
-def _strip_state_dict_prefix(state_dict, prefix):
-    if not state_dict:
-        return state_dict
-    # Strip a common prefix applied by wrappers like DataParallel.
-    keys = list(state_dict.keys())
-    if all(key.startswith(prefix) for key in keys):
-        return {key[len(prefix):]: value for key, value in state_dict.items()}
-    return state_dict
-
-
-def _normalize_state_dict(state_dict):
-    # Normalize wrapper prefixes to support older checkpoint formats.
-    state_dict = _strip_state_dict_prefix(state_dict, "module.")
-    state_dict = _strip_state_dict_prefix(state_dict, "_orig_mod.")
-    return _strip_state_dict_prefix(state_dict, "model.")
-
-
-def _select_state_dict(ckpt):
-    # Extract the model weights from known checkpoint layouts.
-    if isinstance(ckpt, dict):
-        if "model" in ckpt:
-            _apply_checkpoint_config(ckpt.get("config"))
-            return ckpt["model"]
-        for key in ("model_state_dict", "state_dict"):
-            if key in ckpt:
-                return ckpt[key]
-        return None
-    return ckpt
 
 
 def load_model(checkpoint_path, vocab_size, device):
@@ -58,9 +24,9 @@ def load_model(checkpoint_path, vocab_size, device):
 
     if checkpoint_path is not None:
         ckpt = torch.load(checkpoint_path, map_location=device)
-        state_dict = _select_state_dict(ckpt)
+        state_dict = select_state_dict(ckpt)
         if state_dict is not None:
-            state_dict = _normalize_state_dict(state_dict)
+            state_dict = normalize_state_dict(state_dict)
 
     model = GPT(
         vocab_size=vocab_size,
@@ -73,7 +39,7 @@ def load_model(checkpoint_path, vocab_size, device):
 
     if state_dict is not None:
         try:
-            model.load_state_dict(state_dict)
+            load_model_state_dict(model, state_dict)
         except RuntimeError as exc:
             raise RuntimeError(
                 f"Failed to load checkpoint weights from {checkpoint_path}."

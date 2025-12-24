@@ -25,12 +25,16 @@ from device import device_info, pick_device, print_device_info
 device = pick_device()
 info = device_info(device)
 print_device_info(info)
+# Report SDPA kernel availability for attention debugging.
+print("Performance:")
+print(f"  Flash SDP enabled: {torch.backends.cuda.flash_sdp_enabled()}")
+print(f"  Mem-efficient SDP enabled: {torch.backends.cuda.mem_efficient_sdp_enabled()}")
+print(f"  Math SDP enabled: {torch.backends.cuda.math_sdp_enabled()}")
+print("  SDPA kernel selection: set TORCH_LOGS=attention")
 
 # Switch to TF32 for 8x speedup on supported hardware, and good enough for LLM training.
 torch.set_float32_matmul_precision("high")
 
-# Switch to TF32 for 8x speedup on supported hardware, and good enough for LLM training.
-torch.set_float32_matmul_precision("high")
 
 
 # %% [markdown]
@@ -298,6 +302,10 @@ try:
             # Get the input IDs and attention mask, and move them to the GPU
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
+            # Skip the attention mask when all tokens are valid to keep SDPA fast paths.
+            attn_mask = None
+            if attention_mask is not None and not attention_mask.all():
+                attn_mask = attention_mask
 
             # Next-token prediction
             # input = Hello, Wor
@@ -326,7 +334,7 @@ try:
 
             # Forward pass with bf16 autocast on CUDA.
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
-                logits = model(inputs, attention_mask=attention_mask[:, :-1])
+                logits = model(inputs, attention_mask=attn_mask[:, :-1] if attn_mask is not None else None)
 
                 # Compute (average) loss of the predicted next tokens and apply backpropagation.
                 # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)

@@ -1,15 +1,102 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
-def causal_mask(seq_len, device):
-    return torch.triu(
-        torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
-        diagonal=1,
-    )
+class CausalSelfAttention(nn.Module):
+    """Causal multi-head attention using PyTorch SDPA.
+
+    Uses a single QKV projection and scaled dot-product attention.
+    Supports optional padding masks while enforcing causality.
+    Targets Flash Attention when CUDA supports it.
+    """
+    def __init__(self, embed_size, num_heads, dropout):
+        super().__init__()
+        if embed_size % num_heads != 0:
+            raise ValueError("embed_size must be divisible by num_heads.")
+        self.num_heads = num_heads
+        self.head_dim = embed_size // num_heads
+        self.qkv = nn.Linear(embed_size, 3 * embed_size)
+        self.proj = nn.Linear(embed_size, embed_size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, attention_mask=None):
+        batch_size, seq_len, embed_size = x.shape
+
+        # Project to QKV and split into attention heads.
+        qkv = self.qkv(x)
+        q, k, v = qkv.chunk(3, dim=-1)
+        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # Expand padding mask to (B, 1, 1, T) for SDPA broadcasting.
+        attn_mask = None
+        if attention_mask is not None:
+            attn_mask = (attention_mask == 0).unsqueeze(1).unsqueeze(2)
+
+        # Run causal attention and project back to the model dimension.
+        dropout_p = self.dropout.p if self.training else 0.0
+        y = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            is_causal=True,
+            dropout_p=dropout_p,
+        )
+        y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_size)
+        y = self.proj(y)
+        return self.dropout(y)
+
+
+class FeedForward(nn.Module):
+    """Position-wise feed-forward network for transformer blocks.
+
+    Expands embeddings to a hidden size, applies GELU, and projects back.
+    Includes dropout on both projections for regularization.
+    """
+    def __init__(self, embed_size, hidden_size, dropout):
+        super().__init__()
+        self.input = nn.Linear(embed_size, hidden_size)
+        self.output = nn.Linear(hidden_size, embed_size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        x = self.input(x)
+        x = F.gelu(x)
+        x = self.dropout(x)
+        x = self.output(x)
+        return self.dropout(x)
+
+
+class TransformerBlock(nn.Module):
+    """Pre-norm transformer block with causal self-attention.
+
+    Applies LayerNorm before attention and MLP blocks.
+    Uses residual connections around both sublayers.
+    Preserves GPT-style training dynamics.
+    """
+    def __init__(self, embed_size, num_heads, hidden_size, dropout):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(embed_size)
+        self.ln2 = nn.LayerNorm(embed_size)
+        self.attn = CausalSelfAttention(embed_size, num_heads, dropout)
+        self.mlp = FeedForward(embed_size, hidden_size, dropout)
+
+    def forward(self, x, attention_mask=None):
+        x = x + self.attn(self.ln1(x), attention_mask=attention_mask)
+        x = x + self.mlp(self.ln2(x))
+        return x
 
 
 class GPT(nn.Module):
+    """GPT-style decoder-only transformer for next-token prediction.
+
+    Uses causal self-attention with pre-norm residual blocks.
+    Returns logits for each token position in the sequence.
+    Weight ties token embeddings and output projection.
+    """
     def __init__(
         self,
         vocab_size,
@@ -23,35 +110,23 @@ class GPT(nn.Module):
         super().__init__()
         self.tok = nn.Embedding(vocab_size, embed_size)
         self.pos = nn.Embedding(context_len, embed_size)
-        layer = nn.TransformerEncoderLayer(
-            d_model=embed_size,
-            nhead=num_heads,
-            dim_feedforward=hidden_size,
-            dropout=dropout,
-            batch_first=True, # Expect (B, T, E) from embeddings.
-            norm_first=True, # Do what GPT-2 does: pre-norm instead of post-norm improving stability.
-            activation="gelu", # Use GELU non-linearity as in GPT-2.
+        self.blocks = nn.ModuleList(
+            [
+                TransformerBlock(embed_size, num_heads, hidden_size, dropout)
+                for _ in range(num_layers)
+            ]
         )
-        # GPT-2 style pre-norm (norm_first=True) disables nested tensor fast path, so opt out explicitly.
-        self.blocks = nn.TransformerEncoder(layer, num_layers, enable_nested_tensor=False)
         self.ln = nn.LayerNorm(embed_size)
         self.lm = nn.Linear(embed_size, vocab_size, bias=False)
-
-        # share weights between token embedding and output projection. Original
-        # transformer paper and GPT-2 do this, and it improves performance.
-        self.tok.weight = self.lm.weight # (B, T) parameters saved: 768*50k = 38M!
+        # Share weights between token embedding and output projection.
+        self.tok.weight = self.lm.weight
 
     def forward(self, x, attention_mask=None):
         seq_length = x.size(1)
         positions = torch.arange(0, seq_length, device=x.device).unsqueeze(0)
         x = self.tok(x) + self.pos(positions)
 
-        padding_mask = None
-        if attention_mask is not None:
-            # True marks padded positions for TransformerEncoderLayer.
-            padding_mask = attention_mask == 0
-        causal = causal_mask(seq_length, x.device)
-
-        x = self.blocks(x, mask=causal, src_key_padding_mask=padding_mask)
+        for block in self.blocks:
+            x = block(x, attention_mask=attention_mask)
         x = self.ln(x)
         return self.lm(x)

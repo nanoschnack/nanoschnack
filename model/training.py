@@ -126,6 +126,7 @@ from loader import (
     build_packed_dataset,
     load_dataset_from_spec,
     parse_dataset_specs,
+    resolve_resume_plan,
     resolve_total_rows,
     dataset_label,
 )
@@ -134,27 +135,8 @@ from loader import (
 set_verbosity_warning()
 enable_progress_bar()
 
-# Build packed datasets per source.
+# Cache dataset specs for reuse across steps.
 dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
-packed_datasets = []
-for spec in dataset_specs:
-    raw_streaming = load_dataset_from_spec(
-        spec,
-        cache_dir=data_dir,
-        streaming=True,
-    )
-    packed = build_packed_dataset(
-        raw_streaming,
-        tokenizer=tokenizer,
-        block_size=config.CONTEXT_LEN,
-        text_key=spec["text_key"],
-        pack_batch_size=config.PACK_BATCH_SIZE,
-    )
-    packed_datasets.append(packed)
-
-base_dataset = build_interleaved_dataset(packed_datasets, seed=42)
-print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
-
 
 
 # %% [markdown]
@@ -169,6 +151,7 @@ from scheduler import build_warmup_cosine
 from torch.utils.data import DataLoader
 import math
 import os
+import signal
 import time
 
 def _plot_completion():
@@ -262,6 +245,64 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 resume_epoch, resume_step, global_step, sample_index, resume_tokens = checkpointer.load_latest()
+resume_state = checkpointer.resume_state
+
+# Normalize resume state into per-spec row offsets.
+resume_rows = {spec["spec"]: 0 for spec in dataset_specs}
+if isinstance(resume_state, dict):
+    for entry in resume_state.get("datasets", []):
+        spec_key = entry.get("spec")
+        if spec_key in resume_rows:
+            resume_rows[spec_key] = int(entry.get("row_offset", 0) or 0)
+
+# Report when resuming via the legacy sample index.
+use_row_resume = any(value > 0 for value in resume_rows.values())
+if sample_index > 0 and not use_row_resume:
+    print(
+        f"Resume rows unavailable; falling back to linear sample skip ({sample_index}).",
+        flush=True,
+    )
+
+# Build packed datasets per source with row-offset resumes.
+packed_datasets = []
+for dataset_index, spec in enumerate(dataset_specs):
+    row_offset = resume_rows.get(spec["spec"], 0)
+    data_files, in_shard_offset, shard_label = resolve_resume_plan(
+        spec,
+        row_offset,
+        cache_dir=data_dir,
+    )
+    raw_streaming = load_dataset_from_spec(
+        spec,
+        cache_dir=data_dir,
+        streaming=True,
+        data_files=data_files,
+    )
+    if row_offset > 0:
+        if data_files is None:
+            print(
+                f"Resume rows (linear): {spec['spec']} -> {row_offset}",
+                flush=True,
+            )
+            raw_streaming = raw_streaming.skip(row_offset)
+        else:
+            print(
+                f"Resume rows: {spec['spec']} -> {shard_label} +{in_shard_offset}",
+                flush=True,
+            )
+            raw_streaming = raw_streaming.skip(in_shard_offset)
+    packed = build_packed_dataset(
+        raw_streaming,
+        tokenizer=tokenizer,
+        block_size=config.CONTEXT_LEN,
+        text_key=spec["text_key"],
+        pack_batch_size=config.PACK_BATCH_SIZE,
+        source_id=dataset_index,
+    )
+    packed_datasets.append(packed)
+
+base_dataset = build_interleaved_dataset(packed_datasets, seed=42)
+print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
 
 last_ckpt_time = time.time()
 
@@ -280,17 +321,42 @@ progress = ProgressLogger(
 
 last_epoch = resume_epoch
 last_step = resume_step
-# Resume from the saved sample index.
-start_position = sample_index
-current_position = start_position
+# Resume from the saved sample index when no row offsets are available.
+start_position = 0 if use_row_resume else sample_index
+current_position = sample_index
+
+# Track row offsets for shard-aware resume.
+source_row_counts = {spec["spec"]: resume_rows.get(spec["spec"], 0) for spec in dataset_specs}
+
+def _build_resume_state():
+    # Capture current row offsets per dataset for checkpointing.
+    datasets = []
+    for spec in dataset_specs:
+        datasets.append(
+            {
+                "spec": spec["spec"],
+                "row_offset": source_row_counts.get(spec["spec"], 0),
+            }
+        )
+    return {"datasets": datasets}
 
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
 printed_debug_sample = False
+
+# Track SIGINT so we can checkpoint after a safe step.
+stop_requested = {"flag": False}
+def _request_stop(signum, frame):
+    # Record interrupt without raising inside the signal handler.
+    stop_requested["flag"] = True
+signal.signal(signal.SIGINT, _request_stop)
 try:
     print("Starting training loop...", flush=True)
     for epoch in range(resume_epoch, epochs):
         last_epoch = epoch
+        # Reset row counters at epoch boundaries beyond the resume epoch.
+        if epoch != resume_epoch:
+            source_row_counts = {spec["spec"]: 0 for spec in dataset_specs}
         dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + epoch)
         dataset_epoch = dataset_epoch.with_format("torch")
         if epoch == resume_epoch and start_position > 0:
@@ -360,6 +426,13 @@ try:
                 step,
                 remaining_tokens=remaining_tokens,
             )
+            # Advance per-source row counters for resume safety.
+            row_counts = batch["row_count"].tolist()
+            source_ids = batch["source_id"].tolist()
+            for source_id, row_count in zip(source_ids, row_counts):
+                if row_count:
+                    spec_key = dataset_specs[int(source_id)]["spec"]
+                    source_row_counts[spec_key] += int(row_count)
             current_position += input_ids.size(0)
             now = time.time()
             ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
@@ -370,8 +443,13 @@ try:
                     progress.global_step,
                     current_position,
                     progress.total_tokens,
+                    resume_state=_build_resume_state(),
                 )
                 last_ckpt_time = now
+
+            # Exit after the current step if SIGINT was requested.
+            if stop_requested["flag"]:
+                raise KeyboardInterrupt
         start_position = 0
         current_position = 0
 
@@ -384,5 +462,6 @@ except KeyboardInterrupt:
         progress.global_step,
         current_position,
         progress.total_tokens,
+        resume_state=_build_resume_state(),
     )
     print("Interrupted: checkpoint saved, exiting.")

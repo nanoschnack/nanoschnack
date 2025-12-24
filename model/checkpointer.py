@@ -152,6 +152,7 @@ class Checkpointer:
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.device = device
+        self.resume_state = None
 
     def _snapshot_path(self, label):
         # Build a snapshot path for a retention label.
@@ -166,6 +167,7 @@ class Checkpointer:
     def load_latest(self):
         # Load state from disk if present, otherwise start fresh.
         if not self.path.exists():
+            self.resume_state = None
             return 0, 0, 0, 0, 0
 
         # Read checkpoint data onto the requested device.
@@ -208,6 +210,7 @@ class Checkpointer:
 
         sample_index = ckpt.get("sample_index", 0)
         total_tokens = ckpt.get("total_tokens", 0)
+        self.resume_state = ckpt.get("resume_state")
 
         # Announce resume location for visibility.
         display_epoch = saved_epoch if saved_epoch > 0 else 1
@@ -218,7 +221,7 @@ class Checkpointer:
         resume_epoch = max(saved_epoch - 1, 0)
         return resume_epoch, resume_step, global_step, sample_index, total_tokens
 
-    def save_latest(self, epoch, step, global_step, sample_index, total_tokens):
+    def save_latest(self, epoch, step, global_step, sample_index, total_tokens, resume_state=None):
         # Persist the latest training state in the current checkpoint format.
         start_time = time.time()
         ckpt = {
@@ -231,6 +234,7 @@ class Checkpointer:
             "global_step": global_step,
             "sample_index": sample_index,
             "total_tokens": total_tokens,
+            "resume_state": resume_state,
         }
         # Save the rolling latest checkpoint.
         self._write_checkpoint(self.path, ckpt)

@@ -130,6 +130,7 @@ from loader import (
     resolve_total_rows,
     dataset_label,
 )
+import math
 
 # Download shards on demand and shuffle within each dataset.
 set_verbosity_warning()
@@ -137,61 +138,6 @@ enable_progress_bar()
 
 # Cache dataset specs for reuse across steps.
 dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
-
-
-# %% [markdown]
-# ## Run the Training
-
-# %%
-from plot import ascii_loss_plot
-from chat import generate_reply_stream
-from progress import ProgressLogger
-from checkpointer import Checkpointer
-from scheduler import build_warmup_cosine_tokens
-from torch.utils.data import DataLoader
-import math
-import os
-import signal
-import time
-
-def _plot_completion():
-    # Generate a fixed-length completion for the configured prompt.
-    was_training = model.training
-    if was_training:
-        model.eval()
-    try:
-        reply_parts = []
-        for token in generate_reply_stream(
-            model,
-            tokenizer,
-            config.PLOT_COMPLETION_PROMPT,
-            context_len=config.CONTEXT_LEN,
-            max_new_tokens=config.PLOT_COMPLETION_TOKENS,
-            temperature=config.TEMPERATURE,
-            top_k=config.TOP_K,
-            device=device,
-        ):
-            reply_parts.append(token)
-        return "".join(reply_parts)
-    except Exception as exc:
-        return f" [generation failed: {exc}]"
-    finally:
-        if was_training:
-            model.train()
-
-def plot_with_completion(points):
-    # Render the loss plot first so completion failures don't block logs.
-    chart = ascii_loss_plot(points)
-
-    # Append the configured completion snapshot.
-    completion = _plot_completion()
-    return (
-        f"{chart}\n\ncompletion ({config.PLOT_COMPLETION_TOKENS} tokens)\n"
-        f"{config.PLOT_COMPLETION_PROMPT}{completion}"
-    )
-
-# Set up optimizer, learning-rate scheduler, and loss function
-epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
 estimated_total_tokens = 0
 
 print("Estimating tokens from dataset samples...", flush=True)
@@ -233,6 +179,57 @@ print(
     f"(factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})",
     flush=True,
 )
+
+
+
+# %% [markdown]
+# ## Run the Training
+
+# %%
+from plot import ascii_loss_plot
+from chat import generate_reply_stream
+from progress import ProgressLogger
+from checkpointer import Checkpointer
+from scheduler import build_warmup_cosine_tokens
+from torch.utils.data import DataLoader
+import os
+import signal
+import time
+
+def plot_with_completion(points):
+    # Render the loss plot first so completion failures don't block logs.
+    chart = ascii_loss_plot(points)
+
+    # Append the configured completion snapshot.
+    was_training = model.training
+    if was_training:
+        model.eval()
+    try:
+        reply_parts = []
+        for token in generate_reply_stream(
+            model,
+            tokenizer,
+            config.PLOT_COMPLETION_PROMPT,
+            context_len=config.CONTEXT_LEN,
+            max_new_tokens=config.PLOT_COMPLETION_TOKENS,
+            temperature=config.TEMPERATURE,
+            top_k=config.TOP_K,
+            device=device,
+        ):
+            reply_parts.append(token)
+        completion = "".join(reply_parts)
+    except Exception as exc:
+        completion = f" [generation failed: {exc}]"
+    finally:
+        if was_training:
+            model.train()
+    return (
+        f"{chart}\n\ncompletion ({config.PLOT_COMPLETION_TOKENS} tokens)\n"
+        f"{config.PLOT_COMPLETION_PROMPT}{completion}"
+    )
+
+# Set up optimizer, learning-rate scheduler, and loss function
+epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
 scheduler = build_warmup_cosine_tokens(optimizer, target_tokens, config.WARMUP_PCT)

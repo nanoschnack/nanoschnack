@@ -317,6 +317,7 @@ progress = ProgressLogger(
     plot_interval=config.PLOT_INTERVAL_SECS,
     warmup_window_secs=config.WARMUP_WINDOW_SECS,
     estimated_total_tokens=target_tokens,
+    estimated_total_steps=total_steps,
 )
 
 last_epoch = resume_epoch

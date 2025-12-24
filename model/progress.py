@@ -20,6 +20,7 @@ class ProgressLogger:
         plot_interval=600,
         warmup_window_secs=600,
         estimated_total_tokens=None,
+        estimated_total_steps=None,
     ):
         # Keep configuration and bookkeeping for periodic logging.
         self.plot_fn = plot_fn
@@ -39,6 +40,7 @@ class ProgressLogger:
         self.total_samples = start_total_samples
         self.total_tokens = start_total_tokens
         self.estimated_total_tokens = estimated_total_tokens
+        self.estimated_total_steps = estimated_total_steps
         self.samples_per_sec = 0.0
         self.loss_history = deque()
 
@@ -72,18 +74,19 @@ class ProgressLogger:
             tokens_per_sec = self.tokens_since_log / elapsed if elapsed > 0 else 0.0
             self.samples_per_sec = samples_per_sec
             if self.estimated_total_tokens:
-                pct = (self.total_tokens / self.estimated_total_tokens) * 100
                 eta = self._format_eta(
                     remaining_tokens if remaining_tokens is not None else 0,
                     tokens_per_sec,
                 )
             else:
-                pct = 0.0
                 eta = "?"
+            step_pct = None
+            if self.estimated_total_steps:
+                step_pct = (self.global_step / self.estimated_total_steps) * 100
 
             message = (
                 f"Tokens {self._format_count(self.total_tokens)}, "
-                f"Total {pct:.1f}%, "
+                f"Total {step_pct:.1f}%, "
                 f"Samples {self._format_count(self.total_samples)}, "
                 f"Epoch {epoch+1}, "
                 f"Step {step+1}, "

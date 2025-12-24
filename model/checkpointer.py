@@ -54,17 +54,30 @@ def select_state_dict(ckpt):
     return ckpt
 
 
+def _load_into_compiled_module(model, state_dict):
+    # Load state into the original module when torch.compile wraps the model.
+    if not hasattr(model, "_orig_mod"):
+        return False
+    try:
+        model._orig_mod.load_state_dict(state_dict)
+    except Exception:
+        return False
+    return True
+
+
 def load_model_state_dict(model, state_dict):
-    # Load model state with legacy remap fallback for older checkpoints.
+    # Load model state with compiled/legacy remap fallbacks for older checkpoints.
     try:
         model.load_state_dict(state_dict)
-        return False
+        return None
     except Exception:
+        if _load_into_compiled_module(model, state_dict):
+            return "compiled"
         remapped = _remap_legacy_state_dict(state_dict)
         if remapped is None:
             raise
         model.load_state_dict(remapped)
-        return True
+        return "legacy"
 
 
 def _remap_legacy_state_dict(state_dict):
@@ -162,10 +175,12 @@ class Checkpointer:
         # Normalize checkpoint prefixes before loading or remapping.
         model_state = normalize_state_dict(model_state)
         try:
-            remapped = load_model_state_dict(self.model, model_state)
+            load_result = load_model_state_dict(self.model, model_state)
         except Exception as exc:
             raise RuntimeError(f"Failed to restore model state from {self.path}: {exc}") from exc
-        if remapped:
+        if load_result == "compiled":
+            print(f"Loaded checkpoint weights into compiled model from {self.path}.")
+        elif load_result == "legacy":
             print(f"Loaded legacy checkpoint weights from {self.path}.")
 
         # Restore optimizer and scheduler state, falling back to fresh state on failure.

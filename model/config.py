@@ -54,8 +54,9 @@ HIDDEN_SIZE = _env_int("HIDDEN_SIZE", 4*EMBED_SIZE)
 BATCH_SIZE = _env_int("BATCH_SIZE", 32)
 
 # Default learning rate for the optimizer.
-# Tune alongside batch size and scheduler.
-LEARNING_RATE = _env_float("LEARNING_RATE", 1e-4)
+# Source: GPT-3 paper Table 2 (GPT-3 Small 125M uses 6.0e-4),
+# https://arxiv.org/src/2005.14165
+LEARNING_RATE = _env_float("LEARNING_RATE", 6e-4)
 
 # Warmup fraction of total training steps for LR ramp-up.
 # Use values between 0.01 and 0.05 for small warmups.

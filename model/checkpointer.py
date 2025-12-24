@@ -1,5 +1,6 @@
-from pathlib import Path
 import time
+from pathlib import Path
+import copy
 
 import torch
 
@@ -54,17 +55,30 @@ def select_state_dict(ckpt):
     return ckpt
 
 
+def _load_into_compiled_module(model, state_dict):
+    # Load state into the original module when torch.compile wraps the model.
+    if not hasattr(model, "_orig_mod"):
+        return False
+    try:
+        model._orig_mod.load_state_dict(state_dict)
+    except Exception:
+        return False
+    return True
+
+
 def load_model_state_dict(model, state_dict):
-    # Load model state with legacy remap fallback for older checkpoints.
+    # Load model state with compiled/legacy remap fallbacks for older checkpoints.
     try:
         model.load_state_dict(state_dict)
-        return False
+        return None
     except Exception:
+        if _load_into_compiled_module(model, state_dict):
+            return "compiled"
         remapped = _remap_legacy_state_dict(state_dict)
         if remapped is None:
             raise
         model.load_state_dict(remapped)
-        return True
+        return "legacy"
 
 
 def _remap_legacy_state_dict(state_dict):
@@ -104,14 +118,21 @@ def _remap_legacy_state_dict(state_dict):
 
 def _load_optimizer_state(optimizer, state_dict):
     # Load optimizer state and validate tensor shapes against parameters.
+    if not state_dict:
+        return False
+    original_param_groups = copy.deepcopy(optimizer.param_groups)
     try:
         optimizer.load_state_dict(state_dict)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to load optimizer state: {exc}") from exc
+    except Exception:
+        optimizer.state.clear()
+        optimizer.param_groups = original_param_groups
+        return False
     for param, state in optimizer.state.items():
         for value in state.values():
             if torch.is_tensor(value) and value.shape != param.shape:
-                raise RuntimeError("Optimizer state shape mismatch.")
+                optimizer.state.clear()
+                optimizer.param_groups = original_param_groups
+                return False
     return True
 
 
@@ -162,18 +183,23 @@ class Checkpointer:
         # Normalize checkpoint prefixes before loading or remapping.
         model_state = normalize_state_dict(model_state)
         try:
-            remapped = load_model_state_dict(self.model, model_state)
+            load_result = load_model_state_dict(self.model, model_state)
         except Exception as exc:
             raise RuntimeError(f"Failed to restore model state from {self.path}: {exc}") from exc
-        if remapped:
+        if load_result == "compiled":
+            print(f"Loaded checkpoint weights into compiled model from {self.path}.")
+        elif load_result == "legacy":
             print(f"Loaded legacy checkpoint weights from {self.path}.")
 
         # Restore optimizer and scheduler state, falling back to fresh state on failure.
-        _load_optimizer_state(self.optimizer, ckpt.get("optimizer", {}))
-        try:
-            self.scheduler.load_state_dict(ckpt["scheduler"])
-        except Exception as exc:
-            raise RuntimeError(f"Failed to restore scheduler from {self.path}: {exc}") from exc
+        optimizer_loaded = _load_optimizer_state(self.optimizer, ckpt.get("optimizer", {}))
+        if not optimizer_loaded:
+            print("Optimizer state mismatch; continuing with fresh optimizer state.")
+        else:
+            try:
+                self.scheduler.load_state_dict(ckpt["scheduler"])
+            except Exception as exc:
+                raise RuntimeError(f"Failed to restore scheduler from {self.path}: {exc}") from exc
 
         # Recover counters with safe defaults (epoch stored as 1-based).
         saved_epoch = ckpt.get("epoch", 0)

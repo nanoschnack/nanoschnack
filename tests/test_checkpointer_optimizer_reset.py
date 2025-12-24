@@ -8,12 +8,12 @@ from gpt import GPT
 
 
 class CheckpointerOptimizerResetTests(unittest.TestCase):
-    """Ensure optimizer mismatches raise instead of resetting state.
+    """Ensure optimizer mismatches fall back to fresh state.
 
-    Uses mismatched optimizer state to trigger the failure path.
-    Verifies loading fails loudly instead of continuing.
+    Uses mismatched optimizer state to trigger the fallback path.
+    Verifies loading continues with an empty optimizer state.
     """
-    def test_load_latest_raises_on_mismatched_optimizer_state(self):
+    def test_load_latest_resets_on_mismatched_optimizer_state(self):
         model_a = GPT(
             vocab_size=11,
             embed_size=8,
@@ -54,8 +54,9 @@ class CheckpointerOptimizerResetTests(unittest.TestCase):
             path = f"{tmpdir}/latest.pt"
             torch.save(ckpt, path)
             checkpointer = Checkpointer(tmpdir, model_b, optimizer_b, scheduler_b, device="cpu")
-            with self.assertRaises(RuntimeError):
-                checkpointer.load_latest()
+            checkpointer.load_latest()
+
+        self.assertEqual(len(optimizer_b.state), 0)
 
 
 if __name__ == "__main__":

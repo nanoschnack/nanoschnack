@@ -72,7 +72,7 @@ class ProgressLogger:
             tokens_per_sec = self.tokens_since_log / elapsed if elapsed > 0 else 0.0
             self.samples_per_sec = samples_per_sec
             if self.estimated_total_tokens:
-                pct = min(100.0, (self.total_tokens / self.estimated_total_tokens) * 100)
+                pct = (self.total_tokens / self.estimated_total_tokens) * 100
                 eta = self._format_eta(
                     remaining_tokens if remaining_tokens is not None else 0,
                     tokens_per_sec,

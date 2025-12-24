@@ -239,6 +239,15 @@ checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=
 resume_epoch, resume_step, global_step, sample_index, resume_tokens = checkpointer.load_latest()
 resume_state = checkpointer.resume_state
 
+# Extend the plan when resuming beyond the original epoch budget.
+if resume_epoch >= epochs:
+    print(
+        f"Resume epoch {resume_epoch + 1} exceeds planned epochs {epochs}; extending plan.",
+        flush=True,
+    )
+    epochs = resume_epoch + 1
+
+
 # Track token counts for the token-based scheduler.
 total_tokens_seen = resume_tokens
 

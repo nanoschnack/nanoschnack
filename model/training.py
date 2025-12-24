@@ -147,7 +147,7 @@ from plot import ascii_loss_plot
 from chat import generate_reply_stream
 from progress import ProgressLogger
 from checkpointer import Checkpointer
-from scheduler import build_warmup_cosine
+from scheduler import build_warmup_cosine_tokens
 from torch.utils.data import DataLoader
 import math
 import os
@@ -221,31 +221,39 @@ target_tokens = max_tokens or estimated_total_tokens
 if max_tokens and estimated_total_tokens > 0:
     epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
 tokens_per_step = config.BATCH_SIZE * (config.CONTEXT_LEN - 1)
-steps_per_epoch = math.ceil(min(estimated_total_tokens, target_tokens) / tokens_per_step)
-total_steps = steps_per_epoch * epochs
+dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
+target_steps = math.ceil(target_tokens / tokens_per_step)
 print(
-    f"Dataset estimate: tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}",
+    f"Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} "
+    f"tokens_per_step={tokens_per_step:,}",
     flush=True,
 )
 print(
-    f"Target budget:    total_steps={total_steps:,} tokens={target_tokens:,} "
+    f"Target:          epochs={epochs:,} target_steps={target_steps:,} "
+    f"target_tokens={target_tokens:,} "
     f"(factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})",
-    flush=True,
-)
-print(
-    f"Plan:             epochs={epochs:,} steps_per_epoch={steps_per_epoch:,} "
-    f"total_steps={total_steps:,}",
     flush=True,
 )
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
-scheduler = build_warmup_cosine(optimizer, total_steps, config.WARMUP_PCT)
+scheduler = build_warmup_cosine_tokens(optimizer, target_tokens, config.WARMUP_PCT)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
+# Advance the token-based scheduler without using the epoch argument.
+def _step_scheduler(token_count):
+    scheduler.last_epoch = token_count - 1
+    scheduler.step()
 
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 resume_epoch, resume_step, global_step, sample_index, resume_tokens = checkpointer.load_latest()
 resume_state = checkpointer.resume_state
+
+# Track token counts for the token-based scheduler.
+total_tokens_seen = resume_tokens
+
+# Align the scheduler with the resumed token count.
+if resume_tokens:
+    _step_scheduler(resume_tokens)
 
 # Normalize resume state into per-spec row offsets.
 resume_rows = {spec["spec"]: 0 for spec in dataset_specs}
@@ -317,7 +325,6 @@ progress = ProgressLogger(
     plot_interval=config.PLOT_INTERVAL_SECS,
     warmup_window_secs=config.WARMUP_WINDOW_SECS,
     estimated_total_tokens=target_tokens,
-    estimated_total_steps=total_steps,
 )
 
 last_epoch = resume_epoch
@@ -413,11 +420,14 @@ try:
 
             # Update weights, then advance the learning-rate schedule.
             optimizer.step()
-            scheduler.step()
+
+            # Advance the token-based scheduler using observed tokens.
+            token_count = attention_mask[:, 1:].sum().item()
+            total_tokens_seen += token_count
+            _step_scheduler(total_tokens_seen)
 
             # Log progress and plot loss history
-            token_count = attention_mask[:, 1:].sum().item()
-            remaining_tokens = max(target_tokens - progress.total_tokens, 0)
+            remaining_tokens = max(target_tokens - total_tokens_seen, 0)
             progress.tick(
                 loss.item(),
                 input_ids.size(0),

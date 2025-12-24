@@ -130,6 +130,7 @@ from loader import (
     resolve_total_rows,
     dataset_label,
 )
+import math
 
 # Download shards on demand and shuffle within each dataset.
 set_verbosity_warning()
@@ -137,61 +138,6 @@ enable_progress_bar()
 
 # Cache dataset specs for reuse across steps.
 dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
-
-
-# %% [markdown]
-# ## Run the Training
-
-# %%
-from plot import ascii_loss_plot
-from chat import generate_reply_stream
-from progress import ProgressLogger
-from checkpointer import Checkpointer
-from scheduler import build_warmup_cosine
-from torch.utils.data import DataLoader
-import math
-import os
-import signal
-import time
-
-def _plot_completion():
-    # Generate a fixed-length completion for the configured prompt.
-    was_training = model.training
-    if was_training:
-        model.eval()
-    try:
-        reply_parts = []
-        for token in generate_reply_stream(
-            model,
-            tokenizer,
-            config.PLOT_COMPLETION_PROMPT,
-            context_len=config.CONTEXT_LEN,
-            max_new_tokens=config.PLOT_COMPLETION_TOKENS,
-            temperature=config.TEMPERATURE,
-            top_k=config.TOP_K,
-            device=device,
-        ):
-            reply_parts.append(token)
-        return "".join(reply_parts)
-    except Exception as exc:
-        return f" [generation failed: {exc}]"
-    finally:
-        if was_training:
-            model.train()
-
-def plot_with_completion(points):
-    # Render the loss plot first so completion failures don't block logs.
-    chart = ascii_loss_plot(points)
-
-    # Append the configured completion snapshot.
-    completion = _plot_completion()
-    return (
-        f"{chart}\n\ncompletion ({config.PLOT_COMPLETION_TOKENS} tokens)\n"
-        f"{config.PLOT_COMPLETION_PROMPT}{completion}"
-    )
-
-# Set up optimizer, learning-rate scheduler, and loss function
-epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
 estimated_total_tokens = 0
 
 print("Estimating tokens from dataset samples...", flush=True)
@@ -212,6 +158,7 @@ for dataset_index, spec in enumerate(dataset_specs):
         f"({dataset_label(spec)}): avg_tokens={avg_tokens:.1f}, "
         f"est_tokens={est_total_tokens}"
     )
+
 # Resolve model size for token budgeting.
 param_count, _ = config.model_info(model)
 
@@ -221,31 +168,98 @@ target_tokens = max_tokens or estimated_total_tokens
 if max_tokens and estimated_total_tokens > 0:
     epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
 tokens_per_step = config.BATCH_SIZE * (config.CONTEXT_LEN - 1)
-steps_per_epoch = math.ceil(min(estimated_total_tokens, target_tokens) / tokens_per_step)
-total_steps = steps_per_epoch * epochs
+dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
 print(
-    f"Dataset estimate: tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}",
+    f"Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} "
+    f"tokens_per_step={tokens_per_step:,}",
     flush=True,
 )
 print(
-    f"Target budget:    total_steps={total_steps:,} tokens={target_tokens:,} "
+    f"Target:          epochs={epochs:,} target_tokens={target_tokens:,} "
     f"(factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})",
     flush=True,
 )
-print(
-    f"Plan:             epochs={epochs:,} steps_per_epoch={steps_per_epoch:,} "
-    f"total_steps={total_steps:,}",
-    flush=True,
-)
+
+
+
+# %% [markdown]
+# ## Run the Training
+
+# %%
+from plot import ascii_loss_plot
+from chat import generate_reply_stream
+from progress import ProgressLogger
+from checkpointer import Checkpointer
+from scheduler import build_warmup_cosine_tokens
+from torch.utils.data import DataLoader
+import os
+import signal
+import time
+
+def plot_with_completion(points):
+    # Render the loss plot first so completion failures don't block logs.
+    chart = ascii_loss_plot(points)
+
+    # Append the configured completion snapshot.
+    was_training = model.training
+    if was_training:
+        model.eval()
+    try:
+        reply_parts = []
+        for token in generate_reply_stream(
+            model,
+            tokenizer,
+            config.PLOT_COMPLETION_PROMPT,
+            context_len=config.CONTEXT_LEN,
+            max_new_tokens=config.PLOT_COMPLETION_TOKENS,
+            temperature=config.TEMPERATURE,
+            top_k=config.TOP_K,
+            device=device,
+        ):
+            reply_parts.append(token)
+        completion = "".join(reply_parts)
+    except Exception as exc:
+        completion = f" [generation failed: {exc}]"
+    finally:
+        if was_training:
+            model.train()
+    return (
+        f"{chart}\n\ncompletion ({config.PLOT_COMPLETION_TOKENS} tokens)\n"
+        f"{config.PLOT_COMPLETION_PROMPT}{completion}"
+    )
+
+# Set up optimizer, learning-rate scheduler, and loss function
+epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
-scheduler = build_warmup_cosine(optimizer, total_steps, config.WARMUP_PCT)
+scheduler = build_warmup_cosine_tokens(optimizer, target_tokens, config.WARMUP_PCT)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
-
 # The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 resume_epoch, resume_step, global_step, sample_index, resume_tokens = checkpointer.load_latest()
 resume_state = checkpointer.resume_state
+
+# Extend the plan when resuming beyond the original epoch budget.
+if resume_epoch >= epochs:
+    print(
+        f"Resume epoch {resume_epoch + 1} exceeds planned epochs {epochs}; extending plan.",
+        flush=True,
+    )
+    epochs = resume_epoch + 1
+
+
+# Track token counts for the token-based scheduler.
+total_tokens_seen = resume_tokens
+
+# Align the scheduler with the resumed token count.
+if resume_tokens:
+    scheduler.last_epoch = resume_tokens
+    for group, base_lr, lr_lambda in zip(
+        optimizer.param_groups,
+        scheduler.base_lrs,
+        scheduler.lr_lambdas,
+    ):
+        group["lr"] = base_lr * lr_lambda(resume_tokens)
 
 # Normalize resume state into per-spec row offsets.
 resume_rows = {spec["spec"]: 0 for spec in dataset_specs}
@@ -405,6 +419,8 @@ try:
                 # Compute (average) loss of the predicted next tokens and apply backpropagation.
                 # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)
                 loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+
+            # Backward pass to compute gradients.
             loss.backward()
 
             # Clip gradients to stabilize training (especially for larger batches).
@@ -412,11 +428,15 @@ try:
 
             # Update weights, then advance the learning-rate schedule.
             optimizer.step()
+
+            # Advance the token-based scheduler using observed tokens.
+            token_count = attention_mask[:, 1:].sum().item()
+            total_tokens_seen += token_count
+            scheduler.last_epoch = total_tokens_seen - 1
             scheduler.step()
 
             # Log progress and plot loss history
-            token_count = attention_mask[:, 1:].sum().item()
-            remaining_tokens = max(target_tokens - progress.total_tokens, 0)
+            remaining_tokens = max(target_tokens - total_tokens_seen, 0)
             progress.tick(
                 loss.item(),
                 input_ids.size(0),

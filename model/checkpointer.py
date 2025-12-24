@@ -198,10 +198,14 @@ class Checkpointer:
         if not optimizer_loaded:
             print("Optimizer state mismatch; continuing with fresh optimizer state.")
         else:
+            # Attempt to restore scheduler state but keep training if it mismatches.
             try:
                 self.scheduler.load_state_dict(ckpt["scheduler"])
             except Exception as exc:
-                raise RuntimeError(f"Failed to restore scheduler from {self.path}: {exc}") from exc
+                print(
+                    "Scheduler state mismatch; continuing with a token-aligned schedule "
+                    "based on resumed token counts."
+                )
 
         # Recover counters with safe defaults (epoch stored as 1-based).
         saved_epoch = ckpt.get("epoch", 0)

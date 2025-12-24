@@ -18,6 +18,7 @@
 # - Verify that MPS is available (for Apple Silicon GPUs).
 
 # %%
+import contextlib
 import torch
 from device import device_info, pick_device, print_device_info
 
@@ -228,36 +229,25 @@ for dataset_index, spec in enumerate(dataset_specs):
 param_count, _ = config.model_info(model)
 
 # Derive the token cap and epoch count from the configured max-training factor.
-max_tokens = 0
-if config.MAX_TRAINING_FACTOR > 0:
-    max_tokens = int(param_count * config.MAX_TRAINING_FACTOR)
-target_tokens = max_tokens if max_tokens else estimated_total_tokens
+max_tokens = int(param_count * config.MAX_TRAINING_FACTOR) if config.MAX_TRAINING_FACTOR > 0 else 0
+target_tokens = max_tokens or estimated_total_tokens
 if max_tokens and estimated_total_tokens > 0:
     epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
-tokens_per_sample = config.CONTEXT_LEN - 1
-tokens_per_step = config.BATCH_SIZE * tokens_per_sample
-dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
+tokens_per_step = config.BATCH_SIZE * (config.CONTEXT_LEN - 1)
 steps_per_epoch = math.ceil(min(estimated_total_tokens, target_tokens) / tokens_per_step)
 total_steps = steps_per_epoch * epochs
-dataset_tokens_label = f"{estimated_total_tokens:,}"
-target_tokens_label = f"{target_tokens:,}"
-model_tokens_label = f"{param_count:,}"
-dataset_steps_label = f"{dataset_steps:,}"
-total_steps_label = f"{total_steps:,}"
-steps_per_epoch_label = f"{steps_per_epoch:,}"
-epochs_label = f"{epochs:,}"
 print(
-    f"Dataset estimate: steps_per_epoch={dataset_steps_label} tokens={dataset_tokens_label}",
+    f"Dataset estimate: tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}",
     flush=True,
 )
 print(
-    f"Target budget:    total_steps={total_steps_label} tokens={target_tokens_label} "
-    f"(factor {config.MAX_TRAINING_FACTOR} of model size {model_tokens_label})",
+    f"Target budget:    total_steps={total_steps:,} tokens={target_tokens:,} "
+    f"(factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})",
     flush=True,
 )
 print(
-    f"Plan:             epochs={epochs_label} steps_per_epoch={steps_per_epoch_label} "
-    f"total_steps={total_steps_label}",
+    f"Plan:             epochs={epochs:,} steps_per_epoch={steps_per_epoch:,} "
+    f"total_steps={total_steps:,}",
     flush=True,
 )
 
@@ -334,12 +324,13 @@ try:
             # Clear accumulated gradients from the previous step (which torch does automatically otherwise)
             optimizer.zero_grad()
 
-            # Forward pass
-            logits = model(inputs, attention_mask=attention_mask[:, :-1])
+            # Forward pass with bf16 autocast on CUDA.
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
+                logits = model(inputs, attention_mask=attention_mask[:, :-1])
 
-            # Compute (average) loss of the predicted next tokens and apply backpropagation.
-            # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)
-            loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+                # Compute (average) loss of the predicted next tokens and apply backpropagation.
+                # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)
+                loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
             loss.backward()
 
             # Clip gradients to stabilize training (especially for larger batches).
@@ -387,5 +378,3 @@ except KeyboardInterrupt:
         progress.total_tokens,
     )
     print("Interrupted: checkpoint saved, exiting.")
-
-

@@ -1,5 +1,6 @@
-from pathlib import Path
 import time
+from pathlib import Path
+import copy
 
 import torch
 
@@ -117,14 +118,21 @@ def _remap_legacy_state_dict(state_dict):
 
 def _load_optimizer_state(optimizer, state_dict):
     # Load optimizer state and validate tensor shapes against parameters.
+    if not state_dict:
+        return False
+    original_param_groups = copy.deepcopy(optimizer.param_groups)
     try:
         optimizer.load_state_dict(state_dict)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to load optimizer state: {exc}") from exc
+    except Exception:
+        optimizer.state.clear()
+        optimizer.param_groups = original_param_groups
+        return False
     for param, state in optimizer.state.items():
         for value in state.values():
             if torch.is_tensor(value) and value.shape != param.shape:
-                raise RuntimeError("Optimizer state shape mismatch.")
+                optimizer.state.clear()
+                optimizer.param_groups = original_param_groups
+                return False
     return True
 
 
@@ -184,11 +192,14 @@ class Checkpointer:
             print(f"Loaded legacy checkpoint weights from {self.path}.")
 
         # Restore optimizer and scheduler state, falling back to fresh state on failure.
-        _load_optimizer_state(self.optimizer, ckpt.get("optimizer", {}))
-        try:
-            self.scheduler.load_state_dict(ckpt["scheduler"])
-        except Exception as exc:
-            raise RuntimeError(f"Failed to restore scheduler from {self.path}: {exc}") from exc
+        optimizer_loaded = _load_optimizer_state(self.optimizer, ckpt.get("optimizer", {}))
+        if not optimizer_loaded:
+            print("Optimizer state mismatch; continuing with fresh optimizer state.")
+        else:
+            try:
+                self.scheduler.load_state_dict(ckpt["scheduler"])
+            except Exception as exc:
+                raise RuntimeError(f"Failed to restore scheduler from {self.path}: {exc}") from exc
 
         # Recover counters with safe defaults (epoch stored as 1-based).
         saved_epoch = ckpt.get("epoch", 0)

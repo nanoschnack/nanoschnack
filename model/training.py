@@ -298,6 +298,10 @@ try:
             # Get the input IDs and attention mask, and move them to the GPU
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
+            # Skip the attention mask when all tokens are valid to keep SDPA fast paths.
+            attn_mask = None
+            if attention_mask is not None and not attention_mask.all():
+                attn_mask = attention_mask
 
             # Next-token prediction
             # input = Hello, Wor
@@ -326,7 +330,7 @@ try:
 
             # Forward pass with bf16 autocast on CUDA.
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
-                logits = model(inputs, attention_mask=attention_mask[:, :-1])
+                logits = model(inputs, attention_mask=attn_mask[:, :-1] if attn_mask is not None else None)
 
                 # Compute (average) loss of the predicted next tokens and apply backpropagation.
                 # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)

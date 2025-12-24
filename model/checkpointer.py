@@ -5,6 +5,58 @@ import torch
 
 import config
 
+def apply_checkpoint_config(ckpt_config):
+    # Apply checkpoint hyperparameters to global config.
+    if not ckpt_config:
+        return
+    for name in ("CONTEXT_LEN", "EMBED_SIZE", "NUM_LAYERS", "NUM_HEADS", "HIDDEN_SIZE"):
+        if name in ckpt_config:
+            setattr(config, name, ckpt_config[name])
+
+
+def strip_state_dict_prefix(state_dict, prefix):
+    # Strip a common prefix applied by wrappers like DataParallel.
+    if not state_dict:
+        return state_dict
+    keys = list(state_dict.keys())
+    if all(key.startswith(prefix) for key in keys):
+        return {key[len(prefix):]: value for key, value in state_dict.items()}
+    return state_dict
+
+
+def normalize_state_dict(state_dict):
+    # Normalize wrapper prefixes to support older checkpoint formats.
+    state_dict = strip_state_dict_prefix(state_dict, "module.")
+    state_dict = strip_state_dict_prefix(state_dict, "_orig_mod.")
+    return strip_state_dict_prefix(state_dict, "model.")
+
+
+def select_state_dict(ckpt):
+    # Extract the model weights from known checkpoint layouts.
+    if isinstance(ckpt, dict):
+        if "model" in ckpt:
+            apply_checkpoint_config(ckpt.get("config"))
+            return ckpt["model"]
+        for key in ("model_state_dict", "state_dict"):
+            if key in ckpt:
+                return ckpt[key]
+        return None
+    return ckpt
+
+
+def load_model_state_dict(model, state_dict):
+    # Load model state with legacy remap fallback for older checkpoints.
+    try:
+        model.load_state_dict(state_dict)
+        return False
+    except Exception:
+        remapped = _remap_legacy_state_dict(state_dict)
+        if remapped is None:
+            raise
+        model.load_state_dict(remapped)
+        return True
+
+
 def _remap_legacy_state_dict(state_dict):
     # Legacy remap for old TransformerEncoder checkpoints; remove once obsolete.
     legacy_prefix = "blocks.layers."
@@ -38,6 +90,7 @@ def _remap_legacy_state_dict(state_dict):
         if new_key:
             remapped[new_key] = value
     return remapped
+
 
 class Checkpointer:
     """Save and restore training state to a local checkpoint directory.
@@ -76,18 +129,12 @@ class Checkpointer:
             print(f"Checkpoint missing model state at {self.path}. Starting fresh.")
             return 0, 0, 0, 0, 0
         try:
-            self.model.load_state_dict(model_state)
+            remapped = load_model_state_dict(self.model, model_state)
         except Exception as exc:
-            print(f"Failed to restore model state from {self.path}: {exc}. Trying legacy remap.")
-            remapped = _remap_legacy_state_dict(model_state)
-            if remapped is None:
-                print(f"No legacy remap found for checkpoint {self.path}. Starting fresh.")
-                return 0, 0, 0, 0, 0
-            try:
-                self.model.load_state_dict(remapped)
-            except Exception as remap_exc:
-                print(f"Failed legacy remap for {self.path}: {remap_exc}. Starting fresh.")
-                return 0, 0, 0, 0, 0
+            print(f"Failed to restore model state from {self.path}: {exc}. Starting fresh.")
+            return 0, 0, 0, 0, 0
+        if remapped:
+            print(f"Loaded legacy checkpoint weights from {self.path}.")
 
         # Restore optimizer and scheduler state, falling back to fresh state on failure.
         try:
@@ -103,6 +150,7 @@ class Checkpointer:
 
         sample_index = ckpt.get("sample_index", 0)
         total_tokens = ckpt.get("total_tokens", 0)
+
         # Announce resume location for visibility.
         display_epoch = saved_epoch if saved_epoch > 0 else 1
         print(

@@ -92,6 +92,22 @@ def _remap_legacy_state_dict(state_dict):
     return remapped
 
 
+def _load_optimizer_state(optimizer, state_dict):
+    # Load optimizer state and validate tensor shapes against parameters.
+    try:
+        optimizer.load_state_dict(state_dict)
+    except Exception as exc:
+        print(f"Failed to load optimizer state: {exc}.")
+        return False
+    for param, state in optimizer.state.items():
+        for value in state.values():
+            if torch.is_tensor(value) and value.shape != param.shape:
+                print("Optimizer state shape mismatch; resetting optimizer state.")
+                optimizer.state.clear()
+                return False
+    return True
+
+
 class Checkpointer:
     """Save and restore training state to a local checkpoint directory.
 
@@ -137,11 +153,14 @@ class Checkpointer:
             print(f"Loaded legacy checkpoint weights from {self.path}.")
 
         # Restore optimizer and scheduler state, falling back to fresh state on failure.
-        try:
-            self.optimizer.load_state_dict(ckpt["optimizer"])
-            self.scheduler.load_state_dict(ckpt["scheduler"])
-        except Exception as exc:
-            print(f"Failed to restore optimizer/scheduler from {self.path}: {exc}. Resetting state.")
+        optimizer_ok = _load_optimizer_state(self.optimizer, ckpt.get("optimizer", {}))
+        if optimizer_ok:
+            try:
+                self.scheduler.load_state_dict(ckpt["scheduler"])
+            except Exception as exc:
+                print(f"Failed to restore scheduler from {self.path}: {exc}. Resetting scheduler.")
+        else:
+            print("Skipping scheduler restore because optimizer state was reset.")
 
         # Recover counters with safe defaults (epoch stored as 1-based).
         saved_epoch = ckpt.get("epoch", 0)

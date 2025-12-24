@@ -2,6 +2,7 @@
 
 import math
 import random
+from pathlib import Path
 
 from datasets import interleave_datasets, load_dataset
 
@@ -84,6 +85,111 @@ def load_dataset_source(repo_id, split="train", data_files=None, cache_dir=None,
         streaming=streaming,
         cache_dir=cache_dir,
     )
+
+def parse_dataset_specs(specs_str):
+    # Parse a comma-separated list of dataset specs into dictionaries.
+    if specs_str is None:
+        raise ValueError("DATASET_SPECS must be set to a non-empty string.")
+    specs = []
+    # Split on commas and normalize each spec string.
+    for raw_spec in specs_str.split(","):
+        spec = raw_spec.strip()
+        if not spec:
+            continue
+        parts = spec.split(":")
+        kind = parts[0].lower()
+        if kind == "hf":
+            # Parse hf:<repo_id>[:split][:text_key].
+            if len(parts) < 2 or not parts[1]:
+                raise ValueError(f"Invalid HF spec: {spec}")
+            split = parts[2] if len(parts) > 2 and parts[2] else "train"
+            text_key = parts[3] if len(parts) > 3 and parts[3] else "text"
+            specs.append(
+                {
+                    "kind": "hf",
+                    "repo_id": parts[1],
+                    "split": split,
+                    "text_key": text_key,
+                }
+            )
+        elif kind == "txt":
+            # Parse txt:<path>[:text_key].
+            if len(parts) < 2 or not parts[1]:
+                raise ValueError(f"Invalid TXT spec: {spec}")
+            text_key = parts[2] if len(parts) > 2 and parts[2] else "text"
+            specs.append(
+                {
+                    "kind": "txt",
+                    "path": parts[1],
+                    "split": "train",
+                    "text_key": text_key,
+                }
+            )
+        else:
+            raise ValueError(f"Unknown dataset spec type: {spec}")
+    if not specs:
+        raise ValueError("No dataset specs found in DATASET_SPECS.")
+    return specs
+
+def _count_text_rows(path):
+    # Count newline-delimited rows in a local text file.
+    total = 0
+    with Path(path).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                total += 1
+    return total
+
+def _rename_text_column(dataset, text_key):
+    # Rename the default text column when a custom key is requested.
+    if text_key == "text":
+        return dataset
+    if "text" not in dataset.column_names:
+        return dataset
+    return dataset.rename_column("text", text_key)
+
+def load_dataset_from_spec(spec, cache_dir=None, streaming=True):
+    # Load a dataset based on a parsed spec dictionary.
+    if spec["kind"] == "hf":
+        # HF datasets are loaded directly from the hub.
+        dataset = load_dataset_source(
+            spec["repo_id"],
+            split=spec.get("split", "train"),
+            cache_dir=cache_dir,
+            streaming=streaming,
+        )
+        return dataset
+    if spec["kind"] == "txt":
+        # TXT datasets load line-delimited text from local files.
+        dataset = load_dataset(
+            "text",
+            data_files=spec["path"],
+            split=spec.get("split", "train"),
+            streaming=streaming,
+            cache_dir=cache_dir,
+        )
+        return _rename_text_column(dataset, spec.get("text_key", "text"))
+    raise ValueError(f"Unsupported dataset spec kind: {spec['kind']}")
+
+def resolve_total_rows(dataset, spec):
+    # Resolve total rows for streaming token estimates.
+    if spec["kind"] == "txt":
+        # Text files have no metadata, so count lines on disk.
+        return _count_text_rows(spec["path"])
+    if dataset.info and dataset.info.splits:
+        # HF dataset info provides split sizes when available.
+        split_info = dataset.info.splits.get(spec.get("split", "train"))
+        if split_info is not None:
+            return split_info.num_examples
+    return None
+
+def dataset_label(spec):
+    # Produce a human-readable label for dataset logging.
+    if spec["kind"] == "hf":
+        return spec["repo_id"]
+    if spec["kind"] == "txt":
+        return spec["path"]
+    return spec.get("repo_id") or spec.get("path") or "unknown"
 
 
 def build_tokenizer(tokenizer, text_key="text"):

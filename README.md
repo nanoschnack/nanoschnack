@@ -62,6 +62,22 @@ To override batch size without editing code, set `BATCH_SIZE`:
 BATCH_SIZE=16 python model/training.py
 ```
 
+Configure training datasets with `DATASET_SPECS` (comma-separated):
+
+- `hf:<repo_id>[:split][:text_key]`
+- `txt:<path>[:text_key]`
+
+Examples:
+
+```sh
+DATASET_SPECS="hf:arnomatic/german-wikipedia-clean-no-lists:train:text,txt:data/goethe.txt:text" \
+  python model/training.py
+```
+
+```sh
+DATASET_SPECS="txt:data/goethe.txt:body" python model/training.py
+```
+
 ## Inference (chat)
 
 Run the REPL chat interface:

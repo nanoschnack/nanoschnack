@@ -222,15 +222,13 @@ if max_tokens and estimated_total_tokens > 0:
     epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
 tokens_per_step = config.BATCH_SIZE * (config.CONTEXT_LEN - 1)
 dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
-target_steps = math.ceil(target_tokens / tokens_per_step)
 print(
     f"Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} "
     f"tokens_per_step={tokens_per_step:,}",
     flush=True,
 )
 print(
-    f"Target:          epochs={epochs:,} target_steps={target_steps:,} "
-    f"target_tokens={target_tokens:,} "
+    f"Target:          epochs={epochs:,} target_tokens={target_tokens:,} "
     f"(factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})",
     flush=True,
 )

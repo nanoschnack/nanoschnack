@@ -40,7 +40,6 @@ training signal rather than batch shape.
 - `estimated_total_tokens` from the token estimator
 - `dataset_steps = ceil(estimated_total_tokens / tokens_per_step)` (informational)
 - `target_tokens` = `MAX_TRAINING_FACTOR * param_count` (or full dataset if factor is 0)
-- `target_steps = ceil(target_tokens / tokens_per_step)` (informational)
 
 Token-based LR uses:
 
@@ -59,7 +58,7 @@ Startup:
 
 ```
 Dataset estimate: steps=... tokens=... tokens_per_step=...
-Target:          epochs=... target_steps=... target_tokens=... (factor ...)
+Target:          epochs=... target_tokens=... (factor ...)
 ```
 
 Progress:

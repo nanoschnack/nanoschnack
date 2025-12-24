@@ -18,6 +18,7 @@
 # - Verify that MPS is available (for Apple Silicon GPUs).
 
 # %%
+import contextlib
 import torch
 from device import device_info, pick_device, print_device_info
 
@@ -334,12 +335,13 @@ try:
             # Clear accumulated gradients from the previous step (which torch does automatically otherwise)
             optimizer.zero_grad()
 
-            # Forward pass
-            logits = model(inputs, attention_mask=attention_mask[:, :-1])
+            # Forward pass with bf16 autocast on CUDA.
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
+                logits = model(inputs, attention_mask=attention_mask[:, :-1])
 
-            # Compute (average) loss of the predicted next tokens and apply backpropagation.
-            # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)
-            loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+                # Compute (average) loss of the predicted next tokens and apply backpropagation.
+                # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)
+                loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
             loss.backward()
 
             # Clip gradients to stabilize training (especially for larger batches).

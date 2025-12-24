@@ -97,14 +97,11 @@ def _load_optimizer_state(optimizer, state_dict):
     try:
         optimizer.load_state_dict(state_dict)
     except Exception as exc:
-        print(f"Failed to load optimizer state: {exc}.")
-        return False
+        raise RuntimeError(f"Failed to load optimizer state: {exc}") from exc
     for param, state in optimizer.state.items():
         for value in state.values():
             if torch.is_tensor(value) and value.shape != param.shape:
-                print("Optimizer state shape mismatch; resetting optimizer state.")
-                optimizer.state.clear()
-                return False
+                raise RuntimeError("Optimizer state shape mismatch.")
     return True
 
 
@@ -135,34 +132,28 @@ class Checkpointer:
         try:
             ckpt = torch.load(self.path, map_location=self.device)
         except Exception as exc:
-            print(f"Failed to load checkpoint {self.path}: {exc}. Starting fresh.")
-            return 0, 0, 0, 0, 0
+            raise RuntimeError(f"Failed to load checkpoint {self.path}: {exc}") from exc
 
         # Restore model and optimizer state for resuming training.
         print("Checkpoint loaded. Restoring model and optimizer state...")
         model_state = ckpt.get("model")
         if model_state is None:
-            print(f"Checkpoint missing model state at {self.path}. Starting fresh.")
-            return 0, 0, 0, 0, 0
+            raise RuntimeError(f"Checkpoint missing model state at {self.path}.")
         # Normalize checkpoint prefixes before loading or remapping.
         model_state = normalize_state_dict(model_state)
         try:
             remapped = load_model_state_dict(self.model, model_state)
         except Exception as exc:
-            print(f"Failed to restore model state from {self.path}: {exc}. Starting fresh.")
-            return 0, 0, 0, 0, 0
+            raise RuntimeError(f"Failed to restore model state from {self.path}: {exc}") from exc
         if remapped:
             print(f"Loaded legacy checkpoint weights from {self.path}.")
 
         # Restore optimizer and scheduler state, falling back to fresh state on failure.
-        optimizer_ok = _load_optimizer_state(self.optimizer, ckpt.get("optimizer", {}))
-        if optimizer_ok:
-            try:
-                self.scheduler.load_state_dict(ckpt["scheduler"])
-            except Exception as exc:
-                print(f"Failed to restore scheduler from {self.path}: {exc}. Resetting scheduler.")
-        else:
-            print("Skipping scheduler restore because optimizer state was reset.")
+        _load_optimizer_state(self.optimizer, ckpt.get("optimizer", {}))
+        try:
+            self.scheduler.load_state_dict(ckpt["scheduler"])
+        except Exception as exc:
+            raise RuntimeError(f"Failed to restore scheduler from {self.path}: {exc}") from exc
 
         # Recover counters with safe defaults (epoch stored as 1-based).
         saved_epoch = ckpt.get("epoch", 0)

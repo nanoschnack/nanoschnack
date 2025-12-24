@@ -8,12 +8,12 @@ from gpt import GPT
 
 
 class CheckpointerOptimizerResetTests(unittest.TestCase):
-    """Ensure optimizer state resets when shapes do not match.
+    """Ensure optimizer mismatches raise instead of resetting state.
 
-    Uses mismatched optimizer state to trigger the reset path.
-    Verifies loading continues without errors.
+    Uses mismatched optimizer state to trigger the failure path.
+    Verifies loading fails loudly instead of continuing.
     """
-    def test_load_latest_resets_mismatched_optimizer_state(self):
+    def test_load_latest_raises_on_mismatched_optimizer_state(self):
         model_a = GPT(
             vocab_size=11,
             embed_size=8,
@@ -54,9 +54,8 @@ class CheckpointerOptimizerResetTests(unittest.TestCase):
             path = f"{tmpdir}/latest.pt"
             torch.save(ckpt, path)
             checkpointer = Checkpointer(tmpdir, model_b, optimizer_b, scheduler_b, device="cpu")
-            checkpointer.load_latest()
-
-        self.assertEqual(len(optimizer_b.state), 0)
+            with self.assertRaises(RuntimeError):
+                checkpointer.load_latest()
 
 
 if __name__ == "__main__":

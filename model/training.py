@@ -118,6 +118,10 @@ tuned_batch_size = find_max_batch_size(
 )
 if tuned_batch_size:
     config.BATCH_SIZE = tuned_batch_size
+config.BATCH_SIZE = config.align_micro_batch_size(
+    config.BATCH_SIZE,
+    config.MACRO_BATCH_SIZE,
+)
 
 # Compile the model for faster training.
 if device.type == "cuda":
@@ -185,7 +189,9 @@ target_tokens = max_tokens or estimated_total_tokens
 target_epochs = 1
 if max_tokens and estimated_total_tokens > 0:
     target_epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
-tokens_per_step = config.BATCH_SIZE * (config.CONTEXT_LEN - 1)
+if config.MACRO_BATCH_SIZE % config.BATCH_SIZE != 0:
+    raise ValueError("MACRO_BATCH_SIZE must be divisible by BATCH_SIZE.")
+tokens_per_step = config.MACRO_BATCH_SIZE * (config.CONTEXT_LEN - 1)
 dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
 print(
     f"Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} "
@@ -340,6 +346,11 @@ last_ckpt_time = time.time()
 current_epoch = resume_epoch
 current_step = resume_step
 current_sample_index = resume_sample_index
+current_micro_step = 0
+micro_steps = config.MACRO_BATCH_SIZE // config.BATCH_SIZE
+micro_loss_total = 0.0
+micro_token_total = 0
+micro_sample_total = 0
 
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
@@ -347,7 +358,6 @@ progress = ProgressLogger(
     start_global_step=global_step,
     start_total_samples=resume_sample_index,
     start_total_tokens=resume_tokens,
-    log_interval=config.LOG_INTERVAL_SECS,
     warmup_plot_interval=config.PLOT_WARMUP_SECS,
     plot_interval=config.PLOT_INTERVAL_SECS,
     warmup_window_secs=config.WARMUP_WINDOW_SECS,
@@ -407,46 +417,27 @@ for current_epoch in itertools.count(resume_epoch):
                 decoded = tokenizer.decode(sample_ids)
                 print(f"Encoded input {debug_sample_index}: {decoded}")
 
-        # Clear accumulated gradients before the forward/backward pass.
-        optimizer.zero_grad()
+        # Clear accumulated gradients before the first micro step in the macro batch.
+        if current_micro_step == 0:
+            optimizer.zero_grad()
+            micro_loss_total = 0.0
+            micro_token_total = 0
+            micro_sample_total = 0
 
         # Run the forward pass with autocast and compute loss.
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
             logits = model(inputs, attention_mask=attn_mask)
             loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
 
-        # Backpropagate and apply gradient clipping.
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        # Scale loss for gradient accumulation.
+        scaled_loss = loss / micro_steps
+        scaled_loss.backward()
 
-        # Apply the optimizer step and advance the token scheduler.
-        optimizer.step()
+        # Micro step bookkeeping.
+        micro_loss_total += loss.item()
         token_count = attention_mask[:, 1:].sum().item()
-        next_total_tokens = progress.total_tokens + token_count
-        scheduler.last_epoch = next_total_tokens - 1
-        scheduler.step()
-
-        # Log progress and plot loss history.
-        remaining_tokens = max(target_tokens - next_total_tokens, 0)
-        should_log = (not progress.has_logged) or (time.time() - progress.last_log_time >= progress.log_interval)
-        progress.tick(
-            loss.item(),
-            input_ids.size(0),
-            token_count,
-            optimizer.param_groups[0]["lr"],
-            current_epoch,
-            current_step,
-            remaining_tokens=remaining_tokens,
-        )
-
-        # Print a target decode alongside log output when debugging.
-        if debug_level >= 1 and should_log:
-            target_ids = targets[-1]
-            if attention_mask is not None:
-                mask = attention_mask[-1, 1:].bool()
-                target_ids = target_ids[mask]
-            decoded_target = tokenizer.decode(target_ids.tolist())
-            print(f"Learn target: {decoded_target}")
+        micro_token_total += token_count
+        micro_sample_total += input_ids.size(0)
 
         # Advance per-source row counters for resume safety.
         row_counts = batch["row_count"].tolist()
@@ -458,6 +449,42 @@ for current_epoch in itertools.count(resume_epoch):
 
         # Update checkpoint counters and save when needed.
         current_sample_index += input_ids.size(0)
+        if current_micro_step != micro_steps - 1:
+            current_micro_step += 1
+            continue
+
+        # Log progress and plot loss history.
+        next_total_tokens = progress.total_tokens + micro_token_total
+        remaining_tokens = max(target_tokens - next_total_tokens, 0)
+        progress.tick(
+            micro_loss_total / micro_steps,
+            micro_sample_total,
+            micro_token_total,
+            optimizer.param_groups[0]["lr"],
+            current_epoch,
+            current_step,
+            remaining_tokens=remaining_tokens,
+        )
+
+        # Print a target decode alongside log output when debugging.
+        if debug_level >= 1:
+            target_ids = targets[-1]
+            if attention_mask is not None:
+                mask = attention_mask[-1, 1:].bool()
+                target_ids = target_ids[mask]
+            decoded_target = tokenizer.decode(target_ids.tolist())
+            print(f"Learn target: {decoded_target}")
+
+        # Apply gradient clipping.
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+        # Apply the optimizer step.
+        optimizer.step()
+
+        # Apply the optimizer step and advance the token scheduler.
+        scheduler.last_epoch = next_total_tokens - 1
+        scheduler.step()
+
         now = time.time()
         ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
         should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
@@ -476,7 +503,8 @@ for current_epoch in itertools.count(resume_epoch):
         if stop_requested:
             break
 
-    # Reset sample skip counter after the first epoch.
+        current_micro_step = 0
+    # Reset sample skip counter after the first epoch; partial macro batches spill to next epoch.
     loader_skip_samples = 0
     current_sample_index = 0
 

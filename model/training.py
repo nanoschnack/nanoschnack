@@ -130,6 +130,7 @@ from loader import (
     resolve_total_rows,
     dataset_label,
 )
+from resume import build_resume_state, normalize_resume_rows
 import math
 
 # Download shards on demand and shuffle within each dataset.
@@ -165,8 +166,9 @@ param_count, _ = config.model_info(model)
 # Derive the token cap and epoch count from the configured max-training factor.
 max_tokens = int(param_count * config.MAX_TRAINING_FACTOR) if config.MAX_TRAINING_FACTOR > 0 else 0
 target_tokens = max_tokens or estimated_total_tokens
+target_epochs = 1
 if max_tokens and estimated_total_tokens > 0:
-    epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
+    target_epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
 tokens_per_step = config.BATCH_SIZE * (config.CONTEXT_LEN - 1)
 dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
 print(
@@ -175,27 +177,16 @@ print(
     flush=True,
 )
 print(
-    f"Target:          epochs={epochs:,} target_tokens={target_tokens:,} "
+    f"Target:          epochs={target_epochs:,} target_tokens={target_tokens:,} "
     f"(factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})",
     flush=True,
 )
 
 
-
 # %% [markdown]
-# ## Run the Training
+# ## Progress and Plotting
 
 # %%
-from plot import ascii_loss_plot
-from chat import generate_reply_stream
-from progress import ProgressLogger
-from checkpointer import Checkpointer
-from scheduler import build_warmup_cosine_tokens
-from torch.utils.data import DataLoader
-import os
-import signal
-import time
-
 def plot_with_completion(points):
     # Render the loss plot first so completion failures don't block logs.
     chart = ascii_loss_plot(points)
@@ -207,14 +198,14 @@ def plot_with_completion(points):
     try:
         reply_parts = []
         for token in generate_reply_stream(
-            model,
-            tokenizer,
-            config.PLOT_COMPLETION_PROMPT,
-            context_len=config.CONTEXT_LEN,
-            max_new_tokens=config.PLOT_COMPLETION_TOKENS,
-            temperature=config.TEMPERATURE,
-            top_k=config.TOP_K,
-            device=device,
+                model,
+                tokenizer,
+                config.PLOT_COMPLETION_PROMPT,
+                context_len=config.CONTEXT_LEN,
+                max_new_tokens=config.PLOT_COMPLETION_TOKENS,
+                temperature=config.TEMPERATURE,
+                top_k=config.TOP_K,
+                device=device,
         ):
             reply_parts.append(token)
         completion = "".join(reply_parts)
@@ -228,56 +219,56 @@ def plot_with_completion(points):
         f"{config.PLOT_COMPLETION_PROMPT}{completion}"
     )
 
-# Set up optimizer, learning-rate scheduler, and loss function
-epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
 
+# %% [markdown]
+# ## Load the previous Checkpoint
+
+# %%
+from plot import ascii_loss_plot
+from chat import generate_reply_stream
+from progress import ProgressLogger
+from checkpointer import Checkpointer
+from scheduler import build_warmup_cosine_tokens
+from torch.utils.data import DataLoader
+import itertools
+import os
+import signal
+import time
+
+# Set up optimizer, learning-rate scheduler, and loss function
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
 scheduler = build_warmup_cosine_tokens(optimizer, target_tokens, config.WARMUP_PCT)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
-# The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
-resume_epoch, resume_step, global_step, sample_index, resume_tokens = checkpointer.load_latest()
-resume_state = checkpointer.resume_state
 
-# Extend the plan when resuming beyond the original epoch budget.
-if resume_epoch >= epochs:
-    print(
-        f"Resume epoch {resume_epoch + 1} exceeds planned epochs {epochs}; extending plan.",
-        flush=True,
-    )
-    epochs = resume_epoch + 1
-
-
-# Track token counts for the token-based scheduler.
-total_tokens_seen = resume_tokens
+# Load the latest checkpoint if available.
+resume_epoch, resume_step, global_step, resume_sample_index, resume_tokens, resume_state = checkpointer.load_latest()
 
 # Align the scheduler with the resumed token count.
 if resume_tokens:
-    scheduler.last_epoch = resume_tokens
-    for group, base_lr, lr_lambda in zip(
-        optimizer.param_groups,
-        scheduler.base_lrs,
-        scheduler.lr_lambdas,
-    ):
+    scheduler.last_epoch = resume_tokens # we misuse token's epoch count for tokens
+    for group, base_lr, lr_lambda in zip(optimizer.param_groups, scheduler.base_lrs, scheduler.lr_lambdas):
         group["lr"] = base_lr * lr_lambda(resume_tokens)
 
 # Normalize resume state into per-spec row offsets.
-resume_rows = {spec["spec"]: 0 for spec in dataset_specs}
-if isinstance(resume_state, dict):
-    for entry in resume_state.get("datasets", []):
-        spec_key = entry.get("spec")
-        if spec_key in resume_rows:
-            resume_rows[spec_key] = int(entry.get("row_offset", 0) or 0)
+# Keep offsets from the checkpoint, even for specs not active in this run.
+# Ensure current specs always have a default offset for safe lookups.
+# This drives shard/row skipping during resume and checkpointing.
+resume_rows = normalize_resume_rows(resume_state, dataset_specs)
+source_row_counts = dict(resume_rows) # Track row offsets for shard-aware resume.
 
 # Report when resuming via the legacy sample index.
-use_row_resume = any(value > 0 for value in resume_rows.values())
-if sample_index > 0 and not use_row_resume:
-    print(
-        f"Resume rows unavailable; falling back to linear sample skip ({sample_index}).",
-        flush=True,
-    )
+use_row_resume = any(resume_rows.get(spec["spec"], 0) > 0 for spec in dataset_specs)
+# Track the dataset position for skipping/checkpointing when row offsets are unavailable.
+loader_skip_samples = 0 if use_row_resume else resume_sample_index
+if resume_sample_index > 0 and not use_row_resume:
+    print(f"Resume rows unavailable; falling back to linear sample skip ({resume_sample_index}).")
 
 # Build packed datasets per source with row-offset resumes.
+# Resolve shard-aware resume plans, then stream from the right shard/offset.
+# Pack each source into fixed-length token blocks with source IDs.
+# Interleave happens later, so each dataset is prepared independently.
+# Row offsets are tracked for checkpoint-safe restarts.
 packed_datasets = []
 for dataset_index, spec in enumerate(dataset_specs):
     row_offset = resume_rows.get(spec["spec"], 0)
@@ -294,16 +285,10 @@ for dataset_index, spec in enumerate(dataset_specs):
     )
     if row_offset > 0:
         if data_files is None:
-            print(
-                f"Resume rows (linear): {spec['spec']} -> {row_offset}",
-                flush=True,
-            )
+            print(f"Resume rows (linear): {spec['spec']} -> {row_offset}")
             raw_streaming = raw_streaming.skip(row_offset)
         else:
-            print(
-                f"Resume rows: {spec['spec']} -> {shard_label} +{in_shard_offset}",
-                flush=True,
-            )
+            print(f"Resume rows: {spec['spec']} -> {shard_label} +{in_shard_offset}")
             raw_streaming = raw_streaming.skip(in_shard_offset)
     packed = build_packed_dataset(
         raw_streaming,
@@ -318,13 +303,22 @@ for dataset_index, spec in enumerate(dataset_specs):
 base_dataset = build_interleaved_dataset(packed_datasets, seed=42)
 print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
 
+# %% [markdown]
+# ## Run the Training
+
+# %%
 last_ckpt_time = time.time()
+
+# Track current counters for checkpointing and interrupts.
+current_epoch = resume_epoch
+current_step = resume_step
+current_sample_index = resume_sample_index
 
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
     plot_with_completion,
     start_global_step=global_step,
-    start_total_samples=sample_index,
+    start_total_samples=resume_sample_index,
     start_total_tokens=resume_tokens,
     log_interval=config.LOG_INTERVAL_SECS,
     warmup_plot_interval=config.PLOT_WARMUP_SECS,
@@ -333,155 +327,121 @@ progress = ProgressLogger(
     estimated_total_tokens=target_tokens,
 )
 
-last_epoch = resume_epoch
-last_step = resume_step
-# Resume from the saved sample index when no row offsets are available.
-start_position = 0 if use_row_resume else sample_index
-current_position = sample_index
-
-# Track row offsets for shard-aware resume.
-source_row_counts = {spec["spec"]: resume_rows.get(spec["spec"], 0) for spec in dataset_specs}
-
-def _build_resume_state():
-    # Capture current row offsets per dataset for checkpointing.
-    datasets = []
-    for spec in dataset_specs:
-        datasets.append(
-            {
-                "spec": spec["spec"],
-                "row_offset": source_row_counts.get(spec["spec"], 0),
-            }
-        )
-    return {"datasets": datasets}
-
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
 printed_debug_sample = False
 
 # Track SIGINT so we can checkpoint after a safe step.
-stop_requested = {"flag": False}
+stop_requested = False
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
-    stop_requested["flag"] = True
-signal.signal(signal.SIGINT, _request_stop)
-try:
-    print("Starting training loop...", flush=True)
-    for epoch in range(resume_epoch, epochs):
-        last_epoch = epoch
-        # Reset row counters at epoch boundaries beyond the resume epoch.
-        if epoch != resume_epoch:
-            source_row_counts = {spec["spec"]: 0 for spec in dataset_specs}
-        dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + epoch)
-        dataset_epoch = dataset_epoch.with_format("torch")
-        if epoch == resume_epoch and start_position > 0:
-            dataset_epoch = dataset_epoch.skip(start_position)
-        loader = DataLoader(dataset_epoch, batch_size=config.BATCH_SIZE, shuffle=False)
-        for step, batch in enumerate(loader):
-            last_step = step
-
-            # Get the input IDs and attention mask, and move them to the GPU
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            # Skip the attention mask when all tokens are valid to keep SDPA fast paths.
-            attn_mask = None
-            if attention_mask is not None and not attention_mask.all():
-                attn_mask = attention_mask
-
-            # Next-token prediction
-            # input = Hello, Wor
-            # target = llo, World
-            inputs = input_ids[:, :-1] # everything from the first token except the last
-            targets = input_ids[:, 1:] # everything from the second token onward
-
-            # Preview the first sample to confirm tokenization/targets.
-            if debug_level >= 2 and not printed_debug_sample:
-                input_preview = inputs[0].tolist()
-                target_preview = targets[0].tolist()
-                print(f"Input tokens: {input_preview}")
-                print(f"Target tokens: {target_preview}")
-                print(f"Input text: {tokenizer.decode(input_preview)}")
-                print(f"Target text: {tokenizer.decode(target_preview)}")
-                printed_debug_sample = True
-
-            # Dump decoded inputs for every sample in the batch.
-            if debug_level >= 6:
-                for sample_index, sample_ids in enumerate(input_ids.tolist()):
-                    decoded = tokenizer.decode(sample_ids)
-                    print(f"Encoded input {sample_index}: {decoded}")
-
-            # Clear accumulated gradients from the previous step (which torch does automatically otherwise)
-            optimizer.zero_grad()
-
-            # Forward pass with bf16 autocast on CUDA.
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
-                logits = model(inputs, attention_mask=attn_mask[:, :-1] if attn_mask is not None else None)
-
-                # Compute (average) loss of the predicted next tokens and apply backpropagation.
-                # reshape to (batch_size * seq_len, vocab_size) and (batch_size * seq_len)
-                loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
-
-            # Backward pass to compute gradients.
-            loss.backward()
-
-            # Clip gradients to stabilize training (especially for larger batches).
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-            # Update weights, then advance the learning-rate schedule.
-            optimizer.step()
-
-            # Advance the token-based scheduler using observed tokens.
-            token_count = attention_mask[:, 1:].sum().item()
-            total_tokens_seen += token_count
-            scheduler.last_epoch = total_tokens_seen - 1
-            scheduler.step()
-
-            # Log progress and plot loss history
-            remaining_tokens = max(target_tokens - total_tokens_seen, 0)
-            progress.tick(
-                loss.item(),
-                input_ids.size(0),
-                token_count,
-                optimizer.param_groups[0]["lr"],
-                epoch,
-                step,
-                remaining_tokens=remaining_tokens,
-            )
-            # Advance per-source row counters for resume safety.
-            row_counts = batch["row_count"].tolist()
-            source_ids = batch["source_id"].tolist()
-            for source_id, row_count in zip(source_ids, row_counts):
-                if row_count:
-                    spec_key = dataset_specs[int(source_id)]["spec"]
-                    source_row_counts[spec_key] += int(row_count)
-            current_position += input_ids.size(0)
-            now = time.time()
-            ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
-            if now - last_ckpt_time >= ckpt_interval:
-                checkpointer.save_latest(
-                    epoch,
-                    step,
-                    progress.global_step,
-                    current_position,
-                    progress.total_tokens,
-                    resume_state=_build_resume_state(),
-                )
-                last_ckpt_time = now
-
-            # Exit after the current step if SIGINT was requested.
-            if stop_requested["flag"]:
-                raise KeyboardInterrupt
-        start_position = 0
-        current_position = 0
-
-except KeyboardInterrupt:
-    # Save a checkpoint so training can resume from the last completed step.
     print("Interrupted: saving checkpoint...")
-    checkpointer.save_latest(
-        last_epoch,
-        last_step,
-        progress.global_step,
-        current_position,
-        progress.total_tokens,
-        resume_state=_build_resume_state(),
-    )
-    print("Interrupted: checkpoint saved, exiting.")
+    global stop_requested
+    stop_requested = True
+signal.signal(signal.SIGINT, _request_stop)
+
+print("Starting training loop...", flush=True)
+for current_epoch in itertools.count(resume_epoch):
+    # Reset row counters at epoch boundaries beyond the resume epoch.
+    if current_epoch != resume_epoch:
+        for spec in dataset_specs:
+            source_row_counts[spec["spec"]] = 0
+    dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch)
+    dataset_epoch = dataset_epoch.with_format("torch")
+    if current_epoch == resume_epoch and loader_skip_samples > 0:
+        dataset_epoch = dataset_epoch.skip(loader_skip_samples)
+    loader = DataLoader(dataset_epoch, batch_size=config.BATCH_SIZE, shuffle=False)
+
+    for current_step, batch in enumerate(loader):
+        # Move batch tensors to the device and prepare an optional attention mask.
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        attn_mask = None
+        if attention_mask is not None and not attention_mask.all():
+            attn_mask = attention_mask
+
+        # Build next-token prediction pairs.
+        inputs = input_ids[:, :-1] # everything from the first token except the last
+        targets = input_ids[:, 1:] # everything from the second token onward
+
+        # Preview tokenization outputs for debugging.
+        if debug_level >= 2 and not printed_debug_sample:
+            input_preview = inputs[0].tolist()
+            target_preview = targets[0].tolist()
+            print(f"Input tokens: {input_preview}")
+            print(f"Target tokens: {target_preview}")
+            print(f"Input text: {tokenizer.decode(input_preview)}")
+            print(f"Target text: {tokenizer.decode(target_preview)}")
+            printed_debug_sample = True
+
+        # Dump decoded inputs for every sample in the batch.
+        if debug_level >= 6:
+            for debug_sample_index, sample_ids in enumerate(input_ids.tolist()):
+                decoded = tokenizer.decode(sample_ids)
+                print(f"Encoded input {debug_sample_index}: {decoded}")
+
+        # Clear accumulated gradients before the forward/backward pass.
+        optimizer.zero_grad()
+
+        # Run the forward pass with autocast and compute loss.
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
+            logits = model(inputs, attention_mask=attn_mask[:, :-1] if attn_mask is not None else None)
+            loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+
+        # Backpropagate and apply gradient clipping.
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+        # Apply the optimizer step and advance the token scheduler.
+        optimizer.step()
+        token_count = attention_mask[:, 1:].sum().item()
+        next_total_tokens = progress.total_tokens + token_count
+        scheduler.last_epoch = next_total_tokens - 1
+        scheduler.step()
+
+        # Log progress and plot loss history.
+        progress.tick(
+            loss.item(),
+            input_ids.size(0),
+            token_count,
+            optimizer.param_groups[0]["lr"],
+            current_epoch,
+            current_step,
+            remaining_tokens=max(target_tokens - next_total_tokens, 0),
+        )
+
+        # Advance per-source row counters for resume safety.
+        row_counts = batch["row_count"].tolist()
+        source_ids = batch["source_id"].tolist()
+        for source_id, row_count in zip(source_ids, row_counts):
+            if row_count:
+                spec_key = dataset_specs[int(source_id)]["spec"]
+                source_row_counts[spec_key] += int(row_count)
+
+        # Update checkpoint counters and save when needed.
+        current_sample_index += input_ids.size(0)
+        now = time.time()
+        ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
+        should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
+        if should_checkpoint:
+            checkpointer.save_latest(
+                current_epoch,
+                current_step,
+                progress.global_step,
+                current_sample_index,
+                progress.total_tokens,
+                resume_state=build_resume_state(source_row_counts, dataset_specs),
+            )
+            last_ckpt_time = now
+
+        # Exit after the current step if SIGINT was requested.
+        if stop_requested:
+            break
+
+    # Reset sample skip counter after the first epoch.
+    loader_skip_samples = 0
+    current_sample_index = 0
+
+    if stop_requested:
+        break
+

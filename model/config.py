@@ -29,6 +29,10 @@ def _env_str(name, default):
 # Keep this aligned between training and inference.
 CONTEXT_LEN = _env_int("CONTEXT_LEN", 1024)
 
+# Vocabulary size for token embeddings and output projection.
+# Use 0 to auto-align the tokenizer size to a nearby power-of-two multiple.
+VOCAB_SIZE = _env_int("VOCAB_SIZE", 0)
+
 # Embedding dimensionality for token and position representations.
 # Larger values increase model capacity and compute cost.
 EMBED_SIZE = _env_int("EMBED_SIZE", 768)
@@ -137,6 +141,7 @@ LOG_INTERVAL_SECS = _env_int("LOG_INTERVAL_SECS", 10)
 def snapshot():
     return {
         "CONTEXT_LEN": CONTEXT_LEN,
+        "VOCAB_SIZE": VOCAB_SIZE,
         "EMBED_SIZE": EMBED_SIZE,
         "NUM_LAYERS": NUM_LAYERS,
         "NUM_HEADS": NUM_HEADS,
@@ -164,6 +169,7 @@ def _architecture_lines():
     lines = [
         "Architecture:",
         f"  context_len={CONTEXT_LEN}",
+        f"  vocab_size={VOCAB_SIZE}",
         f"  embed_size={EMBED_SIZE}",
         f"  num_layers={NUM_LAYERS}",
         f"  num_heads={NUM_HEADS}",

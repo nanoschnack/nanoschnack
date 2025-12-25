@@ -202,6 +202,8 @@ def main():
     info = device_info(device)
     print_device_info(info)
     tokenizer = load_tokenizer()
+    # Confirm resolved tokenizer size after padding and vocab expansion.
+    print(f"Tokenizer vocab size: {tokenizer.get_vocab_size()}")
 
     model, model_context_len = load_model(checkpoint_path, tokenizer.get_vocab_size(), device)
     if args.context_len == config.CONTEXT_LEN:

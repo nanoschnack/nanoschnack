@@ -20,7 +20,7 @@ def apply_checkpoint_config(ckpt_config):
     # Apply checkpoint hyperparameters to global config.
     if not ckpt_config:
         return
-    for name in ("CONTEXT_LEN", "EMBED_SIZE", "NUM_LAYERS", "NUM_HEADS", "HIDDEN_SIZE"):
+    for name in ("CONTEXT_LEN", "VOCAB_SIZE", "EMBED_SIZE", "NUM_LAYERS", "NUM_HEADS", "HIDDEN_SIZE"):
         if name in ckpt_config:
             setattr(config, name, ckpt_config[name])
 
@@ -53,6 +53,50 @@ def select_state_dict(ckpt):
                 return ckpt[key]
         return None
     return ckpt
+
+
+def _resolve_vocab_size(state_dict):
+    # Derive vocab size from known token embedding weights.
+    for key in ("tok.weight", "lm.weight"):
+        tensor = state_dict.get(key)
+        if tensor is not None:
+            return tensor.shape[0]
+    return None
+
+
+def _resize_vocab_state_dict(model, state_dict, ckpt_vocab_size=None):
+    # Expand checkpoint token weights when the current model vocab is larger.
+    if not state_dict:
+        return None
+    model_state = model.state_dict()
+    target_weight = model_state.get("tok.weight")
+    if target_weight is None:
+        return None
+    target_vocab = target_weight.shape[0]
+    source_vocab = ckpt_vocab_size or _resolve_vocab_size(state_dict)
+    if source_vocab is None:
+        return None
+    if source_vocab == target_vocab:
+        return None
+    if source_vocab > target_vocab:
+        raise RuntimeError(
+            "Checkpoint vocab size exceeds current model vocab size; "
+            "refusing to truncate weights."
+        )
+    print(
+        f"Expanding vocab weights from {source_vocab} to {target_vocab} tokens "
+        "with fresh initialization for new rows."
+    )
+    device = target_weight.device
+    for key in ("tok.weight", "lm.weight"):
+        if key not in state_dict:
+            continue
+        base = model_state[key].detach().clone()
+        if state_dict[key].shape[1] != base.shape[1]:
+            raise RuntimeError(f"Embedding width mismatch for {key}.")
+        base[:source_vocab].copy_(state_dict[key].to(device))
+        state_dict[key] = base
+    return source_vocab
 
 
 def _load_into_compiled_module(model, state_dict):
@@ -182,6 +226,7 @@ class Checkpointer:
             raise RuntimeError(f"Checkpoint missing model state at {self.path}.")
         # Normalize checkpoint prefixes before loading or remapping.
         model_state = normalize_state_dict(model_state)
+        _resize_vocab_state_dict(self.model, model_state, ckpt.get("vocab_size"))
         try:
             load_result = load_model_state_dict(self.model, model_state)
         except Exception as exc:
@@ -226,6 +271,7 @@ class Checkpointer:
     def save_latest(self, epoch, step, global_step, sample_index, total_tokens, resume_state=None):
         # Persist the latest training state in the current checkpoint format.
         start_time = time.time()
+        vocab_size = getattr(getattr(self.model, "tok", None), "num_embeddings", None)
         ckpt = {
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -238,6 +284,8 @@ class Checkpointer:
             "total_tokens": total_tokens,
             "resume_state": resume_state,
         }
+        if vocab_size is not None:
+            ckpt["vocab_size"] = vocab_size
         # Save the rolling latest checkpoint.
         self._write_checkpoint(self.path, ckpt)
 

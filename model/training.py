@@ -47,6 +47,18 @@ torch.set_float32_matmul_precision("high")
 from tokenizer import load_tokenizer
 
 tokenizer = load_tokenizer()
+print(f"Tokenizer vocab size: {tokenizer.get_vocab_size()}")
+# Report alignment diagnostics for tokenizer padding.
+alignment = getattr(tokenizer, "vocab_alignment", None)
+if alignment:
+    print(
+        "Tokenizer vocab alignment: "
+        f"base={alignment['base_size']} "
+        f"aligned={alignment['aligned_size']} "
+        f"power={alignment['power']} "
+        f"(+{alignment['increase_pct']:.3f}%)"
+    )
+
 
 # %% [markdown]
 # ## Instantiating the NanoSchnack model

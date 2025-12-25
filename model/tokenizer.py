@@ -71,6 +71,7 @@ def load_tokenizer():
     if tokenizer.token_to_id("[PAD]") is None:
         tokenizer.add_special_tokens(["[PAD]"])
 
+    # Align after adding special tokens so padding is counted in the base size.
     base_size = tokenizer.get_vocab_size()
     resolved_size = ensure_vocab_size(tokenizer, config.VOCAB_SIZE)
     # Attach alignment metadata for training diagnostics.

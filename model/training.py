@@ -381,15 +381,15 @@ for current_epoch in itertools.count(resume_epoch):
 
     for current_step, batch in enumerate(loader):
         # Move batch tensors to the device and prepare an optional attention mask.
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
         attn_mask = None
         if attention_mask is not None and not attention_mask.all():
-            attn_mask = attention_mask
+            attn_mask = attention_mask[:, :-1].to(device)
 
         # Build next-token prediction pairs.
-        inputs = input_ids[:, :-1] # everything from the first token except the last
-        targets = input_ids[:, 1:] # everything from the second token onward
+        inputs = input_ids[:, :-1].to(device) # everything from the first token except the last
+        targets = input_ids[:, 1:].to(device) # everything from the second token onward
 
         # Preview tokenization outputs for debugging.
         if debug_level >= 2 and not printed_debug_sample:
@@ -412,7 +412,7 @@ for current_epoch in itertools.count(resume_epoch):
 
         # Run the forward pass with autocast and compute loss.
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
-            logits = model(inputs, attention_mask=attn_mask[:, :-1] if attn_mask is not None else None)
+            logits = model(inputs, attention_mask=attn_mask)
             loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
 
         # Backpropagate and apply gradient clipping.
@@ -428,7 +428,6 @@ for current_epoch in itertools.count(resume_epoch):
 
         # Log progress and plot loss history.
         remaining_tokens = max(target_tokens - next_total_tokens, 0)
-        # Decide whether this step will emit a log line.
         should_log = (not progress.has_logged) or (time.time() - progress.last_log_time >= progress.log_interval)
         progress.tick(
             loss.item(),

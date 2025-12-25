@@ -166,8 +166,9 @@ param_count, _ = config.model_info(model)
 # Derive the token cap and epoch count from the configured max-training factor.
 max_tokens = int(param_count * config.MAX_TRAINING_FACTOR) if config.MAX_TRAINING_FACTOR > 0 else 0
 target_tokens = max_tokens or estimated_total_tokens
+target_epochs = 1
 if max_tokens and estimated_total_tokens > 0:
-    epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
+    target_epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
 tokens_per_step = config.BATCH_SIZE * (config.CONTEXT_LEN - 1)
 dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
 print(
@@ -176,27 +177,17 @@ print(
     flush=True,
 )
 print(
-    f"Target:          epochs={epochs:,} target_tokens={target_tokens:,} "
+    f"Target:          epochs={target_epochs:,} target_tokens={target_tokens:,} "
     f"(factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})",
     flush=True,
 )
 
 
 
-# %% [markdown]
-# ## Run the Training
+# %%
+## Progress and Plotting
 
 # %%
-from plot import ascii_loss_plot
-from chat import generate_reply_stream
-from progress import ProgressLogger
-from checkpointer import Checkpointer
-from scheduler import build_warmup_cosine_tokens
-from torch.utils.data import DataLoader
-import os
-import signal
-import time
-
 def plot_with_completion(points):
     # Render the loss plot first so completion failures don't block logs.
     chart = ascii_loss_plot(points)
@@ -208,14 +199,14 @@ def plot_with_completion(points):
     try:
         reply_parts = []
         for token in generate_reply_stream(
-            model,
-            tokenizer,
-            config.PLOT_COMPLETION_PROMPT,
-            context_len=config.CONTEXT_LEN,
-            max_new_tokens=config.PLOT_COMPLETION_TOKENS,
-            temperature=config.TEMPERATURE,
-            top_k=config.TOP_K,
-            device=device,
+                model,
+                tokenizer,
+                config.PLOT_COMPLETION_PROMPT,
+                context_len=config.CONTEXT_LEN,
+                max_new_tokens=config.PLOT_COMPLETION_TOKENS,
+                temperature=config.TEMPERATURE,
+                top_k=config.TOP_K,
+                device=device,
         ):
             reply_parts.append(token)
         completion = "".join(reply_parts)
@@ -229,8 +220,29 @@ def plot_with_completion(points):
         f"{config.PLOT_COMPLETION_PROMPT}{completion}"
     )
 
+
+# %% [markdown]
+# ## Load the previous Checkpoint
+
+# %%
+
+# %% [markdown]
+# ## Run the Training
+
+# %%
+from plot import ascii_loss_plot
+from chat import generate_reply_stream
+from progress import ProgressLogger
+from checkpointer import Checkpointer
+from scheduler import build_warmup_cosine_tokens
+from torch.utils.data import DataLoader
+import itertools
+import os
+import signal
+import time
+
 # Set up optimizer, learning-rate scheduler, and loss function
-epochs = 1 # epochs between 1 and 3 are usually sufficient for good results, rather 1 than 3.
+# Target epochs are informational; training runs until interrupted.
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
 scheduler = build_warmup_cosine_tokens(optimizer, target_tokens, config.WARMUP_PCT)
@@ -239,15 +251,6 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 resume_epoch, resume_step, global_step, sample_index, resume_tokens = checkpointer.load_latest()
 resume_state = checkpointer.resume_state
-
-# Extend the plan when resuming beyond the original epoch budget.
-if resume_epoch >= epochs:
-    print(
-        f"Resume epoch {resume_epoch + 1} exceeds planned epochs {epochs}; extending plan.",
-        flush=True,
-    )
-    epochs = resume_epoch + 1
-
 
 # Track token counts for the token-based scheduler.
 total_tokens_seen = resume_tokens
@@ -354,7 +357,7 @@ def _request_stop(signum, frame):
 signal.signal(signal.SIGINT, _request_stop)
 try:
     print("Starting training loop...", flush=True)
-    for epoch in range(resume_epoch, epochs):
+    for epoch in itertools.count(resume_epoch):
         last_epoch = epoch
         # Reset row counters at epoch boundaries beyond the resume epoch.
         if epoch != resume_epoch:

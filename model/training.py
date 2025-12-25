@@ -130,6 +130,7 @@ from loader import (
     resolve_total_rows,
     dataset_label,
 )
+from resume import build_resume_state, normalize_resume_rows
 import math
 
 # Download shards on demand and shuffle within each dataset.
@@ -262,15 +263,10 @@ if resume_tokens:
         group["lr"] = base_lr * lr_lambda(resume_tokens)
 
 # Normalize resume state into per-spec row offsets.
-resume_rows = {spec["spec"]: 0 for spec in dataset_specs}
-if isinstance(resume_state, dict):
-    for entry in resume_state.get("datasets", []):
-        spec_key = entry.get("spec")
-        if spec_key in resume_rows:
-            resume_rows[spec_key] = int(entry.get("row_offset", 0) or 0)
+resume_rows = normalize_resume_rows(resume_state, dataset_specs)
 
 # Report when resuming via the legacy sample index.
-use_row_resume = any(value > 0 for value in resume_rows.values())
+use_row_resume = any(resume_rows.get(spec["spec"], 0) > 0 for spec in dataset_specs)
 if sample_index > 0 and not use_row_resume:
     print(
         f"Resume rows unavailable; falling back to linear sample skip ({sample_index}).",
@@ -340,19 +336,11 @@ start_position = 0 if use_row_resume else sample_index
 current_position = sample_index
 
 # Track row offsets for shard-aware resume.
-source_row_counts = {spec["spec"]: resume_rows.get(spec["spec"], 0) for spec in dataset_specs}
+source_row_counts = dict(resume_rows)
 
 def _build_resume_state():
     # Capture current row offsets per dataset for checkpointing.
-    datasets = []
-    for spec in dataset_specs:
-        datasets.append(
-            {
-                "spec": spec["spec"],
-                "row_offset": source_row_counts.get(spec["spec"], 0),
-            }
-        )
-    return {"datasets": datasets}
+    return build_resume_state(source_row_counts, dataset_specs)
 
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
@@ -370,7 +358,8 @@ try:
         last_epoch = epoch
         # Reset row counters at epoch boundaries beyond the resume epoch.
         if epoch != resume_epoch:
-            source_row_counts = {spec["spec"]: 0 for spec in dataset_specs}
+            for spec in dataset_specs:
+                source_row_counts[spec["spec"]] = 0
         dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + epoch)
         dataset_epoch = dataset_epoch.with_format("torch")
         if epoch == resume_epoch and start_position > 0:

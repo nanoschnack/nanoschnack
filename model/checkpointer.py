@@ -64,12 +64,25 @@ def _resolve_vocab_size(state_dict):
     return None
 
 
+def _select_state_dict_key(state_dict, key):
+    # Find an exact or compiled-prefixed key in a state dict.
+    if key in state_dict:
+        return key
+    prefixed = f"_orig_mod.{key}"
+    if prefixed in state_dict:
+        return prefixed
+    return None
+
+
 def _resize_vocab_state_dict(model, state_dict, ckpt_vocab_size=None):
     # Expand checkpoint token weights when the current model vocab is larger.
     if not state_dict:
         return None
     model_state = model.state_dict()
-    target_weight = model_state.get("tok.weight")
+    target_key = _select_state_dict_key(model_state, "tok.weight")
+    if target_key is None:
+        return None
+    target_weight = model_state.get(target_key)
     if target_weight is None:
         return None
     target_vocab = target_weight.shape[0]
@@ -91,12 +104,19 @@ def _resize_vocab_state_dict(model, state_dict, ckpt_vocab_size=None):
     for key in ("tok.weight", "lm.weight"):
         if key not in state_dict:
             continue
-        base = model_state[key].detach().clone()
+        base_key = _select_state_dict_key(model_state, key)
+        if base_key is None:
+            continue
+        base = model_state[base_key].detach().clone()
         if state_dict[key].shape[1] != base.shape[1]:
             raise RuntimeError(f"Embedding width mismatch for {key}.")
         base[:source_vocab].copy_(state_dict[key].to(device))
         state_dict[key] = base
     return source_vocab
+
+
+def resize_vocab_state_dict(model, state_dict, ckpt_vocab_size=None):
+    return _resize_vocab_state_dict(model, state_dict, ckpt_vocab_size=ckpt_vocab_size)
 
 
 def _load_into_compiled_module(model, state_dict):
@@ -110,6 +130,24 @@ def _load_into_compiled_module(model, state_dict):
     return True
 
 
+def _prefix_state_dict(state_dict, prefix):
+    # Prefix keys to match wrapper-specific state dict formats.
+    if not state_dict:
+        return state_dict
+    return {f"{prefix}{key}": value for key, value in state_dict.items()}
+
+
+def _load_into_compiled_wrapper(model, state_dict):
+    # Load state into a compiled wrapper when only prefixed keys are accepted.
+    if not state_dict:
+        return False
+    try:
+        model.load_state_dict(_prefix_state_dict(state_dict, "_orig_mod."))
+    except Exception:
+        return False
+    return True
+
+
 def load_model_state_dict(model, state_dict):
     # Load model state with compiled/legacy remap fallbacks for older checkpoints.
     try:
@@ -117,6 +155,8 @@ def load_model_state_dict(model, state_dict):
         return None
     except Exception:
         if _load_into_compiled_module(model, state_dict):
+            return "compiled"
+        if _load_into_compiled_wrapper(model, state_dict):
             return "compiled"
         remapped = _remap_legacy_state_dict(state_dict)
         if remapped is None:

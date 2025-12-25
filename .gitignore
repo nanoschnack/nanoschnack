@@ -33,3 +33,4 @@ go.work.sum
 data
 __pycache__/
 checkpoints/
+models

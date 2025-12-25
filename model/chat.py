@@ -13,6 +13,7 @@ from gpt import GPT
 from checkpointer import (
     load_model_state_dict,
     normalize_state_dict,
+    resize_vocab_state_dict,
     select_state_dict,
 )
 from tokenizer import load_tokenizer
@@ -21,9 +22,12 @@ from tokenizer import load_tokenizer
 def load_model(checkpoint_path, vocab_size, device):
     # Construct the model and optionally load weights from checkpoint.
     state_dict = None
+    ckpt_vocab_size = None
 
     if checkpoint_path is not None:
         ckpt = torch.load(checkpoint_path, map_location=device)
+        if isinstance(ckpt, dict):
+            ckpt_vocab_size = ckpt.get("vocab_size")
         state_dict = select_state_dict(ckpt)
         if state_dict is not None:
             state_dict = normalize_state_dict(state_dict)
@@ -39,6 +43,7 @@ def load_model(checkpoint_path, vocab_size, device):
 
     if state_dict is not None:
         try:
+            resize_vocab_state_dict(model, state_dict, ckpt_vocab_size=ckpt_vocab_size)
             load_model_state_dict(model, state_dict)
         except RuntimeError as exc:
             raise RuntimeError(
@@ -202,8 +207,10 @@ def main():
     info = device_info(device)
     print_device_info(info)
     tokenizer = load_tokenizer()
-    # Confirm resolved tokenizer size after padding and vocab expansion.
-    print(f"Tokenizer vocab size: {tokenizer.get_vocab_size()}")
+    # Confirm base tokenizer size before alignment padding.
+    alignment = getattr(tokenizer, "vocab_alignment", None)
+    base_size = alignment["base_size"] if alignment else tokenizer.get_vocab_size()
+    print(f"Tokenizer vocab size (base): {base_size}")
 
     model, model_context_len = load_model(checkpoint_path, tokenizer.get_vocab_size(), device)
     if args.context_len == config.CONTEXT_LEN:

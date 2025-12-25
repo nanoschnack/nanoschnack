@@ -45,11 +45,11 @@ torch.set_float32_matmul_precision("high")
 
 # %%
 from tokenizer import load_tokenizer
-
 tokenizer = load_tokenizer()
-print(f"Tokenizer vocab size: {tokenizer.get_vocab_size()}")
-# Report alignment diagnostics for tokenizer padding.
 alignment = getattr(tokenizer, "vocab_alignment", None)
+base_size = alignment["base_size"] if alignment else tokenizer.get_vocab_size()
+print(f"Tokenizer vocab size (base): {base_size}")
+# Report alignment diagnostics for tokenizer padding.
 if alignment:
     print(
         "Tokenizer vocab alignment: "
@@ -58,6 +58,7 @@ if alignment:
         f"power={alignment['power']} "
         f"(+{alignment['increase_pct']:.3f}%)"
     )
+
 
 
 # %% [markdown]

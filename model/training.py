@@ -243,7 +243,7 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 
 # Load the latest checkpoint if available.
-resume_epoch, resume_step, global_step, sample_index, resume_tokens, resume_state = checkpointer.load_latest()
+resume_epoch, resume_step, global_step, resume_sample_index, resume_tokens, resume_state = checkpointer.load_latest()
 
 # Align the scheduler with the resumed token count.
 if resume_tokens:
@@ -256,14 +256,15 @@ if resume_tokens:
 # Ensure current specs always have a default offset for safe lookups.
 # This drives shard/row skipping during resume and checkpointing.
 resume_rows = normalize_resume_rows(resume_state, dataset_specs)
+source_row_counts = dict(resume_rows) # Track row offsets for shard-aware resume.
 
 # Report when resuming via the legacy sample index.
 use_row_resume = any(resume_rows.get(spec["spec"], 0) > 0 for spec in dataset_specs)
 # Track the dataset position for skipping/checkpointing when row offsets are unavailable.
-loader_skip_samples = 0 if use_row_resume else sample_index
-if sample_index > 0 and not use_row_resume:
+loader_skip_samples = 0 if use_row_resume else resume_sample_index
+if resume_sample_index > 0 and not use_row_resume:
     print(
-        f"Resume rows unavailable; falling back to linear sample skip ({sample_index}).",
+        f"Resume rows unavailable; falling back to linear sample skip ({resume_sample_index}).",
         flush=True,
     )
 
@@ -317,14 +318,17 @@ print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
 
 # %%
 last_ckpt_time = time.time()
-last_epoch = resume_epoch
-last_step = resume_step
+
+# Track current counters for checkpointing and interrupts.
+current_epoch = resume_epoch
+current_step = resume_step
+current_sample_index = resume_sample_index
 
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
     plot_with_completion,
     start_global_step=global_step,
-    start_total_samples=sample_index,
+    start_total_samples=resume_sample_index,
     start_total_tokens=resume_tokens,
     log_interval=config.LOG_INTERVAL_SECS,
     warmup_plot_interval=config.PLOT_WARMUP_SECS,
@@ -332,10 +336,6 @@ progress = ProgressLogger(
     warmup_window_secs=config.WARMUP_WINDOW_SECS,
     estimated_total_tokens=target_tokens,
 )
-
-
-# Track row offsets for shard-aware resume.
-source_row_counts = dict(resume_rows)
 
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
@@ -349,19 +349,17 @@ def _request_stop(signum, frame):
 signal.signal(signal.SIGINT, _request_stop)
 try:
     print("Starting training loop...", flush=True)
-    for epoch in itertools.count(resume_epoch):
-        last_epoch = epoch
+    for current_epoch in itertools.count(resume_epoch):
         # Reset row counters at epoch boundaries beyond the resume epoch.
-        if epoch != resume_epoch:
+        if current_epoch != resume_epoch:
             for spec in dataset_specs:
                 source_row_counts[spec["spec"]] = 0
-        dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + epoch)
+        dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch)
         dataset_epoch = dataset_epoch.with_format("torch")
-        if epoch == resume_epoch and loader_skip_samples > 0:
+        if current_epoch == resume_epoch and loader_skip_samples > 0:
             dataset_epoch = dataset_epoch.skip(loader_skip_samples)
         loader = DataLoader(dataset_epoch, batch_size=config.BATCH_SIZE, shuffle=False)
-        for step, batch in enumerate(loader):
-            last_step = step
+        for current_step, batch in enumerate(loader):
 
             # Get the input IDs and attention mask, and move them to the GPU
             input_ids = batch["input_ids"].to(device)
@@ -389,9 +387,9 @@ try:
 
             # Dump decoded inputs for every sample in the batch.
             if debug_level >= 6:
-                for sample_index, sample_ids in enumerate(input_ids.tolist()):
+                for debug_sample_index, sample_ids in enumerate(input_ids.tolist()):
                     decoded = tokenizer.decode(sample_ids)
-                    print(f"Encoded input {sample_index}: {decoded}")
+                    print(f"Encoded input {debug_sample_index}: {decoded}")
 
             # Clear accumulated gradients from the previous step (which torch does automatically otherwise)
             optimizer.zero_grad()
@@ -426,8 +424,8 @@ try:
                 input_ids.size(0),
                 token_count,
                 optimizer.param_groups[0]["lr"],
-                epoch,
-                step,
+                current_epoch,
+                current_step,
                 remaining_tokens=remaining_tokens,
             )
             # Advance per-source row counters for resume safety.
@@ -437,7 +435,7 @@ try:
                 if row_count:
                     spec_key = dataset_specs[int(source_id)]["spec"]
                     source_row_counts[spec_key] += int(row_count)
-            sample_index += input_ids.size(0)
+            current_sample_index += input_ids.size(0)
             now = time.time()
             ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
             if now - last_ckpt_time >= ckpt_interval:
@@ -445,7 +443,7 @@ try:
                     epoch,
                     step,
                     progress.global_step,
-                    sample_index,
+                    current_sample_index,
                     progress.total_tokens,
                     resume_state=build_resume_state(source_row_counts, dataset_specs),
                 )
@@ -455,16 +453,16 @@ try:
             if stop_requested["flag"]:
                 raise KeyboardInterrupt
         loader_skip_samples = 0
-        sample_index = 0
+        current_sample_index = 0
 
 except KeyboardInterrupt:
     # Save a checkpoint so training can resume from the last completed step.
     print("Interrupted: saving checkpoint...")
     checkpointer.save_latest(
-        last_epoch,
-        last_step,
+        current_epoch,
+        current_step,
         progress.global_step,
-        sample_index,
+        current_sample_index,
         progress.total_tokens,
         resume_state=build_resume_state(source_row_counts, dataset_specs),
     )

@@ -400,6 +400,9 @@ for current_epoch in itertools.count(resume_epoch):
         scheduler.step()
 
         # Log progress and plot loss history.
+        remaining_tokens = max(target_tokens - next_total_tokens, 0)
+        # Decide whether this step will emit a log line.
+        should_log = (not progress.has_logged) or (time.time() - progress.last_log_time >= progress.log_interval)
         progress.tick(
             loss.item(),
             input_ids.size(0),
@@ -407,8 +410,17 @@ for current_epoch in itertools.count(resume_epoch):
             optimizer.param_groups[0]["lr"],
             current_epoch,
             current_step,
-            remaining_tokens=max(target_tokens - next_total_tokens, 0),
+            remaining_tokens=remaining_tokens,
         )
+
+        # Print a target decode alongside log output when debugging.
+        if debug_level >= 1 and should_log:
+            target_tokens = targets[-1]
+            if attention_mask is not None:
+                mask = attention_mask[-1, 1:].bool()
+                target_tokens = target_tokens[mask]
+            decoded_target = tokenizer.decode(target_tokens.tolist())
+            print(f"Learn target: {decoded_target}")
 
         # Advance per-source row counters for resume safety.
         row_counts = batch["row_count"].tolist()

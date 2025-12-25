@@ -248,14 +248,19 @@ resume_epoch, resume_step, global_step, sample_index, resume_tokens, resume_stat
 # Align the scheduler with the resumed token count.
 if resume_tokens:
     scheduler.last_epoch = resume_tokens # we misuse token's epoch count for tokens
-    for group, base_lr, lr_lambda in zip(        optimizer.param_groups,        scheduler.base_lrs,        scheduler.lr_lambdas,    ):
+    for group, base_lr, lr_lambda in zip(optimizer.param_groups, scheduler.base_lrs, scheduler.lr_lambdas):
         group["lr"] = base_lr * lr_lambda(resume_tokens)
 
 # Normalize resume state into per-spec row offsets.
+# Keep offsets from the checkpoint, even for specs not active in this run.
+# Ensure current specs always have a default offset for safe lookups.
+# This drives shard/row skipping during resume and checkpointing.
 resume_rows = normalize_resume_rows(resume_state, dataset_specs)
 
 # Report when resuming via the legacy sample index.
 use_row_resume = any(resume_rows.get(spec["spec"], 0) > 0 for spec in dataset_specs)
+# Track the dataset position for skipping/checkpointing when row offsets are unavailable.
+loader_skip_samples = 0 if use_row_resume else sample_index
 if sample_index > 0 and not use_row_resume:
     print(
         f"Resume rows unavailable; falling back to linear sample skip ({sample_index}).",
@@ -263,6 +268,10 @@ if sample_index > 0 and not use_row_resume:
     )
 
 # Build packed datasets per source with row-offset resumes.
+# Resolve shard-aware resume plans, then stream from the right shard/offset.
+# Pack each source into fixed-length token blocks with source IDs.
+# Interleave happens later, so each dataset is prepared independently.
+# Row offsets are tracked for checkpoint-safe restarts.
 packed_datasets = []
 for dataset_index, spec in enumerate(dataset_specs):
     row_offset = resume_rows.get(spec["spec"], 0)
@@ -324,11 +333,6 @@ progress = ProgressLogger(
     estimated_total_tokens=target_tokens,
 )
 
-
-# Track the dataset position for skipping/checkpointing when row offsets are unavailable.
-resume_sample_index = sample_index
-loader_skip_samples = 0 if use_row_resume else resume_sample_index
-current_sample_index = resume_sample_index
 
 # Track row offsets for shard-aware resume.
 source_row_counts = dict(resume_rows)
@@ -433,7 +437,7 @@ try:
                 if row_count:
                     spec_key = dataset_specs[int(source_id)]["spec"]
                     source_row_counts[spec_key] += int(row_count)
-            current_sample_index += input_ids.size(0)
+            sample_index += input_ids.size(0)
             now = time.time()
             ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
             if now - last_ckpt_time >= ckpt_interval:
@@ -441,7 +445,7 @@ try:
                     epoch,
                     step,
                     progress.global_step,
-                    current_sample_index,
+                    sample_index,
                     progress.total_tokens,
                     resume_state=build_resume_state(source_row_counts, dataset_specs),
                 )
@@ -451,7 +455,7 @@ try:
             if stop_requested["flag"]:
                 raise KeyboardInterrupt
         loader_skip_samples = 0
-        current_sample_index = 0
+        sample_index = 0
 
 except KeyboardInterrupt:
     # Save a checkpoint so training can resume from the last completed step.
@@ -460,7 +464,7 @@ except KeyboardInterrupt:
         last_epoch,
         last_step,
         progress.global_step,
-        current_sample_index,
+        sample_index,
         progress.total_tokens,
         resume_state=build_resume_state(source_row_counts, dataset_specs),
     )

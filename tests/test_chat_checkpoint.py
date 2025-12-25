@@ -128,6 +128,53 @@ class ChatCheckpointTests(unittest.TestCase):
         self.assertEqual(context_len, config.CONTEXT_LEN)
         self.assertTrue(torch.equal(loaded_model.ln.weight, model.ln.weight))
 
+    def test_load_model_expands_vocab(self):
+        config.CONTEXT_LEN = 4
+        config.EMBED_SIZE = 8
+        config.NUM_LAYERS = 1
+        config.NUM_HEADS = 1
+        config.HIDDEN_SIZE = 16
+
+        torch.manual_seed(1234)
+        model_small = GPT(
+            vocab_size=8,
+            embed_size=config.EMBED_SIZE,
+            num_layers=config.NUM_LAYERS,
+            num_heads=config.NUM_HEADS,
+            hidden_size=config.HIDDEN_SIZE,
+            context_len=config.CONTEXT_LEN,
+        )
+        ckpt = {
+            "model": model_small.state_dict(),
+            "config": config.snapshot(),
+            "vocab_size": 8,
+        }
+
+        torch.manual_seed(5678)
+        expected_large = GPT(
+            vocab_size=12,
+            embed_size=config.EMBED_SIZE,
+            num_layers=config.NUM_LAYERS,
+            num_heads=config.NUM_HEADS,
+            hidden_size=config.HIDDEN_SIZE,
+            context_len=config.CONTEXT_LEN,
+        )
+        expected_tail = expected_large.tok.weight.detach().clone()[8:]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "ckpt.pt")
+            torch.save(ckpt, path)
+            torch.manual_seed(5678)
+            loaded_model, context_len = chat_module.load_model(
+                path,
+                vocab_size=12,
+                device=torch.device("cpu"),
+            )
+
+        self.assertEqual(context_len, config.CONTEXT_LEN)
+        self.assertTrue(torch.equal(loaded_model.tok.weight[:8], model_small.tok.weight))
+        self.assertTrue(torch.equal(loaded_model.tok.weight[8:], expected_tail))
+
 
 if __name__ == "__main__":
     unittest.main()

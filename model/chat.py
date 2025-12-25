@@ -13,6 +13,7 @@ from gpt import GPT
 from checkpointer import (
     load_model_state_dict,
     normalize_state_dict,
+    resize_vocab_state_dict,
     select_state_dict,
 )
 from tokenizer import load_tokenizer
@@ -21,9 +22,12 @@ from tokenizer import load_tokenizer
 def load_model(checkpoint_path, vocab_size, device):
     # Construct the model and optionally load weights from checkpoint.
     state_dict = None
+    ckpt_vocab_size = None
 
     if checkpoint_path is not None:
         ckpt = torch.load(checkpoint_path, map_location=device)
+        if isinstance(ckpt, dict):
+            ckpt_vocab_size = ckpt.get("vocab_size")
         state_dict = select_state_dict(ckpt)
         if state_dict is not None:
             state_dict = normalize_state_dict(state_dict)
@@ -39,6 +43,7 @@ def load_model(checkpoint_path, vocab_size, device):
 
     if state_dict is not None:
         try:
+            resize_vocab_state_dict(model, state_dict, ckpt_vocab_size=ckpt_vocab_size)
             load_model_state_dict(model, state_dict)
         except RuntimeError as exc:
             raise RuntimeError(

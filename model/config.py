@@ -57,6 +57,10 @@ HIDDEN_SIZE = _env_int("HIDDEN_SIZE", 4*EMBED_SIZE)
 # Adjust based on device memory.
 BATCH_SIZE = _env_int("BATCH_SIZE", 32)
 
+# Default macro batch size for gradient accumulation.
+# Must be divisible by BATCH_SIZE.
+MACRO_BATCH_SIZE = _env_int("MACRO_BATCH_SIZE", 512)
+
 # Default learning rate for the optimizer.
 # Source: GPT-3 paper Table 2 (GPT-3 Small 125M uses 6.0e-4),
 # https://arxiv.org/src/2005.14165
@@ -133,9 +137,6 @@ PLOT_COMPLETION_PROMPT = _env_str("PLOT_COMPLETION_PROMPT", "Die Hauptstadt von 
 # Number of tokens to generate for plot completions.
 PLOT_COMPLETION_TOKENS = _env_int("PLOT_COMPLETION_TOKENS", 128)
 
-# Log cadence in seconds for progress updates.
-# Impacts console verbosity and throughput reporting.
-LOG_INTERVAL_SECS = _env_int("LOG_INTERVAL_SECS", 10)
 
 
 def snapshot():
@@ -188,6 +189,7 @@ def print_training_hyperparams(param_count=None, quantization=None):
     lines = _architecture_lines() + [
         "Training:",
         f"  batch_size={BATCH_SIZE}",
+        f"  macro_batch_size={MACRO_BATCH_SIZE}",
         f"  learning_rate={LEARNING_RATE}",
         f"  warmup_pct={WARMUP_PCT}",
         f"  max_training_factor={MAX_TRAINING_FACTOR}",
@@ -202,7 +204,6 @@ def print_training_hyperparams(param_count=None, quantization=None):
         ]
     lines += [
         "Scheduling:",
-        f"  log_interval_secs={LOG_INTERVAL_SECS}",
         f"  warmup_window_secs={WARMUP_WINDOW_SECS}",
         f"  plot_warmup_secs={PLOT_WARMUP_SECS}",
         f"  plot_interval_secs={PLOT_INTERVAL_SECS}",
@@ -212,6 +213,16 @@ def print_training_hyperparams(param_count=None, quantization=None):
         f"  checkpoint_interval_secs={CHECKPOINT_INTERVAL_SECS}",
     ]
     print("\n".join(lines))
+
+
+def align_micro_batch_size(micro_batch_size, macro_batch_size):
+    """Return the largest divisor of macro_batch_size <= micro_batch_size."""
+    if micro_batch_size <= 0 or macro_batch_size <= 0:
+        raise ValueError("Batch sizes must be positive.")
+    for candidate in range(micro_batch_size, 0, -1):
+        if macro_batch_size % candidate == 0:
+            return candidate
+    return 1
 
 
 def print_chat_hyperparams(param_count=None, quantization=None):

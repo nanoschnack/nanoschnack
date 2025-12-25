@@ -6,15 +6,16 @@ from typing import List, Optional
 import torch
 import torch.nn.functional as F
 
-import config
-from checkpointer import (
+from . import config
+from .checkpointer import (
+    apply_checkpoint_config,
     load_model_state_dict,
     normalize_state_dict,
     resize_vocab_state_dict,
     select_state_dict,
 )
-from gpt import GPT
-from tokenizer import load_tokenizer
+from .gpt import GPT
+from .tokenizer import load_tokenizer
 
 try:
     from llm_transparency_tool.models.transparent_llm import ModelInfo, TransparentLlm
@@ -155,8 +156,11 @@ class NanoSchnackTransparentLlm(TransparentLlm):
         if checkpoint_path is not None:
             checkpoint = torch.load(checkpoint_path, map_location=resolved_device)
             if isinstance(checkpoint, dict):
+                apply_checkpoint_config(checkpoint.get("config"))
                 ckpt_vocab_size = checkpoint.get("vocab_size")
             checkpoint = select_state_dict(checkpoint)
+            if checkpoint is not None:
+                self._infer_config_from_state_dict(checkpoint)
 
         # Load tokenizer and align vocabulary with config.
         self._tokenizer = tokenizer or load_tokenizer()
@@ -216,6 +220,38 @@ class NanoSchnackTransparentLlm(TransparentLlm):
     def copy(self):
         import copy
         return copy.copy(self)
+
+    def _infer_config_from_state_dict(self, state_dict):
+        # Infer missing config values from checkpoint tensors.
+        tok_weight = state_dict.get("tok.weight")
+        if tok_weight is None:
+            tok_weight = state_dict.get("lm.weight")
+        pos_weight = state_dict.get("pos.weight")
+        if tok_weight is not None:
+            config.VOCAB_SIZE = tok_weight.shape[0]
+            config.EMBED_SIZE = tok_weight.shape[1]
+        if pos_weight is not None:
+            config.CONTEXT_LEN = pos_weight.shape[0]
+
+        layer_indices = []
+        for key in state_dict.keys():
+            if not key.startswith("blocks."):
+                continue
+            parts = key.split(".")
+            if len(parts) > 1 and parts[1].isdigit():
+                layer_indices.append(int(parts[1]))
+        if layer_indices:
+            config.NUM_LAYERS = max(layer_indices) + 1
+
+        mlp_weight = state_dict.get("blocks.0.mlp.input.weight")
+        if mlp_weight is not None:
+            config.HIDDEN_SIZE = mlp_weight.shape[0]
+
+        if config.EMBED_SIZE and config.NUM_HEADS:
+            if config.EMBED_SIZE % config.NUM_HEADS != 0:
+                candidates = [h for h in range(1, config.EMBED_SIZE + 1) if config.EMBED_SIZE % h == 0]
+                if candidates:
+                    config.NUM_HEADS = max(candidates)
 
     @torch.no_grad()
     def run(self, sentences: List[str]) -> None:

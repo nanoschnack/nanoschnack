@@ -130,7 +130,7 @@ from loader import (
     resolve_total_rows,
     dataset_label,
 )
-from resume import build_resume_state, normalize_resume_rows
+from resume import build_resume_state, is_resume_exhausted, normalize_resume_rows
 import math
 
 # Download shards on demand and shuffle within each dataset.
@@ -139,6 +139,8 @@ enable_progress_bar()
 
 # Cache dataset specs for reuse across steps.
 dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
+# Track total rows per dataset for resume validation.
+total_rows_by_spec = {}
 estimated_total_tokens = 0
 
 print("Estimating tokens from dataset samples...", flush=True)
@@ -149,6 +151,7 @@ for dataset_index, spec in enumerate(dataset_specs):
         streaming=True,
     )
     total_rows = resolve_total_rows(raw_dataset, spec)
+    total_rows_by_spec[spec["spec"]] = total_rows
     if total_rows is None:
         raise ValueError("Dataset split metadata missing num_examples for token estimate.")
     token_estimator = TokenEstimator(tokenizer, text_key=spec["text_key"])
@@ -272,6 +275,14 @@ if resume_sample_index > 0 and not use_row_resume:
 packed_datasets = []
 for dataset_index, spec in enumerate(dataset_specs):
     row_offset = resume_rows.get(spec["spec"], 0)
+    # Skip datasets that are already fully consumed by resume offsets.
+    total_rows = total_rows_by_spec.get(spec["spec"])
+    if is_resume_exhausted(row_offset, total_rows):
+        print(
+            f"Skipping exhausted dataset {spec['spec']}: row_offset {row_offset} >= total_rows {total_rows}",
+            flush=True,
+        )
+        continue
     data_files, in_shard_offset, shard_label = resolve_resume_plan(
         spec,
         row_offset,
@@ -299,6 +310,9 @@ for dataset_index, spec in enumerate(dataset_specs):
         source_id=dataset_index,
     )
     packed_datasets.append(packed)
+
+if not packed_datasets:
+    raise ValueError("All datasets exhausted after resume; check DATASET_SPECS.")
 
 base_dataset = build_interleaved_dataset(packed_datasets, seed=42)
 print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)

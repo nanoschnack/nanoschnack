@@ -39,3 +39,7 @@ def build_resume_state(source_row_counts, dataset_specs):
             }
         )
     return {"datasets": datasets}
+
+
+def is_resume_exhausted(row_offset, total_rows):
+    return total_rows is not None and row_offset >= total_rows

@@ -37,7 +37,7 @@ class NanoSchnackTransparentLlmTestCase(unittest.TestCase):
         os.environ["NUM_HEADS"] = "2"
         os.environ["HIDDEN_SIZE"] = "32"
 
-        import config
+        from model import config
         importlib.reload(config)
 
         import model.transparent_llm_adapter as adapter

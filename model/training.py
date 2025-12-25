@@ -225,11 +225,6 @@ def plot_with_completion(points):
 # ## Load the previous Checkpoint
 
 # %%
-
-# %% [markdown]
-# ## Run the Training
-
-# %%
 from plot import ascii_loss_plot
 from chat import generate_reply_stream
 from progress import ProgressLogger
@@ -242,27 +237,18 @@ import signal
 import time
 
 # Set up optimizer, learning-rate scheduler, and loss function
-# Target epochs are informational; training runs until interrupted.
-
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
 scheduler = build_warmup_cosine_tokens(optimizer, target_tokens, config.WARMUP_PCT)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
-# The checkpointer will save and load model/optimizer/scheduler states to/from disk.
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
-resume_epoch, resume_step, global_step, sample_index, resume_tokens = checkpointer.load_latest()
-resume_state = checkpointer.resume_state
 
-# Track token counts for the token-based scheduler.
-total_tokens_seen = resume_tokens
+# Load the latest checkpoint if available.
+resume_epoch, resume_step, global_step, sample_index, resume_tokens, resume_state = checkpointer.load_latest()
 
 # Align the scheduler with the resumed token count.
 if resume_tokens:
-    scheduler.last_epoch = resume_tokens
-    for group, base_lr, lr_lambda in zip(
-        optimizer.param_groups,
-        scheduler.base_lrs,
-        scheduler.lr_lambdas,
-    ):
+    scheduler.last_epoch = resume_tokens # we misuse token's epoch count for tokens
+    for group, base_lr, lr_lambda in zip(        optimizer.param_groups,        scheduler.base_lrs,        scheduler.lr_lambdas,    ):
         group["lr"] = base_lr * lr_lambda(resume_tokens)
 
 # Normalize resume state into per-spec row offsets.
@@ -317,7 +303,13 @@ for dataset_index, spec in enumerate(dataset_specs):
 base_dataset = build_interleaved_dataset(packed_datasets, seed=42)
 print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
 
+# %% [markdown]
+# ## Run the Training
+
+# %%
 last_ckpt_time = time.time()
+last_epoch = resume_epoch
+last_step = resume_step
 
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
@@ -332,18 +324,14 @@ progress = ProgressLogger(
     estimated_total_tokens=target_tokens,
 )
 
-last_epoch = resume_epoch
-last_step = resume_step
-# Resume from the saved sample index when no row offsets are available.
-start_position = 0 if use_row_resume else sample_index
-current_position = sample_index
+
+# Track the dataset position for skipping/checkpointing when row offsets are unavailable.
+resume_sample_index = sample_index
+loader_skip_samples = 0 if use_row_resume else resume_sample_index
+current_sample_index = resume_sample_index
 
 # Track row offsets for shard-aware resume.
 source_row_counts = dict(resume_rows)
-
-def _build_resume_state():
-    # Capture current row offsets per dataset for checkpointing.
-    return build_resume_state(source_row_counts, dataset_specs)
 
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
@@ -365,8 +353,8 @@ try:
                 source_row_counts[spec["spec"]] = 0
         dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + epoch)
         dataset_epoch = dataset_epoch.with_format("torch")
-        if epoch == resume_epoch and start_position > 0:
-            dataset_epoch = dataset_epoch.skip(start_position)
+        if epoch == resume_epoch and loader_skip_samples > 0:
+            dataset_epoch = dataset_epoch.skip(loader_skip_samples)
         loader = DataLoader(dataset_epoch, batch_size=config.BATCH_SIZE, shuffle=False)
         for step, batch in enumerate(loader):
             last_step = step
@@ -423,12 +411,12 @@ try:
 
             # Advance the token-based scheduler using observed tokens.
             token_count = attention_mask[:, 1:].sum().item()
-            total_tokens_seen += token_count
-            scheduler.last_epoch = total_tokens_seen - 1
+            next_total_tokens = progress.total_tokens + token_count
+            scheduler.last_epoch = next_total_tokens - 1
             scheduler.step()
 
             # Log progress and plot loss history
-            remaining_tokens = max(target_tokens - total_tokens_seen, 0)
+            remaining_tokens = max(target_tokens - next_total_tokens, 0)
             progress.tick(
                 loss.item(),
                 input_ids.size(0),
@@ -445,7 +433,7 @@ try:
                 if row_count:
                     spec_key = dataset_specs[int(source_id)]["spec"]
                     source_row_counts[spec_key] += int(row_count)
-            current_position += input_ids.size(0)
+            current_sample_index += input_ids.size(0)
             now = time.time()
             ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
             if now - last_ckpt_time >= ckpt_interval:
@@ -453,17 +441,17 @@ try:
                     epoch,
                     step,
                     progress.global_step,
-                    current_position,
+                    current_sample_index,
                     progress.total_tokens,
-                    resume_state=_build_resume_state(),
+                    resume_state=build_resume_state(source_row_counts, dataset_specs),
                 )
                 last_ckpt_time = now
 
             # Exit after the current step if SIGINT was requested.
             if stop_requested["flag"]:
                 raise KeyboardInterrupt
-        start_position = 0
-        current_position = 0
+        loader_skip_samples = 0
+        current_sample_index = 0
 
 except KeyboardInterrupt:
     # Save a checkpoint so training can resume from the last completed step.
@@ -472,8 +460,8 @@ except KeyboardInterrupt:
         last_epoch,
         last_step,
         progress.global_step,
-        current_position,
+        current_sample_index,
         progress.total_tokens,
-        resume_state=_build_resume_state(),
+        resume_state=build_resume_state(source_row_counts, dataset_specs),
     )
     print("Interrupted: checkpoint saved, exiting.")

@@ -183,9 +183,8 @@ print(
 )
 
 
-
-# %%
-## Progress and Plotting
+# %% [markdown]
+# ## Progress and Plotting
 
 # %%
 def plot_with_completion(points):
@@ -263,10 +262,7 @@ use_row_resume = any(resume_rows.get(spec["spec"], 0) > 0 for spec in dataset_sp
 # Track the dataset position for skipping/checkpointing when row offsets are unavailable.
 loader_skip_samples = 0 if use_row_resume else resume_sample_index
 if resume_sample_index > 0 and not use_row_resume:
-    print(
-        f"Resume rows unavailable; falling back to linear sample skip ({resume_sample_index}).",
-        flush=True,
-    )
+    print(f"Resume rows unavailable; falling back to linear sample skip ({resume_sample_index}).")
 
 # Build packed datasets per source with row-offset resumes.
 # Resolve shard-aware resume plans, then stream from the right shard/offset.
@@ -289,16 +285,10 @@ for dataset_index, spec in enumerate(dataset_specs):
     )
     if row_offset > 0:
         if data_files is None:
-            print(
-                f"Resume rows (linear): {spec['spec']} -> {row_offset}",
-                flush=True,
-            )
+            print(f"Resume rows (linear): {spec['spec']} -> {row_offset}")
             raw_streaming = raw_streaming.skip(row_offset)
         else:
-            print(
-                f"Resume rows: {spec['spec']} -> {shard_label} +{in_shard_offset}",
-                flush=True,
-            )
+            print(f"Resume rows: {spec['spec']} -> {shard_label} +{in_shard_offset}")
             raw_streaming = raw_streaming.skip(in_shard_offset)
     packed = build_packed_dataset(
         raw_streaming,
@@ -342,12 +332,14 @@ debug_level = int(os.getenv("DEBUG", "0"))
 printed_debug_sample = False
 
 # Track SIGINT so we can checkpoint after a safe step.
-stop_requested = {"flag": False}
+stop_requested = False
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
     print("Interrupted: saving checkpoint...")
-    stop_requested["flag"] = True
+    global stop_requested
+    stop_requested = True
 signal.signal(signal.SIGINT, _request_stop)
+
 print("Starting training loop...", flush=True)
 for current_epoch in itertools.count(resume_epoch):
     # Reset row counters at epoch boundaries beyond the resume epoch.
@@ -430,7 +422,7 @@ for current_epoch in itertools.count(resume_epoch):
         current_sample_index += input_ids.size(0)
         now = time.time()
         ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
-        should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested["flag"]
+        should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
         if should_checkpoint:
             checkpointer.save_latest(
                 current_epoch,
@@ -443,10 +435,13 @@ for current_epoch in itertools.count(resume_epoch):
             last_ckpt_time = now
 
         # Exit after the current step if SIGINT was requested.
-        if stop_requested["flag"]:
+        if stop_requested:
             break
+
+    # Reset sample skip counter after the first epoch.
     loader_skip_samples = 0
     current_sample_index = 0
-    if stop_requested["flag"]:
+
+    if stop_requested:
         break
 

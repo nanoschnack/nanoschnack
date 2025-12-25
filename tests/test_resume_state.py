@@ -1,6 +1,6 @@
 import unittest
 
-from model.resume import build_resume_state, normalize_resume_rows
+from model.resume import build_resume_state, is_resume_exhausted, normalize_resume_rows
 
 
 class ResumeStateTests(unittest.TestCase):
@@ -42,3 +42,8 @@ class ResumeStateTests(unittest.TestCase):
                 {"spec": "old:spec", "row_offset": 5},
             ],
         )
+
+    def test_is_resume_exhausted(self):
+        self.assertFalse(is_resume_exhausted(3, None))
+        self.assertFalse(is_resume_exhausted(3, 4))
+        self.assertTrue(is_resume_exhausted(4, 4))

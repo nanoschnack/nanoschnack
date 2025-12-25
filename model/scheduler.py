@@ -64,9 +64,10 @@ def build_warmup_cosine_tokens(optimizer, total_tokens, warmup_pct):
     def lr_lambda(token_count):
         if token_count <= 0:
             return start_factor
-        if warmup_tokens > 0 and token_count < warmup_tokens:
-            return max(start_factor, token_count / warmup_tokens)
-        progress = (token_count - warmup_tokens) / max(total_tokens - warmup_tokens, 1)
+        effective_tokens = min(token_count, total_tokens)
+        if warmup_tokens > 0 and effective_tokens < warmup_tokens:
+            return max(start_factor, effective_tokens / warmup_tokens)
+        progress = (effective_tokens - warmup_tokens) / max(total_tokens - warmup_tokens, 1)
         cosine = 0.5 * (1 + math.cos(math.pi * progress))
         min_ratio = min_lr / base_lr
         return min_ratio + cosine * (1 - min_ratio)

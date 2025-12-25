@@ -20,3 +20,10 @@ dev = [
 
 [tool.jupytext]
 formats = "ipynb,py:percent"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["model"]

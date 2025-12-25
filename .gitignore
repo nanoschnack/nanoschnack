@@ -32,5 +32,6 @@ go.work.sum
 # .vscode/
 data
 __pycache__/
+nanoschnack.egg-info/
 checkpoints/
 models

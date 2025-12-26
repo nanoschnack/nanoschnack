@@ -33,6 +33,13 @@ class CausalSelfAttention(nn.Module):
         # Expand padding mask to (B, 1, 1, T) for SDPA broadcasting.
         attn_mask = None
         if attention_mask is not None:
+            # Expect integer/bool padding mask with 1 for tokens and 0 for padding.
+            if torch.is_floating_point(attention_mask):
+                raise TypeError("attention_mask must be integer/bool with 1 for tokens and 0 for padding.")
+            min_val = int(attention_mask.min().item())
+            max_val = int(attention_mask.max().item())
+            if min_val < 0 or max_val > 1:
+                raise ValueError("attention_mask values must be 0 or 1.")
             attn_mask = (attention_mask == 0).unsqueeze(1).unsqueeze(2)
 
         # Run causal attention and project back to the model dimension.

@@ -45,7 +45,7 @@ torch.set_float32_matmul_precision("high")
 # - Tiktokenizer: https://tiktokenizer.vercel.app/?model=gpt2
 
 # %%
-from tokenizer import load_tokenizer
+from tokenizer import DATASET_EOS_TOKEN, PAD_TOKEN, load_tokenizer
 tokenizer = load_tokenizer()
 alignment = getattr(tokenizer, "vocab_alignment", None)
 base_size = alignment["base_size"] if alignment else tokenizer.get_vocab_size()
@@ -97,8 +97,8 @@ num_heads = config.NUM_HEADS
 hidden_size = config.HIDDEN_SIZE
 
 # add special tokens
-tokenizer.add_special_tokens(["[PAD]"])
-pad_id = tokenizer.token_to_id("[PAD]")
+tokenizer.add_special_tokens([PAD_TOKEN])
+pad_id = tokenizer.token_to_id(PAD_TOKEN)
 
 model = GPT(
     vocab_size=tokenizer.get_vocab_size(),
@@ -188,6 +188,7 @@ enable_progress_bar()
 
 # Cache dataset specs for reuse across steps.
 dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
+
 # Track total rows per dataset for resume validation.
 total_rows_by_spec = {}
 estimated_total_tokens = 0
@@ -203,7 +204,10 @@ for dataset_index, spec in enumerate(dataset_specs):
     total_rows_by_spec[spec["spec"]] = total_rows
     if total_rows is None:
         raise ValueError("Dataset split metadata missing num_examples for token estimate.")
-    token_estimator = TokenEstimator(tokenizer, text_key=spec["text_key"])
+    token_estimator = TokenEstimator(
+        tokenizer,
+        text_key=spec["text_key"],
+    )
     avg_tokens, est_total_tokens = token_estimator.estimate_streaming(raw_dataset, total_rows)
     estimated_total_tokens += est_total_tokens
     print(

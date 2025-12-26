@@ -62,14 +62,21 @@ def ensure_vocab_size(tokenizer, target_size):
     return new_size
 
 
+PAD_TOKEN = "<|PAD|>"
+DATASET_EOS_TOKEN = "<|EOS|>"
+BOS_TOKEN = "[BOS]"
+
+
 def load_tokenizer():
     # Load the tokenizer and align special tokens with training.
     tokenizer_path = hf_hub_download(repo_id="openai-community/gpt2", filename="tokenizer.json")
     tokenizer = Tokenizer.from_file(tokenizer_path)
 
     # Keep the vocab aligned with training if a pad token was added.
-    if tokenizer.token_to_id("[PAD]") is None:
-        tokenizer.add_special_tokens(["[PAD]"])
+    if tokenizer.token_to_id(PAD_TOKEN) is None:
+        tokenizer.add_special_tokens([PAD_TOKEN])
+    if tokenizer.token_to_id(DATASET_EOS_TOKEN) is None:
+        tokenizer.add_special_tokens([DATASET_EOS_TOKEN])
 
     # Align after adding special tokens so padding is counted in the base size.
     base_size = tokenizer.get_vocab_size()

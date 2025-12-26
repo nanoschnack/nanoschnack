@@ -7,15 +7,17 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
 
+from tokenizer import BOS_TOKEN, PAD_TOKEN
+
 
 def _build_tokenizer():
     vocab = {
-        "[PAD]": 0,
-        "[BOS]": 1,
+        PAD_TOKEN: 0,
+        BOS_TOKEN: 1,
         "test": 2,
         "one": 3,
     }
-    tokenizer = Tokenizer(WordLevel(vocab, unk_token="[PAD]"))
+    tokenizer = Tokenizer(WordLevel(vocab, unk_token=PAD_TOKEN))
     tokenizer.pre_tokenizer = Whitespace()
     return tokenizer
 
@@ -49,7 +51,7 @@ class NanoSchnackTransparentLlmTestCase(unittest.TestCase):
             tokenizer=cls.tokenizer,
             device="cpu",
             prepend_bos=True,
-            bos_token="[BOS]",
+            bos_token=BOS_TOKEN,
         )
 
     def setUp(self):
@@ -64,7 +66,7 @@ class NanoSchnackTransparentLlmTestCase(unittest.TestCase):
     def test_tokens_to_strings(self):
         tokens = torch.tensor([1, 2, 3], dtype=torch.long)
         strings = self.llm.tokens_to_strings(tokens)
-        self.assertEqual(strings, ["[BOS]", "test", "one"])
+        self.assertEqual(strings, [BOS_TOKEN, "test", "one"])
 
     def test_residual_consistency(self):
         layer = 0

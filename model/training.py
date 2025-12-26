@@ -20,6 +20,7 @@
 # %%
 import contextlib
 import torch
+
 from device import device_info, pick_device, print_device_info
 
 device = pick_device()
@@ -130,6 +131,37 @@ if device.type == "cuda":
 
 param_count, quantization = config.model_info(model)
 config.print_training_hyperparams(param_count=param_count, quantization=quantization)
+
+
+
+
+# %% [markdown]
+# ## Create vizualization of the model
+
+# %%
+# Visualize the model graph only in interactive notebooks.
+try:
+    from IPython import get_ipython
+    is_notebook = get_ipython() is not None and "IPKernelApp" in get_ipython().config
+except Exception:
+    is_notebook = False
+
+if is_notebook:
+    from torchviz import make_dot
+
+    vocab_size = tokenizer.get_vocab_size()
+    viz_batch_size = min(config.BATCH_SIZE, 2)
+    viz_context_len = min(config.CONTEXT_LEN, 16)
+    x = torch.randint(
+        0,
+        vocab_size,
+        (viz_batch_size, viz_context_len),
+        device=device,
+        dtype=torch.long,
+    )
+    y = model(x)
+
+    make_dot(y, params=dict(model.named_parameters()))
 
 
 # %% [markdown]

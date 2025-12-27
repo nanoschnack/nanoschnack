@@ -263,7 +263,8 @@ class NanoSchnackTransparentLlm(TransparentLlm):
                 encoded = [[bos_id] + ids for ids in encoded]
 
         max_len = max(len(ids) for ids in encoded) if encoded else 0
-        pad_id = self._tokenizer.token_to_id("[PAD]")
+        from tokenizer import PAD_TOKEN
+        pad_id = self._tokenizer.token_to_id(PAD_TOKEN)
         if pad_id is None:
             pad_id = 0
         tokens = torch.full(

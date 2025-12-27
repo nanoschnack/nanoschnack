@@ -8,6 +8,7 @@ from pathlib import Path
 
 from datasets import interleave_datasets, load_dataset
 
+from tokenizer import DATASET_EOS_TOKEN
 
 class TokenEstimator:
     """Estimate token counts per document without materializing datasets.
@@ -17,7 +18,13 @@ class TokenEstimator:
     to the full dataset size to approximate total tokens.
     """
 
-    def __init__(self, tokenizer, sample_size=1000, seed=42, text_key="text"):
+    def __init__(
+        self,
+        tokenizer,
+        sample_size=1000,
+        seed=42,
+        text_key="text",
+    ):
         self.tokenizer = tokenizer
         self.sample_size = sample_size
         self.seed = seed
@@ -67,7 +74,10 @@ class TokenEstimator:
         # Estimate tokens from tokenized lengths.
         total = 0
         for text in texts:
-            total += len(self.tokenizer.encode(text).ids)
+            count = len(self.tokenizer.encode(text).ids)
+            if self.tokenizer.token_to_id(DATASET_EOS_TOKEN) is not None:
+                count += 1
+            total += count
         return total / len(texts)
 
 
@@ -330,7 +340,14 @@ def build_tokenizer(tokenizer, text_key="text"):
     # Wrap tokenizer to return token ids for datasets.map.
     def tokenizer_batch(batch):
         token_batch = tokenizer.encode_batch(batch[text_key])
-        return {"input_ids": [e.ids for e in token_batch]}
+        eos_token_id = tokenizer.token_to_id(DATASET_EOS_TOKEN)
+        input_ids = []
+        for encoding in token_batch:
+            ids = list(encoding.ids)
+            if eos_token_id is not None:
+                ids.append(eos_token_id)
+            input_ids.append(ids)
+        return {"input_ids": input_ids}
 
     return tokenizer_batch
 
@@ -377,7 +394,10 @@ def build_packed_dataset(
     source_id=None,
 ):
     # Tokenize and pack a dataset into fixed-length blocks.
-    tokenizer_batch = build_tokenizer(tokenizer, text_key=text_key)
+    tokenizer_batch = build_tokenizer(
+        tokenizer,
+        text_key=text_key,
+    )
     column_names = dataset.column_names or [text_key]
     tokenized = dataset.map(
         tokenizer_batch,

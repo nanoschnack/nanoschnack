@@ -6,6 +6,7 @@ from datasets import Dataset
 from datasets import IterableDataset
 
 from model import loader as loader_module
+from tokenizer import DATASET_EOS_TOKEN
 
 
 class FakeEncoding:
@@ -15,9 +16,15 @@ class FakeEncoding:
 
 
 class FakeTokenizer:
+    def __init__(self):
+        self._token_ids = {DATASET_EOS_TOKEN: 99}
+
     def encode(self, text):
         ids = list(range(len(text)))
         return FakeEncoding(ids, [1] * len(ids))
+
+    def token_to_id(self, token):
+        return self._token_ids.get(token)
 
     def encode_batch(self, texts):
         encodings = []
@@ -36,7 +43,7 @@ class TokenEstimatorTests(unittest.TestCase):
 
         rng = random.Random(7)
         indices = [rng.randrange(len(dataset)) for _ in range(2)]
-        expected_avg = sum(len(dataset[idx]["text"]) for idx in indices) / 2
+        expected_avg = sum(len(dataset[idx]["text"]) + 1 for idx in indices) / 2
         expected_total = int(math.ceil(expected_avg * len(dataset)))
 
         self.assertEqual(avg_tokens, expected_avg)
@@ -49,12 +56,11 @@ class TokenEstimatorTests(unittest.TestCase):
         estimator = loader_module.TokenEstimator(tokenizer, sample_size=2)
         avg_tokens, est_total = estimator.estimate_streaming(dataset, total_rows=3)
 
-        expected_avg = (len(items[0]["text"]) + len(items[1]["text"])) / 2
+        expected_avg = ((len(items[0]["text"]) + 1) + (len(items[1]["text"]) + 1)) / 2
         expected_total = int(math.ceil(expected_avg * 3))
 
         self.assertEqual(avg_tokens, expected_avg)
         self.assertEqual(est_total, expected_total)
-
 
 class PackingTests(unittest.TestCase):
     def test_pack_tokens(self):
@@ -76,12 +82,24 @@ class BuildPackedDatasetTests(unittest.TestCase):
             block_size=4,
             pack_batch_size=2,
         )
-        self.assertEqual(len(packed), 2)
+        self.assertEqual(len(packed), 3)
         first = packed[0]
         self.assertEqual(len(first["input_ids"]), 4)
         self.assertEqual(first["attention_mask"].tolist(), [1, 1, 1, 1])
         self.assertEqual(int(first["row_count"]), 2)
         self.assertEqual(int(first["source_id"]), -1)
+
+    def test_build_packed_dataset_appends_eos(self):
+        tokenizer = FakeTokenizer()
+        dataset = Dataset.from_dict({"text": ["ab", "c"]})
+        packed = loader_module.build_packed_dataset(
+            dataset,
+            tokenizer=tokenizer,
+            block_size=3,
+            pack_batch_size=2,
+        )
+        first = packed[0]
+        self.assertEqual(first["input_ids"].tolist(), [0, 1, 99])
 
 
 if __name__ == "__main__":

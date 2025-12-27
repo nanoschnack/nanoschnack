@@ -1,3 +1,5 @@
+import random
+import shutil
 import time
 from collections import deque
 
@@ -99,6 +101,44 @@ class ProgressLogger:
         # Keep a global step counter for resuming logs across restarts.
         self.global_step += 1
         return plot_printed
+
+    def print_input_sample(self, rank, inputs, attention_mask, tokenizer, width=120, sample_index=None):
+        # Emit a per-rank input sample for shard sanity checks.
+        if sample_index is None:
+            sample_index = random.randrange(inputs.size(0))
+        input_ids = inputs[sample_index]
+        if attention_mask is not None:
+            mask = attention_mask[sample_index]
+            if mask.size(0) == inputs.size(1) + 1:
+                mask = mask[:-1]
+            if mask.size(0) == inputs.size(1):
+                input_ids = input_ids[mask.bool()]
+        decoded_input = tokenizer.decode(input_ids.tolist())
+        escaped = (
+            decoded_input.replace("\\", "\\\\")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        )
+        prefix = f"{rank}: "
+        term_width = shutil.get_terminal_size((width, 20)).columns
+        max_len = max(0, term_width - len(prefix))
+        snippet = escaped[:max_len]
+        print(f"{prefix}{snippet}")
+
+    def format_completion(self, prompt, completion, width=120):
+        # Format a completion block with escaped, truncated content.
+        escaped = (
+            completion.replace("\\", "\\\\")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        )
+        prefix = prompt
+        term_width = shutil.get_terminal_size((width, 20)).columns
+        max_len = max(0, term_width - len(prefix))
+        snippet = escaped[:max_len]
+        return f"{prefix}{snippet}"
 
     def _format_eta(self, remaining_units, units_per_sec):
         # Format an ETA string from remaining samples and throughput.

@@ -294,9 +294,9 @@ def plot_with_completion(points):
     finally:
         if was_training:
             model.train()
+    formatted = progress.format_completion("Validation: ", completion)
     return (
-        f"{chart}\n\ncompletion ({config.PLOT_COMPLETION_TOKENS} tokens)\n"
-        f"{config.PLOT_COMPLETION_PROMPT}{completion}"
+        f"{formatted}"
     )
 
 
@@ -550,6 +550,11 @@ for current_epoch in itertools.count(resume_epoch):
                 current_step,
                 remaining_tokens=remaining_tokens,
             )
+
+        # Emit a per-rank input sample for shard sanity checks.
+        if debug_level >= 1:
+            progress.print_input_sample(ddp_rank, inputs, attention_mask, tokenizer)
+
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 

@@ -35,7 +35,7 @@ ddp_enabled = ddp_world_size > 1
 is_master = ddp_rank == 0
 if ddp_enabled:
     if ddp_local_rank is None:
-        ddp_local_rank = 0
+        raise RuntimeError("DDP requires LOCAL_RANK to be set.")
     if ddp_backend not in ("nccl", "gloo"):
         raise RuntimeError(f"Unsupported DDP backend: {ddp_backend}")
     if ddp_backend == "nccl" and not torch.cuda.is_available():
@@ -45,7 +45,9 @@ if ddp_enabled:
 
 # Select the device for this process.
 if ddp_enabled and ddp_backend == "gloo":
+    # Force CPU for gloo to avoid unintended GPU collectives.
     device = torch.device("cpu")
+
 else:
     device = pick_device(ddp_local_rank if ddp_enabled else None)
 info = device_info(device)
@@ -57,6 +59,7 @@ if is_master:
 
 # Switch to TF32 for 8x speedup on supported hardware, and good enough for LLM training.
 torch.set_float32_matmul_precision("high")
+
 
 
 # %% [markdown]
@@ -147,7 +150,10 @@ if device.type == "cuda":
 
 # Wrap the model for distributed training.
 if ddp_enabled:
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[ddp_local_rank])
+    if device.type == "cuda":
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[ddp_local_rank])
+    else:
+        model = torch.nn.parallel.DistributedDataParallel(model)
 
 param_count, quantization = config.model_info(model)
 if is_master:
@@ -157,6 +163,7 @@ if is_master:
         ddp_enabled=ddp_enabled,
         ddp_world_size=ddp_world_size,
     )
+
 
 
 # %% [markdown]

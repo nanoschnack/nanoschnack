@@ -290,12 +290,22 @@ checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=
 
 # Load the latest checkpoint if available.
 resume_epoch, resume_step, global_step, resume_sample_index, resume_tokens, resume_state = checkpointer.load_latest()
+resume_info = checkpointer.last_resume_info
 
 # Align the scheduler with the resumed token count.
 if resume_tokens:
     scheduler.last_epoch = resume_tokens # we misuse token's epoch count for tokens
     for group, base_lr, lr_lambda in zip(optimizer.param_groups, scheduler.base_lrs, scheduler.lr_lambdas):
         group["lr"] = base_lr * lr_lambda(resume_tokens)
+
+# Report resume state after aligning scheduler tokens.
+if is_master and resume_info:
+    lr_after = optimizer.param_groups[0]["lr"]
+    print(
+        f"Resume state: optimizer={resume_info['optimizer']} "
+        f"scheduler={resume_info['scheduler']} lr={lr_after:.8f}",
+        flush=True,
+    )
 
 # Normalize resume state into per-spec row offsets.
 # Keep offsets from the checkpoint, even for specs not active in this run.

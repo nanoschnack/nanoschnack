@@ -247,6 +247,8 @@ class Checkpointer:
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.device = device
+        # Track whether optimizer/scheduler state was restored on resume.
+        self.last_resume_info = None
 
     def _snapshot_path(self, label):
         # Build a snapshot path for a retention label.
@@ -261,6 +263,7 @@ class Checkpointer:
     def load_latest(self):
         # Load state from disk if present, otherwise start fresh.
         if not self.path.exists():
+            self.last_resume_info = None
             return 0, 0, 0, 0, 0, None
 
         # Read checkpoint data onto the requested device.
@@ -289,17 +292,23 @@ class Checkpointer:
 
         # Restore optimizer and scheduler state, falling back to fresh state on failure.
         optimizer_loaded = _load_optimizer_state(self.optimizer, ckpt.get("optimizer", {}))
+        scheduler_loaded = False
         if not optimizer_loaded:
             print("Optimizer state mismatch; continuing with fresh optimizer state.")
         else:
             # Attempt to restore scheduler state but keep training if it mismatches.
             try:
                 self.scheduler.load_state_dict(ckpt["scheduler"])
+                scheduler_loaded = True
             except Exception as exc:
                 print(
                     "Scheduler state mismatch; continuing with a token-aligned schedule "
                     "based on resumed token counts."
                 )
+        self.last_resume_info = {
+            "optimizer": "loaded" if optimizer_loaded else "fresh",
+            "scheduler": "loaded" if scheduler_loaded else "fresh",
+        }
 
         # Recover counters with safe defaults (epoch stored as 1-based).
         saved_epoch = ckpt.get("epoch", 0)

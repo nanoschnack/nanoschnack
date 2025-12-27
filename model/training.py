@@ -539,6 +539,7 @@ for current_epoch in itertools.count(resume_epoch):
             next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
+        # Log macro step counts while keeping micro-step checkpointing intact.
         plot_printed = False
         if is_master:
             plot_printed = progress.tick(
@@ -547,7 +548,7 @@ for current_epoch in itertools.count(resume_epoch):
                 logged_tokens,
                 optimizer.param_groups[0]["lr"],
                 current_epoch,
-                current_step,
+                current_step // micro_steps,
                 remaining_tokens=remaining_tokens,
             )
 
@@ -614,7 +615,7 @@ for current_epoch in itertools.count(resume_epoch):
             if is_master:
                 checkpointer.save_latest(
                     current_epoch,
-                    current_step,
+                    current_step // micro_steps,
                     progress.global_step,
                     current_sample_index,
                     progress.total_tokens,
@@ -639,5 +640,6 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
+
 
 

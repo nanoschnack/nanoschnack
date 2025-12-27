@@ -235,7 +235,7 @@ for dataset_index, spec in enumerate(dataset_specs):
         except (IndexError, ValueError) as exc:
             if is_master:
                 print(f"    Skipping sharding for {dataset_label(spec)}: {exc}")
-    total_rows = resolve_total_rows(raw_dataset, spec)
+    total_rows = resolve_total_rows(raw_dataset, spec, cache_dir=data_dir)
     total_rows_by_spec[spec["spec"]] = total_rows
     if total_rows is None:
         raise ValueError("Dataset split metadata missing num_examples for token estimate.")
@@ -262,6 +262,7 @@ if is_master:
     print(f"    Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}")
     print(f"    Target: epochs={target_epochs:,} target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
 
+
 # %% [markdown]
 # ## Progress and Plotting
 
@@ -272,7 +273,7 @@ if is_master:
 from plot import plot_with_completion
 from progress import ProgressLogger
 from ddp_debug import log_ddp_debug
-from input import make_plot_request_poller
+from input import make_input_poller
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine_tokens
 from torch.utils.data import DataLoader
@@ -289,12 +290,22 @@ checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=
 
 # Load the latest checkpoint if available.
 resume_epoch, resume_step, global_step, resume_sample_index, resume_tokens, resume_state = checkpointer.load_latest()
+resume_info = checkpointer.last_resume_info
 
 # Align the scheduler with the resumed token count.
 if resume_tokens:
     scheduler.last_epoch = resume_tokens # we misuse token's epoch count for tokens
     for group, base_lr, lr_lambda in zip(optimizer.param_groups, scheduler.base_lrs, scheduler.lr_lambdas):
         group["lr"] = base_lr * lr_lambda(resume_tokens)
+
+# Report resume state after aligning scheduler tokens.
+if is_master and resume_info:
+    lr_after = optimizer.param_groups[0]["lr"]
+    print(
+        f"Resume state: optimizer={resume_info['optimizer']} "
+        f"scheduler={resume_info['scheduler']} lr={lr_after:.8f}",
+        flush=True,
+    )
 
 # Normalize resume state into per-spec row offsets.
 # Keep offsets from the checkpoint, even for specs not active in this run.
@@ -409,7 +420,8 @@ debug_level = int(os.getenv("DEBUG", "0"))
 printed_debug_sample = False
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
-plot_request = make_plot_request_poller(is_master)
+plot_request = make_input_poller(is_master)
+debug_inputs = False
 plot_debug = False
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
@@ -482,9 +494,14 @@ for current_epoch in itertools.count(resume_epoch):
         next_total_tokens = progress.total_tokens + micro_token_total
         remaining_tokens = max(target_tokens - next_total_tokens, 0)
         # Check for on-demand plot requests from stdin.
-        if plot_request():
+        cmd = plot_request()
+        if cmd == "p":
             progress.request_plot()
             plot_debug = True
+        elif cmd == "i":
+            debug_inputs = not debug_inputs
+            if is_master:
+                print(f"Input debug: {'on' if debug_inputs else 'off'}", flush=True)
         # Average the micro loss across ranks for consistent logging.
         logged_loss = micro_loss_total
         logged_tokens = micro_token_total
@@ -554,7 +571,7 @@ for current_epoch in itertools.count(resume_epoch):
                     print(f"  {spec_key}: rows={global_counts.get(spec_key, 0)}", flush=True)
             plot_debug = False
         # Emit a per-rank input sample for shard sanity checks.
-        if debug_level >= 1:
+        if debug_level >= 1 or debug_inputs:
             progress.print_input_sample(ddp_rank, inputs, attention_mask, tokenizer)
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

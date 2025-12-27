@@ -371,7 +371,16 @@ for dataset_index, spec in enumerate(dataset_specs):
         data_files=data_files,
     )
     if ddp_enabled:
-        raw_streaming = raw_streaming.shard(num_shards=ddp_world_size, index=ddp_rank)
+        # Skip sharding when the dataset does not expose data sources for splitting.
+        shard_count = getattr(getattr(raw_streaming, "_ex_iterable", None), "n_shards", None)
+        try:
+            if shard_count is None or shard_count >= ddp_world_size:
+                raw_streaming = raw_streaming.shard(num_shards=ddp_world_size, index=ddp_rank)
+            elif is_master:
+                print(f"    Skipping sharding for {dataset_label(spec)}: shards={shard_count}")
+        except (IndexError, ValueError) as exc:
+            if is_master:
+                print(f"    Skipping sharding for {dataset_label(spec)}: {exc}")
     if row_offset > 0:
         if data_files is None:
             print(f"Resume rows (linear): {spec['spec']} -> {row_offset}") if is_master else None

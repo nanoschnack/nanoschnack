@@ -194,10 +194,15 @@ def print_training_hyperparams(
     ddp_world_size=None,
 ):
     """Print the training-related hyperparameters."""
+    micro_steps = MACRO_BATCH_SIZE // BATCH_SIZE
+    if ddp_enabled:
+        ddp_world_size = ddp_world_size or 1
+        micro_steps = (MACRO_BATCH_SIZE // ddp_world_size) // BATCH_SIZE
     lines = _architecture_lines() + [
         "Training:",
         f"  batch_size={BATCH_SIZE}",
         f"  macro_batch_size={MACRO_BATCH_SIZE}",
+        f"  micro_steps={micro_steps} (macro / batch per rank)",
         f"  learning_rate={LEARNING_RATE}",
         f"  warmup_pct={WARMUP_PCT}",
         f"  max_training_factor={MAX_TRAINING_FACTOR}",
@@ -205,15 +210,12 @@ def print_training_hyperparams(
         f"  dataset_specs={DATASET_SPECS}",
     ]
     if ddp_enabled:
-        ddp_world_size = ddp_world_size or 1
         ddp_local_macro_batch = MACRO_BATCH_SIZE // ddp_world_size
-        ddp_micro_steps = ddp_local_macro_batch // BATCH_SIZE
         ddp_global_macro_batch = MACRO_BATCH_SIZE
         lines += [
             "DDP:",
             f"  world_size={ddp_world_size} (number of ranks)",
             f"  local_macro_batch={ddp_local_macro_batch} (macro batch per rank)",
-            f"  micro_steps={ddp_micro_steps} (local macro / batch_size)",
             f"  global_macro_batch={ddp_global_macro_batch} (macro batch across ranks)",
         ]
     if param_count is not None or quantization is not None:

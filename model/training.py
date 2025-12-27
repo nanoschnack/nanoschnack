@@ -549,14 +549,15 @@ for current_epoch in itertools.count(resume_epoch):
                 remaining_tokens=remaining_tokens,
             )
 
-        # Print a target decode alongside log output when debugging.
+        # Print a short target tail alongside log output when debugging.
         if debug_level >= 1 and is_master:
             target_ids = targets[-1]
             if attention_mask is not None:
                 mask = attention_mask[-1, 1:].bool()
                 target_ids = target_ids[mask]
             decoded_target = tokenizer.decode(target_ids.tolist())
-            print(f"Learn target: {decoded_target}")
+            tail = decoded_target[-80:]
+            print(f"Input: {tail}")
 
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

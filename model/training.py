@@ -410,6 +410,7 @@ printed_debug_sample = False
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
 plot_request = make_plot_request_poller(is_master)
+plot_debug = False
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
     print("Interrupted: saving checkpoint...") if is_master else None
@@ -483,6 +484,7 @@ for current_epoch in itertools.count(resume_epoch):
         # Check for on-demand plot requests from stdin.
         if plot_request():
             progress.request_plot()
+            plot_debug = True
         # Average the micro loss across ranks for consistent logging.
         logged_loss = micro_loss_total
         logged_tokens = micro_token_total
@@ -511,6 +513,9 @@ for current_epoch in itertools.count(resume_epoch):
             plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)
             dist.broadcast(plot_flag, src=0)
             plot_printed = bool(plot_flag.item())
+            debug_flag = torch.tensor(1 if (is_master and plot_debug) else 0, device=device)
+            dist.broadcast(debug_flag, src=0)
+            plot_debug = bool(debug_flag.item())
             if plot_printed:
                 log_ddp_debug(
                     ddp_world_size,
@@ -520,6 +525,34 @@ for current_epoch in itertools.count(resume_epoch):
                     device,
                     is_master,
                 )
+
+        if plot_printed and plot_debug:
+            # Summarize dataset positions on demand.
+            spec_keys = [spec["spec"] for spec in dataset_specs]
+            if ddp_enabled:
+                counts_tensor = torch.tensor(
+                    [source_row_counts.get(key, 0) for key in spec_keys],
+                    dtype=torch.long,
+                    device=device,
+                )
+                dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
+                global_counts = {key: int(value) for key, value in zip(spec_keys, counts_tensor.tolist())}
+            else:
+                global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
+            if is_master:
+                print(
+                    f"dataset-pos: epoch={current_epoch + 1} "
+                    f"macro={current_step // micro_steps} "
+                    f"micro={current_micro_step} sample={current_sample_index} "
+                    f"global={progress.global_step} resume={resume_sample_index} "
+                    f"skip={loader_skip_samples} tokens={progress.total_tokens} "
+                    f"target={target_tokens}",
+                    flush=True,
+                )
+                for spec in dataset_specs:
+                    spec_key = spec["spec"]
+                    print(f"  {spec_key}: rows={global_counts.get(spec_key, 0)}", flush=True)
+            plot_debug = False
         # Emit a per-rank input sample for shard sanity checks.
         if debug_level >= 1:
             progress.print_input_sample(ddp_rank, inputs, attention_mask, tokenizer)
@@ -564,8 +597,8 @@ for current_epoch in itertools.count(resume_epoch):
             if is_master:
                 checkpointer.save_latest(
                     current_epoch,
-                    current_step // micro_steps,
-                    current_step // micro_steps,
+                    current_step,
+                    progress.global_step,
                     current_sample_index,
                     progress.total_tokens,
                     resume_state=resume_state,

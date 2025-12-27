@@ -37,6 +37,9 @@ def extract_text(row):
 
 def write_sample(subset, split):
     out_path = os.path.join(out_dir, f"samples-{subset}-{split}.txt")
+    if os.path.exists(out_path):
+        print(f"{subset}/{split}: {out_path} exists, skipping")
+        return
     dataset = load_dataset(
         "coral-nlp/german-commons",
         name=subset,

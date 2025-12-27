@@ -1,6 +1,7 @@
 import random
 import shutil
 import time
+import unicodedata
 from collections import deque
 
 
@@ -122,8 +123,8 @@ class ProgressLogger:
         )
         prefix = f"{rank}: "
         term_width = shutil.get_terminal_size((width, 20)).columns
-        max_len = max(0, term_width - len(prefix))
-        snippet = escaped[:max_len]
+        max_len = max(0, term_width - self._display_width(prefix))
+        snippet = self._truncate_to_width(escaped, max_len)
         print(f"{prefix}{snippet}")
 
     def format_completion(self, prompt, completion, width=120):
@@ -136,8 +137,8 @@ class ProgressLogger:
         )
         prefix = prompt
         term_width = shutil.get_terminal_size((width, 20)).columns
-        max_len = max(0, term_width - len(prefix))
-        snippet = escaped[:max_len]
+        max_len = max(0, term_width - self._display_width(prefix))
+        snippet = self._truncate_to_width(escaped, max_len)
         return f"{prefix}{snippet}"
 
     def _format_eta(self, remaining_units, units_per_sec):
@@ -194,3 +195,31 @@ class ProgressLogger:
         # Allow non-exponent LR while keeping a fixed width.
         text = f"{value:.8f}".rstrip("0").rstrip(".")
         return text.rjust(width) if len(text) < width else text
+
+    def _display_width(self, text):
+        # Approximate terminal column width for escaped strings.
+        width = 0
+        for char in text:
+            if unicodedata.combining(char):
+                continue
+            east_asian = unicodedata.east_asian_width(char)
+            width += 2 if east_asian in ("W", "F") else 1
+        return width
+
+    def _truncate_to_width(self, text, max_width):
+        # Truncate text to fit within the requested display width.
+        if max_width <= 0:
+            return ""
+        width = 0
+        out = []
+        for char in text:
+            if unicodedata.combining(char):
+                out.append(char)
+                continue
+            east_asian = unicodedata.east_asian_width(char)
+            char_width = 2 if east_asian in ("W", "F") else 1
+            if width + char_width > max_width:
+                break
+            out.append(char)
+            width += char_width
+        return "".join(out)

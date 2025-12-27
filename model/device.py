@@ -60,14 +60,12 @@ def print_device_info(info):
     print("\n".join(lines))
 
 
-def print_ddp_info(ddp_enabled, ddp_rank, ddp_world_size, ddp_local_rank, ddp_master_addr, ddp_master_port):
+def print_ddp_info(ddp_rank, ddp_world_size, ddp_local_rank, ddp_master_addr, ddp_master_port):
     # Print distributed environment details for debugging.
-    lines = ["DDP:", f"  ddp_enabled={ddp_enabled}"]
-    lines.append(f"  rank={ddp_rank}")
-    lines.append(f"  world_size={ddp_world_size}")
-    lines.append(f"  local_rank={ddp_local_rank}")
-    lines.append(f"  master_addr={ddp_master_addr}")
-    lines.append(f"  master_port={ddp_master_port}")
+    lines = ["DDP:", f"  rank={ddp_rank}", f"  world_size={ddp_world_size}",
+             f"  local_rank={ddp_local_rank}",
+             f"  master_addr={ddp_master_addr}",
+             f"  master_port={ddp_master_port}"]
     print("\n".join(lines))
 
 

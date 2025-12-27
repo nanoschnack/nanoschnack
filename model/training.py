@@ -273,7 +273,7 @@ if is_master:
 from plot import plot_with_completion
 from progress import ProgressLogger
 from ddp_debug import log_ddp_debug
-from input import make_plot_request_poller
+from input import make_input_poller
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine_tokens
 from torch.utils.data import DataLoader
@@ -420,7 +420,8 @@ debug_level = int(os.getenv("DEBUG", "0"))
 printed_debug_sample = False
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
-plot_request = make_plot_request_poller(is_master)
+plot_request = make_input_poller(is_master)
+debug_inputs = False
 plot_debug = False
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
@@ -493,9 +494,14 @@ for current_epoch in itertools.count(resume_epoch):
         next_total_tokens = progress.total_tokens + micro_token_total
         remaining_tokens = max(target_tokens - next_total_tokens, 0)
         # Check for on-demand plot requests from stdin.
-        if plot_request():
+        cmd = plot_request()
+        if cmd == "p":
             progress.request_plot()
             plot_debug = True
+        elif cmd == "i":
+            debug_inputs = not debug_inputs
+            if is_master:
+                print(f"Input debug: {'on' if debug_inputs else 'off'}", flush=True)
         # Average the micro loss across ranks for consistent logging.
         logged_loss = micro_loss_total
         logged_tokens = micro_token_total
@@ -565,7 +571,7 @@ for current_epoch in itertools.count(resume_epoch):
                     print(f"  {spec_key}: rows={global_counts.get(spec_key, 0)}", flush=True)
             plot_debug = False
         # Emit a per-rank input sample for shard sanity checks.
-        if debug_level >= 1:
+        if debug_level >= 1 or debug_inputs:
             progress.print_input_sample(ddp_rank, inputs, attention_mask, tokenizer)
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

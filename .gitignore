@@ -35,3 +35,4 @@ __pycache__/
 nanoschnack.egg-info/
 checkpoints/
 models
+samples-*.txt

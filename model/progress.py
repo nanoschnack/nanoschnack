@@ -70,16 +70,16 @@ class ProgressLogger:
             eta = "?"
 
         message = (
-            f"Tokens {self._format_count(self.total_tokens)}, "
-            f"Total {pct:.1f}%, "
-            f"Samples {self._format_count(self.total_samples)}, "
-            f"Epoch {epoch+1}, "
-            f"Step {step+1}, "
-            f"Global {self.global_step+1}, "
-            f"Loss {avg_loss:.4f}, "
-            f"LR {lr:.2e}, "
-            f"Samples/s {samples_per_sec:.1f}, "
-            f"Tokens/s {tokens_per_sec:.1f}, "
+            f"Tokens {self._format_count(self.total_tokens)} | "
+            f"Total {pct:.1f}% | "
+            f"Samples {self._format_count(self.total_samples)} | "
+            f"Epoch {epoch+1} | "
+            f"Step {step+1} | "
+            f"Global {self.global_step+1} | "
+            f"Loss {self._format_loss(avg_loss)} | "
+            f"LR {self._format_lr(lr)} | "
+            f"Samples/s {self._format_rate(samples_per_sec)} | "
+            f"Tokens/s {self._format_rate(tokens_per_sec)} | "
             f"ETA {eta}"
         )
         print(message, flush=True)
@@ -105,14 +105,50 @@ class ProgressLogger:
         remaining_secs = remaining_units / units_per_sec
         hours = int(remaining_secs // 3600)
         minutes = int((remaining_secs % 3600) // 60)
-        if hours > 0:
-            return f"{hours}h{minutes:02d}m"
-        return f"{minutes}m"
+        return f"{hours:>4d}h{minutes:02d}m"
 
-    def _format_count(self, value):
-        # Format counts with compact suffixes for readability.
+    def _format_count(self, value, width=5):
+        # Format counts with fixed-width compact suffixes for readability.
+        text = self._format_compact(value)
+        return text.rjust(width) if len(text) < width else text
+
+    def _format_rate(self, value, width=6):
+        # Format per-second rates with compact suffixes.
+        text = self._format_compact(value, digits=4)
+        return text.rjust(width) if len(text) < width else text
+
+    def _format_compact(self, value, digits=3):
+        # Keep compact count outputs consistent across totals and rates.
+        if value >= 1_000_000_000:
+            return f"{self._format_sig(value / 1_000_000_000, digits=digits)}b"
         if value >= 1_000_000:
-            return f"{value / 1_000_000:.1f}m"
+            return f"{self._format_sig(value / 1_000_000, digits=digits)}m"
         if value >= 1_000:
-            return f"{value / 1_000:.1f}k"
-        return str(int(value))
+            return f"{self._format_sig(value / 1_000, digits=digits)}k"
+        return self._format_sig(value, digits=digits)
+
+    def _format_sig(self, value, digits=3):
+        # Format up to the requested significant digits for compact displays.
+        if digits <= 3:
+            if value >= 100:
+                return f"{value:.0f}"
+            if value >= 10:
+                return f"{value:.1f}"
+            return f"{value:.2f}"
+        if value >= 1000:
+            return f"{value:.0f}"
+        if value >= 100:
+            return f"{value:.1f}"
+        if value >= 10:
+            return f"{value:.2f}"
+        return f"{value:.3f}"
+
+    def _format_loss(self, value, width=6):
+        # Cap loss to two digits before the decimal to stabilize width.
+        text = f"{value:05.2f}" if value < 100 else f"{value:05.1f}"
+        return text.rjust(width) if len(text) < width else text
+
+    def _format_lr(self, value, width=9):
+        # Allow non-exponent LR while keeping a fixed width.
+        text = f"{value:.8f}".rstrip("0").rstrip(".")
+        return text.rjust(width) if len(text) < width else text

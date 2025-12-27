@@ -81,29 +81,26 @@ class TokenEstimator:
         return total / len(texts)
 
 
-def load_dataset_source(repo_id, split="train", data_files=None, cache_dir=None, streaming=True):
+def load_dataset_source(repo_id, split="train", data_files=None, cache_dir=None, streaming=True, name=None):
     # Build a dataset from hub or local parquet files.
+    kwargs = {"split": split, "streaming": streaming, "cache_dir": cache_dir}
+    if name:
+        kwargs["name"] = name
     if data_files is not None:
         if repo_id:
             return load_dataset(
                 repo_id,
                 data_files=data_files,
-                split=split,
-                streaming=streaming,
-                cache_dir=cache_dir,
+                **kwargs,
             )
         return load_dataset(
             "parquet",
             data_files=data_files,
-            split=split,
-            streaming=streaming,
-            cache_dir=cache_dir,
+            **kwargs,
         )
     return load_dataset(
         repo_id,
-        split=split,
-        streaming=streaming,
-        cache_dir=cache_dir,
+        **kwargs,
     )
 
 def parse_dataset_specs(specs_str):
@@ -119,15 +116,28 @@ def parse_dataset_specs(specs_str):
         parts = spec.split(":")
         kind = parts[0].lower()
         if kind == "hf":
-            # Parse hf:<repo_id>[:split][:text_key].
+            # Parse hf:<repo_id>[:split][:text_key] or hf:<repo_id>:<config>:<split>[:text_key].
             if len(parts) < 2 or not parts[1]:
                 raise ValueError(f"Invalid HF spec: {spec}")
-            split = parts[2] if len(parts) > 2 and parts[2] else "train"
-            text_key = parts[3] if len(parts) > 3 and parts[3] else "text"
+            if len(parts) > 5:
+                raise ValueError(f"Invalid HF spec: {spec}")
+            name = None
+            split = "train"
+            text_key = "text"
+            if len(parts) == 3:
+                split = parts[2] or "train"
+            elif len(parts) == 4:
+                split = parts[2] or "train"
+                text_key = parts[3] or "text"
+            elif len(parts) == 5:
+                name = parts[2] or None
+                split = parts[3] or "train"
+                text_key = parts[4] or "text"
             specs.append(
                 {
                     "kind": "hf",
                     "repo_id": parts[1],
+                    "name": name,
                     "split": split,
                     "text_key": text_key,
                     "spec": spec,
@@ -208,12 +218,20 @@ def _hf_parquet_row_counts(repo_id, rel_files):
             counts.append(pq.ParquetFile(handle).metadata.num_rows)
     return counts
 
-def _load_hf_parquet_index(repo_id, split, cache_dir):
+def _load_hf_parquet_index(repo_id, split, cache_dir, name=None):
     # Load or build the shard index for an HF parquet dataset.
-    cache_name = f"hf-{repo_id.replace('/', '--')}-{split}.json"
+    cache_name = f"hf-{repo_id.replace('/', '--')}"
+    if name:
+        cache_name = f"{cache_name}-{name}"
+    cache_name = f"{cache_name}-{split}.json"
     cache_path = _resume_cache_path(cache_dir, cache_name)
     cached = _read_resume_cache(cache_path)
-    if cached and cached.get("repo_id") == repo_id and cached.get("split") == split:
+    if (
+        cached
+        and cached.get("repo_id") == repo_id
+        and cached.get("split") == split
+        and cached.get("name") == name
+    ):
         return cached.get("files", []), cached.get("row_counts", [])
 
     files = _hf_parquet_files(repo_id, split)
@@ -221,7 +239,13 @@ def _load_hf_parquet_index(repo_id, split, cache_dir):
         return [], []
 
     row_counts = _hf_parquet_row_counts(repo_id, files)
-    payload = {"repo_id": repo_id, "split": split, "files": files, "row_counts": row_counts}
+    payload = {
+        "repo_id": repo_id,
+        "name": name,
+        "split": split,
+        "files": files,
+        "row_counts": row_counts,
+    }
     _write_resume_cache(cache_path, payload)
     return files, row_counts
 
@@ -258,6 +282,7 @@ def resolve_resume_plan(spec, row_offset, cache_dir=None):
             spec["repo_id"],
             spec.get("split", "train"),
             cache_dir,
+            name=spec.get("name"),
         )
         if not files or not row_counts:
             return None, row_offset, None
@@ -301,6 +326,7 @@ def load_dataset_from_spec(spec, cache_dir=None, streaming=True, data_files=None
             data_files=data_files,
             cache_dir=cache_dir,
             streaming=streaming,
+            name=spec.get("name"),
         )
         return dataset
     if spec["kind"] == "txt":
@@ -330,7 +356,11 @@ def resolve_total_rows(dataset, spec):
 def dataset_label(spec):
     # Produce a human-readable label for dataset logging.
     if spec["kind"] == "hf":
-        return spec["repo_id"]
+        name = spec.get("name")
+        split = spec.get("split", "train")
+        if name:
+            return f"{spec['repo_id']}:{name}/{split}"
+        return f"{spec['repo_id']}:{split}"
     if spec["kind"] == "txt":
         return spec["path"]
     return spec.get("repo_id") or spec.get("path") or "unknown"

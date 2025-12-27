@@ -83,11 +83,14 @@ PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 1000)
 ### Dataset defaults
 ###
 
-# Comma-separated dataset specs: hf:<repo_id>[:split][:text_key], txt:<path>[:text_key]
+# Comma-separated dataset specs: hf:<repo_id>[:split][:text_key], hf:<repo_id>:<config>:<split>[:text_key], txt:<path>[:text_key]
 DATASET_SPECS = _env_str(
     "DATASET_SPECS",
-    "hf:arnomatic/german-wikipedia-clean-no-lists:train:text,"
-    "hf:PatrickHaller/fineweb-2-de-1B:train:text",
+    "hf:coral-nlp/german-commons:web:onemillionposts:text,"
+    "hf:coral-nlp/german-commons:web:wikipedia:text,"
+    "hf:coral-nlp/german-commons:web:youtubecommons:text,"
+    "hf:coral-nlp/german-commons:cultural:wikivoyage:text,"
+    "hf:coral-nlp/german-commons:cultural:wikiquote:text",
 )
 
 ###

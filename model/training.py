@@ -487,15 +487,23 @@ for current_epoch in itertools.count(resume_epoch):
 
         # Average the micro loss across ranks for consistent logging.
         logged_loss_total = micro_loss_total
+
+        # Sum token counts across ranks for accurate progress.
+        logged_token_total = micro_token_total
         if ddp_enabled:
             loss_tensor = torch.tensor(micro_loss_total, device=device)
+            token_tensor = torch.tensor(micro_token_total, device=device)
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+            dist.all_reduce(token_tensor, op=dist.ReduceOp.SUM)
             logged_loss_total = loss_tensor.item() / ddp_world_size
+            logged_token_total = int(token_tensor.item())
+            next_total_tokens = progress.total_tokens + logged_token_total
+            remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
         progress.tick(
             logged_loss_total / micro_steps,
             micro_sample_total,
-            micro_token_total,
+            logged_token_total,
             optimizer.param_groups[0]["lr"],
             current_epoch,
             current_step,

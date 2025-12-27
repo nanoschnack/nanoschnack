@@ -191,9 +191,9 @@ class ProgressLogger:
         text = f"{value:5.2f}" if value < 100 else f"{value:5.1f}"
         return text.rjust(width) if len(text) < width else text
 
-    def _format_lr(self, value, width=9):
-        # Allow non-exponent LR while keeping a fixed width.
-        text = f"{value:.8f}".rstrip("0").rstrip(".")
+    def _format_lr(self, value, width=8):
+        # Keep a fixed-width LR with six decimals.
+        text = f"{value:.6f}"
         return text.rjust(width) if len(text) < width else text
 
     def _display_width(self, text):

@@ -127,9 +127,11 @@ if is_master:
     )
 if tuned_batch_size:
     config.BATCH_SIZE = tuned_batch_size
+if config.MACRO_BATCH_SIZE % ddp_world_size != 0:
+    raise ValueError("MACRO_BATCH_SIZE must be divisible by WORLD_SIZE.")
 config.BATCH_SIZE = config.align_micro_batch_size(
     config.BATCH_SIZE,
-    config.MACRO_BATCH_SIZE,
+    config.MACRO_BATCH_SIZE // ddp_world_size,
 )
 
 # Sync the resolved batch size to all ranks.
@@ -239,8 +241,6 @@ target_tokens = max_tokens or estimated_total_tokens
 target_epochs = 1
 if max_tokens and estimated_total_tokens > 0:
     target_epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
-if config.MACRO_BATCH_SIZE % config.BATCH_SIZE != 0:
-    raise ValueError("MACRO_BATCH_SIZE must be divisible by BATCH_SIZE.")
 tokens_per_step = config.MACRO_BATCH_SIZE * (config.CONTEXT_LEN - 1)
 dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
 if is_master:
@@ -398,7 +398,7 @@ current_epoch = resume_epoch
 current_step = resume_step
 current_sample_index = resume_sample_index
 current_micro_step = 0
-micro_steps = config.MACRO_BATCH_SIZE // config.BATCH_SIZE
+micro_steps = (config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE
 micro_loss_total = 0.0
 micro_token_total = 0
 micro_sample_total = 0

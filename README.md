@@ -85,6 +85,12 @@ DATASET_SPECS="hf:coral-nlp/german-commons:web:onemillionposts:text,txt:data/goe
 DATASET_SPECS="txt:data/goethe.txt:body" python model/training.py
 ```
 
+To run distributed training with 8 GPUs:
+
+```sh
+torchrun --standalone --nproc_per_node=8 model/training.py
+```
+
 ## Inference (chat)
 
 Run the REPL chat interface:

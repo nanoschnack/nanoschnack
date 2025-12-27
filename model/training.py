@@ -530,6 +530,7 @@ for current_epoch in itertools.count(resume_epoch):
         # Average the micro loss across ranks for consistent logging.
         logged_loss = micro_loss_total
         logged_tokens = micro_token_total
+        loss_per_rank = None
         if ddp_enabled:
             loss_tensor = torch.tensor(micro_loss_total, device=device)
             token_tensor = torch.tensor(micro_token_total, device=device)
@@ -540,8 +541,13 @@ for current_epoch in itertools.count(resume_epoch):
             next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
+            # Gather per-rank losses for debug logging.
+            if debug_level >= 1:
+                loss_per_rank = [torch.zeros_like(loss_tensor) for _ in range(ddp_world_size)]
+                dist.all_gather(loss_per_rank, loss_tensor)
+
         if is_master:
-            progress.tick(
+            plot_printed = progress.tick(
                 logged_loss,
                 micro_sample_total,
                 logged_tokens,
@@ -550,6 +556,11 @@ for current_epoch in itertools.count(resume_epoch):
                 current_step,
                 remaining_tokens=remaining_tokens,
             )
+
+            # Print per-rank loss when the plot is emitted.
+            if debug_level >= 1 and plot_printed and loss_per_rank is not None:
+                parts = [f"{rank}={loss_value.item():.2f}" for rank, loss_value in enumerate(loss_per_rank)]
+                print(f"ddp-losses: {' '.join(parts)}")
 
         # Print a per-rank input snippet when debugging.
         if debug_level >= 1:

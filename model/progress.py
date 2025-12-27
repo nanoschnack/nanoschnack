@@ -85,6 +85,7 @@ class ProgressLogger:
         self.last_tick_time = now
 
         # Plot loss every minute for the first 10 minutes, then every 10 minutes.
+        plot_printed = False
         interval = (
             self.warmup_plot_interval
             if (now - self.start_time) < self.warmup_window_secs
@@ -93,9 +94,11 @@ class ProgressLogger:
         if now - self.last_plot_time >= interval:
             print(self.plot_fn(list(self.loss_history)))
             self.last_plot_time = now
+            plot_printed = True
 
         # Keep a global step counter for resuming logs across restarts.
         self.global_step += 1
+        return plot_printed
 
     def _format_eta(self, remaining_units, units_per_sec):
         # Format an ETA string from remaining samples and throughput.

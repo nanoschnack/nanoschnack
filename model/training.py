@@ -262,49 +262,14 @@ if is_master:
     print(f"    Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}")
     print(f"    Target: epochs={target_epochs:,} target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
 
-
 # %% [markdown]
 # ## Progress and Plotting
-
-# %%
-def plot_with_completion(points):
-    # Render the loss plot first so completion failures don't block logs.
-    chart = ascii_loss_plot(points)
-
-    # Append the configured completion snapshot.
-    was_training = model.training
-    if was_training:
-        model.eval()
-    try:
-        reply_parts = []
-        for token in generate_reply_stream(
-                model,
-                tokenizer,
-                config.PLOT_COMPLETION_PROMPT,
-                context_len=config.CONTEXT_LEN,
-                max_new_tokens=config.PLOT_COMPLETION_TOKENS,
-                temperature=config.TEMPERATURE,
-                top_k=config.TOP_K,
-                device=device,
-        ):
-            reply_parts.append(token)
-        completion = "".join(reply_parts)
-    except Exception as exc:
-        completion = f" [generation failed: {exc}]"
-    finally:
-        if was_training:
-            model.train()
-    formatted = progress.format_completion("Validation: ", f"{config.PLOT_COMPLETION_PROMPT}|>{completion}")
-    return f"{chart}\n{formatted}\n"
-
-
 
 # %% [markdown]
 # ## Load the previous Checkpoint
 
 # %%
-from plot import ascii_loss_plot
-from chat import generate_reply_stream
+from plot import plot_with_completion
 from progress import ProgressLogger
 from ddp_debug import log_ddp_debug
 from input import make_plot_request_poller
@@ -413,6 +378,7 @@ if is_master:
     print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
 
 
+
 # %% [markdown]
 # ## Run the Training
 
@@ -429,7 +395,7 @@ micro_sample_total = 0
 micro_loss_total = 0
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
-    plot_with_completion,
+    lambda points: plot_with_completion(points, model, tokenizer, config, device, progress),
     start_global_step=global_step,
     start_total_samples=resume_sample_index,
     start_total_tokens=resume_tokens,
@@ -619,5 +585,6 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
+
 
 

@@ -1,5 +1,43 @@
 import asciichartpy
 
+from chat import generate_reply_stream
+
+
+def plot_with_completion(points, model, tokenizer, config, device, progress):
+    """Render a loss chart with a sample completion appended."""
+    # Render the loss plot first so completion failures don't block logs.
+    chart = ascii_loss_plot(points)
+
+    # Append the configured completion snapshot.
+    was_training = model.training
+    if was_training:
+        model.eval()
+    try:
+        reply_parts = []
+        for token in generate_reply_stream(
+                model,
+                tokenizer,
+                config.PLOT_COMPLETION_PROMPT,
+                context_len=config.CONTEXT_LEN,
+                max_new_tokens=config.PLOT_COMPLETION_TOKENS,
+                temperature=config.TEMPERATURE,
+                top_k=config.TOP_K,
+                device=device,
+        ):
+            reply_parts.append(token)
+        completion = "".join(reply_parts)
+    except Exception as exc:
+        completion = f" [generation failed: {exc}]"
+    finally:
+        if was_training:
+            model.train()
+    formatted = progress.format_completion(
+        "Validation: ",
+        f"{config.PLOT_COMPLETION_PROMPT}|>{completion}",
+    )
+    return f"{chart}\n{formatted}\n"
+
+
 def ascii_loss_plot(points, width=60, height=10):
     """Render a compact ASCII loss chart for the most recent samples.
 

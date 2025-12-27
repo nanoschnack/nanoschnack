@@ -74,7 +74,7 @@ WARMUP_PCT = _env_float("WARMUP_PCT", 0.03)
 MAX_TRAINING_FACTOR = _env_int("MAX_TRAINING_FACTOR", 20)
 
 # Shuffle buffer size for streaming datasets.
-SHUFFLE_BUFFER = _env_int("SHUFFLE_BUFFER", 10_000)
+SHUFFLE_BUFFER = _env_int("SHUFFLE_BUFFER", 100_000)
 
 # Batch size for dataset packing during tokenization.
 PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 1000)

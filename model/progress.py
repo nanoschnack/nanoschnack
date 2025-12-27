@@ -37,6 +37,7 @@ class ProgressLogger:
         self.estimated_total_tokens = estimated_total_tokens
         self.samples_per_sec = 0.0
         self.loss_history = deque()
+        self.force_plot = False
 
     def tick(
         self,
@@ -89,19 +90,30 @@ class ProgressLogger:
 
         # Plot loss every minute for the first 10 minutes, then every 10 minutes.
         plot_printed = False
-        interval = (
-            self.warmup_plot_interval
-            if (now - self.start_time) < self.warmup_window_secs
-            else self.plot_interval
-        )
-        if now - self.last_plot_time >= interval:
+        # Honor explicit plot requests before checking time-based intervals.
+        if self.force_plot:
             print(self.plot_fn(list(self.loss_history)))
             self.last_plot_time = now
+            self.force_plot = False
             plot_printed = True
+        else:
+            interval = (
+                self.warmup_plot_interval
+                if (now - self.start_time) < self.warmup_window_secs
+                else self.plot_interval
+            )
+            if now - self.last_plot_time >= interval:
+                print(self.plot_fn(list(self.loss_history)))
+                self.last_plot_time = now
+                plot_printed = True
 
         # Keep a global step counter for resuming logs across restarts.
         self.global_step += 1
         return plot_printed
+
+    def request_plot(self):
+        # Allow callers to force a plot on the next tick.
+        self.force_plot = True
 
     def print_input_sample(self, rank, inputs, attention_mask, tokenizer, width=120, sample_index=None):
         # Emit a per-rank input sample for shard sanity checks.

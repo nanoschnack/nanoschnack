@@ -306,6 +306,8 @@ def plot_with_completion(points):
 from plot import ascii_loss_plot
 from chat import generate_reply_stream
 from progress import ProgressLogger
+from ddp_debug import log_ddp_debug
+from input import make_plot_request_poller
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine_tokens
 from torch.utils.data import DataLoader
@@ -410,12 +412,12 @@ base_dataset = build_interleaved_dataset(packed_datasets, seed=42)
 if is_master:
     print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
 
+
 # %% [markdown]
 # ## Run the Training
 
 # %%
 last_ckpt_time = time.time()
-
 # Track current counters for checkpointing and interrupts.
 current_epoch = resume_epoch
 current_step = resume_step
@@ -425,7 +427,6 @@ micro_steps = (config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE
 micro_token_total = 0
 micro_sample_total = 0
 micro_loss_total = 0
-
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
     plot_with_completion,
@@ -437,20 +438,18 @@ progress = ProgressLogger(
     warmup_window_secs=config.WARMUP_WINDOW_SECS,
     estimated_total_tokens=target_tokens,
 )
-
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
 printed_debug_sample = False
-
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
+plot_request = make_plot_request_poller(is_master)
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
     print("Interrupted: saving checkpoint...") if is_master else None
     global stop_requested
     stop_requested = True
 signal.signal(signal.SIGINT, _request_stop)
-
 print("Starting training loop...", flush=True) if is_master else None
 for current_epoch in itertools.count(resume_epoch):
     # Reset row counters at epoch boundaries beyond the resume epoch.
@@ -462,7 +461,6 @@ for current_epoch in itertools.count(resume_epoch):
     if current_epoch == resume_epoch and loader_skip_samples > 0:
         dataset_epoch = dataset_epoch.skip(loader_skip_samples)
     loader = DataLoader(dataset_epoch, batch_size=config.BATCH_SIZE, shuffle=False)
-
     for current_step, batch in enumerate(loader):
         # Move batch tensors to the device and prepare an optional attention mask.
         input_ids = batch["input_ids"]
@@ -470,11 +468,9 @@ for current_epoch in itertools.count(resume_epoch):
         attn_mask = None
         if attention_mask is not None and not attention_mask.all():
             attn_mask = attention_mask[:, :-1].to(device)
-
         # Build next-token prediction pairs.
         inputs = input_ids[:, :-1].to(device) # everything from the first token except the last
         targets = input_ids[:, 1:].to(device) # everything from the second token onward
-
         # Preview tokenization outputs for debugging.
         if debug_level >= 2 and not printed_debug_sample and is_master:
             input_preview = inputs[0].tolist()
@@ -484,30 +480,25 @@ for current_epoch in itertools.count(resume_epoch):
             print(f"Input text: {tokenizer.decode(input_preview)}")
             print(f"Target text: {tokenizer.decode(target_preview)}")
             printed_debug_sample = True
-
         # Clear accumulated gradients before the first micro step in the macro batch.
         if current_micro_step == 0:
             optimizer.zero_grad()
             micro_loss_total = 0.0
             micro_token_total = 0
             micro_sample_total = 0
-
         # Run the forward pass with autocast and compute loss.
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
             logits = model(inputs, attention_mask=attn_mask)
             loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
             loss /= micro_steps # to make micro_loss_total equal average loss over the macro batch
-
             # Avoid all-reduce on accumulation steps.
         with model.no_sync() if ddp_enabled and current_micro_step != micro_steps - 1 else contextlib.nullcontext():
             loss.backward()
-
         # Micro step bookkeeping.
         token_count = attention_mask[:, 1:].sum().item()
         micro_token_total += token_count
         micro_sample_total += input_ids.size(0)
         micro_loss_total += loss.item()
-
         # Advance per-source row counters for resume safety.
         row_counts = batch["row_count"].tolist()
         source_ids = batch["source_id"].tolist()
@@ -515,17 +506,17 @@ for current_epoch in itertools.count(resume_epoch):
             if row_count:
                 spec_key = dataset_specs[int(source_id)]["spec"]
                 source_row_counts[spec_key] += int(row_count)
-
         # Update checkpoint counters and save when needed.
         current_sample_index += input_ids.size(0)
         if current_micro_step != micro_steps - 1:
             current_micro_step += 1
             continue
-
         # Log progress and plot loss history.
         next_total_tokens = progress.total_tokens + micro_token_total
         remaining_tokens = max(target_tokens - next_total_tokens, 0)
-
+        # Check for on-demand plot requests from stdin.
+        if plot_request():
+            progress.request_plot()
         # Average the micro loss across ranks for consistent logging.
         logged_loss = micro_loss_total
         logged_tokens = micro_token_total
@@ -538,7 +529,6 @@ for current_epoch in itertools.count(resume_epoch):
             logged_tokens = int(token_tensor.item())
             next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
-
         # Log macro step counts while keeping micro-step checkpointing intact.
         plot_printed = False
         if is_master:
@@ -551,33 +541,29 @@ for current_epoch in itertools.count(resume_epoch):
                 current_step // micro_steps,
                 remaining_tokens=remaining_tokens,
             )
-
         if ddp_enabled:
             plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)
             dist.broadcast(plot_flag, src=0)
             plot_printed = bool(plot_flag.item())
             if plot_printed:
-                loss_tensor = torch.tensor([micro_loss_total], device=device)
-                gathered = [torch.zeros_like(loss_tensor) for _ in range(ddp_world_size)]
-                dist.all_gather(gathered, loss_tensor)
-                if is_master:
-                    losses = " ".join(f"{idx}={value.item():.2f}" for idx, value in enumerate(gathered))
-                    print(f"ddp-losses: {losses}", flush=True)
-
+                log_ddp_debug(
+                    ddp_world_size,
+                    micro_loss_total,
+                    micro_token_total,
+                    micro_sample_total,
+                    device,
+                    is_master,
+                )
         # Emit a per-rank input sample for shard sanity checks.
         if debug_level >= 1:
             progress.print_input_sample(ddp_rank, inputs, attention_mask, tokenizer)
-
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
         # Apply the optimizer step.
         optimizer.step()
-
         # Apply the optimizer step and advance the token scheduler.
         scheduler.last_epoch = next_total_tokens - 1
         scheduler.step()
-
         now = time.time()
         ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
         should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
@@ -587,7 +573,6 @@ for current_epoch in itertools.count(resume_epoch):
             dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
             stop_requested = bool(stop_flag.item())
             should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
-
             # Sync checkpoint decision across ranks.
             ckpt_flag = torch.tensor(1 if (is_master and should_checkpoint) else 0, device=device)
             dist.broadcast(ckpt_flag, src=0)
@@ -595,7 +580,6 @@ for current_epoch in itertools.count(resume_epoch):
         if should_checkpoint:
             # Build the resume state for the checkpoint.
             resume_state = build_resume_state(source_row_counts, dataset_specs)
-
             # Aggregate per-rank row counts for global resume offsets.
             if ddp_enabled:
                 spec_keys = [spec["spec"] for spec in dataset_specs]
@@ -610,13 +594,12 @@ for current_epoch in itertools.count(resume_epoch):
                     for spec_key, value in zip(spec_keys, counts_tensor.tolist()):
                         global_counts[spec_key] = int(value)
                     resume_state = build_resume_state(global_counts, dataset_specs)
-
             # Persist checkpoints only from the master process.
             if is_master:
                 checkpointer.save_latest(
                     current_epoch,
                     current_step // micro_steps,
-                    progress.global_step,
+                    current_step // micro_steps,
                     current_sample_index,
                     progress.total_tokens,
                     resume_state=resume_state,
@@ -624,22 +607,17 @@ for current_epoch in itertools.count(resume_epoch):
             if ddp_enabled:
                 dist.barrier()
             last_ckpt_time = now
-
         # Exit after the current step if SIGINT was requested.
         if stop_requested:
             break
-
         current_micro_step = 0
     # Reset sample skip counter after the first epoch; partial macro batches spill to next epoch.
     loader_skip_samples = 0
     current_sample_index = 0
-
     if stop_requested:
         break
-
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
-
 
 

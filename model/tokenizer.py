@@ -62,6 +62,22 @@ def ensure_vocab_size(tokenizer, target_size):
     return new_size
 
 
+def print_vocab_alignment(tokenizer):
+    # Report alignment diagnostics for tokenizer padding.
+    alignment = getattr(tokenizer, "vocab_alignment", None)
+    if not alignment:
+        return
+    base_size = alignment["base_size"]
+    print(f"Tokenizer vocab size (base): {base_size}")
+    print(
+        "Tokenizer vocab alignment: "
+        f"base={alignment['base_size']} "
+        f"aligned={alignment['aligned_size']} "
+        f"power={alignment['power']} "
+        f"(+{alignment['increase_pct']:.3f}%)"
+    )
+
+
 PAD_TOKEN = "<|PAD|>"
 DATASET_EOS_TOKEN = "<|EOS|>"
 BOS_TOKEN = "[BOS]"

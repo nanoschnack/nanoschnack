@@ -23,19 +23,30 @@ import torch
 
 from device import device_info, pick_device, print_ddp_info, print_device_info, print_sdpa_info
 
-ddp_rank = int(os.getenv("RANK", "0"))
-ddp_world_size = int(os.getenv("WORLD_SIZE", "1"))
-ddp_local_rank = int(os.getenv("LOCAL_RANK", "0"))
-ddp_master_addr = os.getenv("MASTER_ADDR", None)
-ddp_master_port = os.getenv("MASTER_PORT", None)
-ddp_enabled = ddp_world_size > 1
+# Setup distributed data parallel (DDP)
+ddp_enabled = False
+is_master = True
+ddp_local_rank = 0
+if os.getenv("RANK", None) is not None and torch.cuda.is_available():
+    ddp_enabled = True
+    ddp_rank = int(os.getenv("RANK", "0"))
+    ddp_world_size = int(os.getenv("WORLD_SIZE", "1"))
+    ddp_local_rank = int(os.getenv("LOCAL_RANK", "0"))
+    ddp_master_addr = os.getenv("MASTER_ADDR", None)
+    ddp_master_port = os.getenv("MASTER_PORT", None)
+    is_master = ddp_rank == 0
 
+    import torch.distributed as dist
+    dist.init_process_group(backend="nccl")
+
+# Select the device for this process.
 device = pick_device(ddp_local_rank)
 info = device_info(device)
-print_device_info(info)
-if ddp_enabled:
-    print_ddp_info(ddp_enabled, ddp_rank, ddp_world_size, ddp_local_rank, ddp_master_addr, ddp_master_port)
-print_sdpa_info()
+if is_master:
+    print_device_info(info)
+    if ddp_enabled:
+        print_ddp_info(ddp_rank, ddp_world_size, ddp_local_rank, ddp_master_addr, ddp_master_port)
+    print_sdpa_info()
 
 # Switch to TF32 for 8x speedup on supported hardware, and good enough for LLM training.
 torch.set_float32_matmul_precision("high")
@@ -48,25 +59,11 @@ torch.set_float32_matmul_precision("high")
 # - Tiktokenizer: https://tiktokenizer.vercel.app/?model=gpt2
 
 # %%
-from tokenizer import PAD_TOKEN, load_tokenizer
+from tokenizer import PAD_TOKEN, load_tokenizer, print_vocab_alignment
 tokenizer = load_tokenizer()
-alignment = getattr(tokenizer, "vocab_alignment", None)
-base_size = alignment["base_size"] if alignment else tokenizer.get_vocab_size()
-print(f"Tokenizer vocab size (base): {base_size}")
-# Report alignment diagnostics for tokenizer padding.
-if alignment:
-    print(
-        "Tokenizer vocab alignment: "
-        f"base={alignment['base_size']} "
-        f"aligned={alignment['aligned_size']} "
-        f"power={alignment['power']} "
-        f"(+{alignment['increase_pct']:.3f}%)"
-    )
+if is_master:
+    print_vocab_alignment(tokenizer)
 
-
-
-# %% [markdown]
-# ## Instantiating the NanoSchnack model
 
 # %%
 from gpt import GPT
@@ -129,14 +126,13 @@ config.BATCH_SIZE = config.align_micro_batch_size(
 
 # Compile the model for faster training.
 if device.type == "cuda":
-    print("Compiling the model for faster training...")
+    if is_master:
+        print("Compiling the model for faster training...")
     model = torch.compile(model)
 
 param_count, quantization = config.model_info(model)
-config.print_training_hyperparams(param_count=param_count, quantization=quantization)
-
-
-
+if is_master:
+    config.print_training_hyperparams(param_count=param_count, quantization=quantization)
 
 # %% [markdown]
 # ## Create vizualization of the model
@@ -196,7 +192,8 @@ dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
 total_rows_by_spec = {}
 estimated_total_tokens = 0
 
-print("Estimating tokens from dataset samples...", flush=True)
+if is_master:
+    print("Datasets:")
 for dataset_index, spec in enumerate(dataset_specs):
     raw_dataset = load_dataset_from_spec(
         spec,
@@ -213,11 +210,8 @@ for dataset_index, spec in enumerate(dataset_specs):
     )
     avg_tokens, est_total_tokens = token_estimator.estimate_streaming(raw_dataset, total_rows)
     estimated_total_tokens += est_total_tokens
-    print(
-        f"Dataset {dataset_index + 1}/{len(dataset_specs)} "
-        f"({dataset_label(spec)}): avg_tokens={avg_tokens:.1f}, "
-        f"est_tokens={est_total_tokens}"
-    )
+    if is_master:
+        print(f"    {spec}: avg_tokens={avg_tokens:.1f}, est_tokens={est_total_tokens}")
 
 # Resolve model size for token budgeting.
 param_count, _ = config.model_info(model)
@@ -232,16 +226,9 @@ if config.MACRO_BATCH_SIZE % config.BATCH_SIZE != 0:
     raise ValueError("MACRO_BATCH_SIZE must be divisible by BATCH_SIZE.")
 tokens_per_step = config.MACRO_BATCH_SIZE * (config.CONTEXT_LEN - 1)
 dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
-print(
-    f"Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} "
-    f"tokens_per_step={tokens_per_step:,}",
-    flush=True,
-)
-print(
-    f"Target:          epochs={target_epochs:,} target_tokens={target_tokens:,} "
-    f"(factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})",
-    flush=True,
-)
+if is_master:
+    print(f"    Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}")
+    print(f"    Target: epochs={target_epochs:,} target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
 
 
 # %% [markdown]
@@ -336,10 +323,8 @@ for dataset_index, spec in enumerate(dataset_specs):
     # Skip datasets that are already fully consumed by resume offsets.
     total_rows = total_rows_by_spec.get(spec["spec"])
     if is_resume_exhausted(row_offset, total_rows):
-        print(
-            f"Skipping exhausted dataset {spec['spec']}: row_offset {row_offset} >= total_rows {total_rows}",
-            flush=True,
-        )
+        if is_master:
+            print(f"Skipping exhausted dataset {spec['spec']}: row_offset {row_offset} >= total_rows {total_rows}")
         continue
     data_files, in_shard_offset, shard_label = resolve_resume_plan(
         spec,
@@ -354,10 +339,12 @@ for dataset_index, spec in enumerate(dataset_specs):
     )
     if row_offset > 0:
         if data_files is None:
-            print(f"Resume rows (linear): {spec['spec']} -> {row_offset}")
+            if is_master:
+                print(f"Resume rows (linear): {spec['spec']} -> {row_offset}")
             raw_streaming = raw_streaming.skip(row_offset)
         else:
-            print(f"Resume rows: {spec['spec']} -> {shard_label} +{in_shard_offset}")
+            if is_master:
+                print(f"Resume rows: {spec['spec']} -> {shard_label} +{in_shard_offset}")
             raw_streaming = raw_streaming.skip(in_shard_offset)
     packed = build_packed_dataset(
         raw_streaming,
@@ -373,7 +360,8 @@ if not packed_datasets:
     raise ValueError("All datasets exhausted after resume; check DATASET_SPECS.")
 
 base_dataset = build_interleaved_dataset(packed_datasets, seed=42)
-print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
+if is_master:
+    print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
 
 # %% [markdown]
 # ## Run the Training
@@ -411,12 +399,13 @@ printed_debug_sample = False
 stop_requested = False
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
-    print("Interrupted: saving checkpoint...")
+    print("Interrupted: saving checkpoint...") if is_master else None
     global stop_requested
     stop_requested = True
 signal.signal(signal.SIGINT, _request_stop)
 
-print("Starting training loop...", flush=True)
+if is_master:
+    print("Starting training loop...", flush=True)
 for current_epoch in itertools.count(resume_epoch):
     # Reset row counters at epoch boundaries beyond the resume epoch.
     if current_epoch != resume_epoch:
@@ -441,7 +430,7 @@ for current_epoch in itertools.count(resume_epoch):
         targets = input_ids[:, 1:].to(device) # everything from the second token onward
 
         # Preview tokenization outputs for debugging.
-        if debug_level >= 2 and not printed_debug_sample:
+        if debug_level >= 2 and not printed_debug_sample and is_master:
             input_preview = inputs[0].tolist()
             target_preview = targets[0].tolist()
             print(f"Input tokens: {input_preview}")
@@ -449,12 +438,6 @@ for current_epoch in itertools.count(resume_epoch):
             print(f"Input text: {tokenizer.decode(input_preview)}")
             print(f"Target text: {tokenizer.decode(target_preview)}")
             printed_debug_sample = True
-
-        # Dump decoded inputs for every sample in the batch.
-        if debug_level >= 6:
-            for debug_sample_index, sample_ids in enumerate(input_ids.tolist()):
-                decoded = tokenizer.decode(sample_ids)
-                print(f"Encoded input {debug_sample_index}: {decoded}")
 
         # Clear accumulated gradients before the first micro step in the macro batch.
         if current_micro_step == 0:
@@ -506,7 +489,7 @@ for current_epoch in itertools.count(resume_epoch):
         )
 
         # Print a target decode alongside log output when debugging.
-        if debug_level >= 1:
+        if debug_level >= 1 and is_master:
             target_ids = targets[-1]
             if attention_mask is not None:
                 mask = attention_mask[-1, 1:].bool()
@@ -549,4 +532,6 @@ for current_epoch in itertools.count(resume_epoch):
 
     if stop_requested:
         break
+
+
 

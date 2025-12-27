@@ -12,30 +12,33 @@
 # %% [markdown]
 # # NanoSchnack Model
 #
-# ## Setup
+# ## Setup Devices
 #
-# - Install dependencies.
 # - Verify that MPS is available (for Apple Silicon GPUs).
 
 # %%
 import contextlib
+import os
 import torch
 
-from device import device_info, pick_device, print_device_info
+from device import device_info, pick_device, print_ddp_info, print_device_info, print_sdpa_info
 
-device = pick_device()
+ddp_rank = int(os.getenv("RANK", "0"))
+ddp_world_size = int(os.getenv("WORLD_SIZE", "1"))
+ddp_local_rank = int(os.getenv("LOCAL_RANK", "0"))
+ddp_master_addr = os.getenv("MASTER_ADDR", None)
+ddp_master_port = os.getenv("MASTER_PORT", None)
+ddp_enabled = ddp_world_size > 1
+
+device = pick_device(ddp_local_rank)
 info = device_info(device)
 print_device_info(info)
-# Report SDPA kernel availability for attention debugging.
-print("Performance:")
-print(f"  Flash SDP enabled: {torch.backends.cuda.flash_sdp_enabled()}")
-print(f"  Mem-efficient SDP enabled: {torch.backends.cuda.mem_efficient_sdp_enabled()}")
-print(f"  Math SDP enabled: {torch.backends.cuda.math_sdp_enabled()}")
-print("  SDPA kernel selection: set TORCH_LOGS=attention")
+if ddp_enabled:
+    print_ddp_info(ddp_enabled, ddp_rank, ddp_world_size, ddp_local_rank, ddp_master_addr, ddp_master_port)
+print_sdpa_info()
 
 # Switch to TF32 for 8x speedup on supported hardware, and good enough for LLM training.
 torch.set_float32_matmul_precision("high")
-
 
 
 # %% [markdown]
@@ -45,7 +48,7 @@ torch.set_float32_matmul_precision("high")
 # - Tiktokenizer: https://tiktokenizer.vercel.app/?model=gpt2
 
 # %%
-from tokenizer import DATASET_EOS_TOKEN, PAD_TOKEN, load_tokenizer
+from tokenizer import PAD_TOKEN, load_tokenizer
 tokenizer = load_tokenizer()
 alignment = getattr(tokenizer, "vocab_alignment", None)
 base_size = alignment["base_size"] if alignment else tokenizer.get_vocab_size()

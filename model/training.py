@@ -320,12 +320,6 @@ if is_master and resume_info:
 # This drives shard/row skipping during resume and checkpointing.
 resume_rows = normalize_resume_rows(resume_state, dataset_specs)
 
-# Convert global resume offsets to per-rank offsets for sharded streams.
-if ddp_enabled:
-    def _per_rank_row_offset(row_offset):
-        return 0 if row_offset <= ddp_rank else (row_offset - ddp_rank + ddp_world_size - 1) // ddp_world_size
-    resume_rows = {spec_key: _per_rank_row_offset(offset) for spec_key, offset in resume_rows.items()}
-
 # Track row offsets for shard-aware resume.
 source_row_counts = dict(resume_rows)
 
@@ -344,6 +338,11 @@ if resume_sample_index > 0 and not use_row_resume:
 packed_datasets = []
 for dataset_index, spec in enumerate(dataset_specs):
     row_offset = resume_rows.get(spec["spec"], 0)
+    # Compute per-rank offsets after global resume mapping.
+    per_rank_offset = row_offset
+    if ddp_enabled:
+        per_rank_offset = 0 if row_offset <= ddp_rank else (row_offset - ddp_rank + ddp_world_size - 1) // ddp_world_size
+
     # Skip datasets that are already fully consumed by resume offsets.
     total_rows = total_rows_by_spec.get(spec["spec"])
     if is_resume_exhausted(row_offset, total_rows):
@@ -360,6 +359,10 @@ for dataset_index, spec in enumerate(dataset_specs):
         streaming=True,
         data_files=data_files,
     )
+
+    # Apply shard-local resume offset before sharding.
+    if data_files is not None and in_shard_offset > 0:
+        raw_streaming = raw_streaming.skip(in_shard_offset)
     if ddp_enabled:
         # Skip sharding when the dataset does not expose data sources for splitting.
         shard_count = getattr(getattr(raw_streaming, "_ex_iterable", None), "n_shards", None)
@@ -374,10 +377,9 @@ for dataset_index, spec in enumerate(dataset_specs):
     if row_offset > 0:
         if data_files is None:
             print(f"Resume rows (linear): {spec['spec']} -> {row_offset}") if is_master else None
-            raw_streaming = raw_streaming.skip(row_offset)
+            raw_streaming = raw_streaming.skip(per_rank_offset)
         else:
             print(f"Resume rows: {spec['spec']} -> {shard_label} +{in_shard_offset}") if is_master else None
-            raw_streaming = raw_streaming.skip(in_shard_offset)
     packed = build_packed_dataset(
         raw_streaming,
         tokenizer=tokenizer,

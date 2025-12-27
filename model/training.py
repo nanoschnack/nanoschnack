@@ -30,18 +30,24 @@ ddp_local_rank_env = os.getenv("LOCAL_RANK")
 ddp_local_rank = int(ddp_local_rank_env) if ddp_local_rank_env is not None else None
 ddp_master_addr = os.getenv("MASTER_ADDR", None)
 ddp_master_port = os.getenv("MASTER_PORT", None)
+ddp_backend = os.getenv("DDP_BACKEND", "nccl")
 ddp_enabled = ddp_world_size > 1
 is_master = ddp_rank == 0
 if ddp_enabled:
     if ddp_local_rank is None:
         ddp_local_rank = 0
-    if not torch.cuda.is_available():
+    if ddp_backend not in ("nccl", "gloo"):
+        raise RuntimeError(f"Unsupported DDP backend: {ddp_backend}")
+    if ddp_backend == "nccl" and not torch.cuda.is_available():
         raise RuntimeError("DDP requested without CUDA availability.")
     import torch.distributed as dist
-    dist.init_process_group(backend="nccl")
+    dist.init_process_group(backend=ddp_backend)
 
 # Select the device for this process.
-device = pick_device(ddp_local_rank if ddp_enabled else None)
+if ddp_enabled and ddp_backend == "gloo":
+    device = torch.device("cpu")
+else:
+    device = pick_device(ddp_local_rank if ddp_enabled else None)
 info = device_info(device)
 if is_master:
     print_device_info(info)

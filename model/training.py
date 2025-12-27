@@ -126,8 +126,7 @@ config.BATCH_SIZE = config.align_micro_batch_size(
 
 # Compile the model for faster training.
 if device.type == "cuda":
-    if is_master:
-        print("Compiling the model for faster training...")
+    print("Compiling the model for faster training...") if is_master else None
     model = torch.compile(model)
 
 param_count, quantization = config.model_info(model)
@@ -192,8 +191,7 @@ dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
 total_rows_by_spec = {}
 estimated_total_tokens = 0
 
-if is_master:
-    print("Datasets:")
+print("Datasets:") if is_master else None
 for dataset_index, spec in enumerate(dataset_specs):
     raw_dataset = load_dataset_from_spec(
         spec,
@@ -210,8 +208,7 @@ for dataset_index, spec in enumerate(dataset_specs):
     )
     avg_tokens, est_total_tokens = token_estimator.estimate_streaming(raw_dataset, total_rows)
     estimated_total_tokens += est_total_tokens
-    if is_master:
-        print(f"    {spec}: avg_tokens={avg_tokens:.1f}, est_tokens={est_total_tokens}")
+    print(f"    {spec}: avg_tokens={avg_tokens:.1f}, est_tokens={est_total_tokens}") if is_master else None
 
 # Resolve model size for token budgeting.
 param_count, _ = config.model_info(model)
@@ -323,8 +320,7 @@ for dataset_index, spec in enumerate(dataset_specs):
     # Skip datasets that are already fully consumed by resume offsets.
     total_rows = total_rows_by_spec.get(spec["spec"])
     if is_resume_exhausted(row_offset, total_rows):
-        if is_master:
-            print(f"Skipping exhausted dataset {spec['spec']}: row_offset {row_offset} >= total_rows {total_rows}")
+        print(f"Skipping exhausted dataset {spec['spec']}: row_offset {row_offset} >= total_rows {total_rows}") if is_master else None
         continue
     data_files, in_shard_offset, shard_label = resolve_resume_plan(
         spec,
@@ -339,12 +335,10 @@ for dataset_index, spec in enumerate(dataset_specs):
     )
     if row_offset > 0:
         if data_files is None:
-            if is_master:
-                print(f"Resume rows (linear): {spec['spec']} -> {row_offset}")
+            print(f"Resume rows (linear): {spec['spec']} -> {row_offset}") if is_master else None
             raw_streaming = raw_streaming.skip(row_offset)
         else:
-            if is_master:
-                print(f"Resume rows: {spec['spec']} -> {shard_label} +{in_shard_offset}")
+            print(f"Resume rows: {spec['spec']} -> {shard_label} +{in_shard_offset}") if is_master else None
             raw_streaming = raw_streaming.skip(in_shard_offset)
     packed = build_packed_dataset(
         raw_streaming,
@@ -404,8 +398,7 @@ def _request_stop(signum, frame):
     stop_requested = True
 signal.signal(signal.SIGINT, _request_stop)
 
-if is_master:
-    print("Starting training loop...", flush=True)
+print("Starting training loop...", flush=True) if is_master else None
 for current_epoch in itertools.count(resume_epoch):
     # Reset row counters at epoch boundaries beyond the resume epoch.
     if current_epoch != resume_epoch:

@@ -294,8 +294,8 @@ def plot_with_completion(points):
     finally:
         if was_training:
             model.train()
-    formatted = progress.format_completion("Validation |> ", completion)
-    return formatted + "\n"
+    formatted = progress.format_completion("Validation: ", f"{config.PLOT_COMPLETION_PROMPT}|>{completion}")
+    return f"{chart}\n{formatted}\n"
 
 
 
@@ -539,6 +539,7 @@ for current_epoch in itertools.count(resume_epoch):
             next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
+        plot_printed = False
         if is_master:
             plot_printed = progress.tick(
                 logged_loss,
@@ -549,6 +550,18 @@ for current_epoch in itertools.count(resume_epoch):
                 current_step,
                 remaining_tokens=remaining_tokens,
             )
+
+        if ddp_enabled:
+            plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)
+            dist.broadcast(plot_flag, src=0)
+            plot_printed = bool(plot_flag.item())
+            if plot_printed:
+                loss_tensor = torch.tensor([micro_loss_total], device=device)
+                gathered = [torch.zeros_like(loss_tensor) for _ in range(ddp_world_size)]
+                dist.all_gather(gathered, loss_tensor)
+                if is_master:
+                    losses = " ".join(f"{idx}={value.item():.2f}" for idx, value in enumerate(gathered))
+                    print(f"ddp-losses: {losses}", flush=True)
 
         # Emit a per-rank input sample for shard sanity checks.
         if debug_level >= 1:
@@ -626,4 +639,5 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
+
 

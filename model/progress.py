@@ -55,7 +55,6 @@ class ProgressLogger:
         # Log throughput and loss for every tick (caller controls cadence).
         self.total_samples += batch_size
         elapsed = now - self.last_tick_time
-        avg_loss = loss_value
         samples_per_sec = batch_size / elapsed if elapsed > 0 else 0.0
         tokens_per_sec = token_count / elapsed if elapsed > 0 else 0.0
         self.samples_per_sec = samples_per_sec
@@ -76,7 +75,7 @@ class ProgressLogger:
             f"Epoch {epoch+1} | "
             f"Step {step+1} | "
             f"Global {self.global_step+1} | "
-            f"Loss {self._format_loss(avg_loss)} | "
+            f"Loss {self._format_loss(loss_value)} | "
             f"LR {self._format_lr(lr)} | "
             f"Samples/s {self._format_rate(samples_per_sec)} | "
             f"Tokens/s {self._format_rate(tokens_per_sec)} | "

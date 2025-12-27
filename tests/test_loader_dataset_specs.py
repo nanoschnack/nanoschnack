@@ -25,6 +25,15 @@ class DatasetSpecTests(unittest.TestCase):
         self.assertEqual(specs[1]["path"], "/tmp/goethe.txt")
         self.assertEqual(specs[1]["text_key"], "body")
 
+    def test_parse_dataset_specs_with_config(self):
+        specs = parse_dataset_specs("hf:org/repo:web:onemillionposts:text")
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["kind"], "hf")
+        self.assertEqual(specs[0]["repo_id"], "org/repo")
+        self.assertEqual(specs[0]["name"], "web")
+        self.assertEqual(specs[0]["split"], "onemillionposts")
+        self.assertEqual(specs[0]["text_key"], "text")
+
     def test_load_dataset_from_txt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "sample.txt"

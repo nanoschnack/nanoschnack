@@ -294,10 +294,9 @@ def plot_with_completion(points):
     finally:
         if was_training:
             model.train()
-    formatted = progress.format_completion("Validation: ", completion)
-    return (
-        f"{formatted}"
-    )
+    formatted = progress.format_completion("Validation |> ", completion)
+    return formatted + "\n"
+
 
 
 # %% [markdown]

@@ -26,19 +26,22 @@ from device import device_info, pick_device, print_ddp_info, print_device_info, 
 # Setup distributed data parallel (DDP)
 ddp_rank = int(os.getenv("RANK", "0"))
 ddp_world_size = int(os.getenv("WORLD_SIZE", "1"))
-ddp_local_rank = int(os.getenv("LOCAL_RANK", "0"))
+ddp_local_rank_env = os.getenv("LOCAL_RANK")
+ddp_local_rank = int(ddp_local_rank_env) if ddp_local_rank_env is not None else None
 ddp_master_addr = os.getenv("MASTER_ADDR", None)
 ddp_master_port = os.getenv("MASTER_PORT", None)
 ddp_enabled = ddp_world_size > 1
 is_master = ddp_rank == 0
 if ddp_enabled:
+    if ddp_local_rank is None:
+        ddp_local_rank = 0
     if not torch.cuda.is_available():
         raise RuntimeError("DDP requested without CUDA availability.")
     import torch.distributed as dist
     dist.init_process_group(backend="nccl")
 
 # Select the device for this process.
-device = pick_device(ddp_local_rank)
+device = pick_device(ddp_local_rank if ddp_enabled else None)
 info = device_info(device)
 if is_master:
     print_device_info(info)
@@ -175,7 +178,7 @@ if is_notebook:
 # ## Load the Training Data
 
 # %%
-from datasets.utils.logging import enable_progress_bar, set_verbosity_warning
+from datasets.utils.logging import enable_progress_bar, set_verbosity_error
 from loader import (
     TokenEstimator,
     build_interleaved_dataset,
@@ -190,7 +193,7 @@ from resume import build_resume_state, is_resume_exhausted, normalize_resume_row
 import math
 
 # Download shards on demand and shuffle within each dataset.
-set_verbosity_warning()
+set_verbosity_error()
 enable_progress_bar()
 
 # Cache dataset specs for reuse across steps.
@@ -219,7 +222,7 @@ for dataset_index, spec in enumerate(dataset_specs):
     )
     avg_tokens, est_total_tokens = token_estimator.estimate_streaming(raw_dataset, total_rows)
     estimated_total_tokens += est_total_tokens
-    print(f"    {spec}: avg_tokens={avg_tokens:.1f}, est_tokens={est_total_tokens}") if is_master else None
+    print(f"    {dataset_label(spec)}: avg_tokens={avg_tokens:.1f}, est_tokens={est_total_tokens}") if is_master else None
 
 # Resolve model size for token budgeting.
 param_count, _ = config.model_info(model)

@@ -357,9 +357,10 @@ def dataset_label(spec):
     # Produce a human-readable label for dataset logging.
     if spec["kind"] == "hf":
         name = spec.get("name")
+        split = spec.get("split", "train")
         if name:
-            return f"{spec['repo_id']}:{name}"
-        return spec["repo_id"]
+            return f"{spec['repo_id']}:{name}/{split}"
+        return f"{spec['repo_id']}:{split}"
     if spec["kind"] == "txt":
         return spec["path"]
     return spec.get("repo_id") or spec.get("path") or "unknown"

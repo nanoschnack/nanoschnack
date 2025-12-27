@@ -629,5 +629,8 @@ for current_epoch in itertools.count(resume_epoch):
     if stop_requested:
         break
 
+# Clean up the process group after training completes.
+if ddp_enabled:
+    dist.destroy_process_group()
 
 

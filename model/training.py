@@ -571,6 +571,17 @@ for current_epoch in itertools.count(resume_epoch):
         now = time.time()
         ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
         should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
+        if ddp_enabled:
+            # Sync stop requests across ranks.
+            stop_flag = torch.tensor(1 if stop_requested else 0, device=device)
+            dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
+            stop_requested = bool(stop_flag.item())
+            should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
+
+            # Sync checkpoint decision across ranks.
+            ckpt_flag = torch.tensor(1 if (is_master and should_checkpoint) else 0, device=device)
+            dist.broadcast(ckpt_flag, src=0)
+            should_checkpoint = bool(ckpt_flag.item())
         if should_checkpoint:
             # Build the resume state for the checkpoint.
             resume_state = build_resume_state(source_row_counts, dataset_specs)

@@ -198,6 +198,8 @@ for dataset_index, spec in enumerate(dataset_specs):
         cache_dir=data_dir,
         streaming=True,
     )
+    if ddp_enabled and ddp_world_size > 1:
+        raw_dataset = raw_dataset.shard(num_shards=ddp_world_size, index=ddp_rank)
     total_rows = resolve_total_rows(raw_dataset, spec)
     total_rows_by_spec[spec["spec"]] = total_rows
     if total_rows is None:
@@ -300,7 +302,15 @@ if resume_tokens:
 # Ensure current specs always have a default offset for safe lookups.
 # This drives shard/row skipping during resume and checkpointing.
 resume_rows = normalize_resume_rows(resume_state, dataset_specs)
-source_row_counts = dict(resume_rows) # Track row offsets for shard-aware resume.
+
+# Convert global resume offsets to per-rank offsets for sharded streams.
+if ddp_enabled and ddp_world_size > 1:
+    def _per_rank_row_offset(row_offset):
+        return 0 if row_offset <= ddp_rank else (row_offset - ddp_rank + ddp_world_size - 1) // ddp_world_size
+    resume_rows = {spec_key: _per_rank_row_offset(offset) for spec_key, offset in resume_rows.items()}
+
+# Track row offsets for shard-aware resume.
+source_row_counts = dict(resume_rows)
 
 # Report when resuming via the legacy sample index.
 use_row_resume = any(resume_rows.get(spec["spec"], 0) > 0 for spec in dataset_specs)
@@ -333,6 +343,8 @@ for dataset_index, spec in enumerate(dataset_specs):
         streaming=True,
         data_files=data_files,
     )
+    if ddp_enabled and ddp_world_size > 1:
+        raw_streaming = raw_streaming.shard(num_shards=ddp_world_size, index=ddp_rank)
     if row_offset > 0:
         if data_files is None:
             print(f"Resume rows (linear): {spec['spec']} -> {row_offset}") if is_master else None
@@ -504,14 +516,34 @@ for current_epoch in itertools.count(resume_epoch):
         ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
         should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
         if should_checkpoint:
-            checkpointer.save_latest(
-                current_epoch,
-                current_step,
-                progress.global_step,
-                current_sample_index,
-                progress.total_tokens,
-                resume_state=build_resume_state(source_row_counts, dataset_specs),
-            )
+            # Build the resume state for the checkpoint.
+            resume_state = build_resume_state(source_row_counts, dataset_specs)
+
+            # Aggregate per-rank row counts for global resume offsets.
+            if ddp_enabled and ddp_world_size > 1:
+                spec_keys = [spec["spec"] for spec in dataset_specs]
+                counts_tensor = torch.tensor(
+                    [source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
+                    dtype=torch.long,
+                    device=device,
+                )
+                dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
+                if is_master:
+                    global_counts = dict(source_row_counts)
+                    for spec_key, value in zip(spec_keys, counts_tensor.tolist()):
+                        global_counts[spec_key] = int(value)
+                    resume_state = build_resume_state(global_counts, dataset_specs)
+
+            # Persist checkpoints only from the master process.
+            if is_master:
+                checkpointer.save_latest(
+                    current_epoch,
+                    current_step,
+                    progress.global_step,
+                    current_sample_index,
+                    progress.total_tokens,
+                    resume_state=resume_state,
+                )
             last_ckpt_time = now
 
         # Exit after the current step if SIGINT was requested.

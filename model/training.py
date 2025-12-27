@@ -538,15 +538,16 @@ for current_epoch in itertools.count(resume_epoch):
             next_total_tokens = progress.total_tokens + logged_token_total
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
-        progress.tick(
-            logged_loss_total / micro_steps,
-            micro_sample_total,
-            logged_token_total,
-            optimizer.param_groups[0]["lr"],
-            current_epoch,
-            current_step,
-            remaining_tokens=remaining_tokens,
-        )
+        if is_master:
+            progress.tick(
+                logged_loss_total / micro_steps,
+                micro_sample_total,
+                logged_token_total,
+                optimizer.param_groups[0]["lr"],
+                current_epoch,
+                current_step,
+                remaining_tokens=remaining_tokens,
+            )
 
         # Print a target decode alongside log output when debugging.
         if debug_level >= 1 and is_master:

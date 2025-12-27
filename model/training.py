@@ -106,15 +106,16 @@ model = GPT(
     hidden_size=hidden_size,
     context_len=context_len,
 ).to(device).train()
-
-# Now with the tokenizer derive training parameters like batch size.
-tuned_batch_size = find_max_batch_size(
-    model,
-    vocab_size=tokenizer.get_vocab_size(),
-    seq_len=context_len,
-    device=device,
-    start=config.BATCH_SIZE,
-)
+# Tune batch size on the master rank only.
+tuned_batch_size = None
+if is_master:
+    tuned_batch_size = find_max_batch_size(
+        model,
+        vocab_size=tokenizer.get_vocab_size(),
+        seq_len=context_len,
+        device=device,
+        start=config.BATCH_SIZE,
+    )
 if tuned_batch_size:
     config.BATCH_SIZE = tuned_batch_size
 config.BATCH_SIZE = config.align_micro_batch_size(
@@ -122,10 +123,20 @@ config.BATCH_SIZE = config.align_micro_batch_size(
     config.MACRO_BATCH_SIZE,
 )
 
+# Sync the resolved batch size to all ranks.
+if ddp_enabled:
+    batch_tensor = torch.tensor(config.BATCH_SIZE, device=device)
+    dist.broadcast(batch_tensor, src=0)
+    config.BATCH_SIZE = int(batch_tensor.item())
+
 # Compile the model for faster training.
 if device.type == "cuda":
     print("Compiling the model for faster training...") if is_master else None
     model = torch.compile(model)
+
+# Wrap the model for distributed training.
+if ddp_enabled:
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[ddp_local_rank])
 
 param_count, quantization = config.model_info(model)
 if is_master:

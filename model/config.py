@@ -89,8 +89,7 @@ DATASET_SPECS = _env_str(
     "hf:coral-nlp/german-commons:web:onemillionposts:text,"
     "hf:coral-nlp/german-commons:web:wikipedia:text,"
     "hf:coral-nlp/german-commons:web:youtubecommons:text,"
-    "hf:coral-nlp/german-commons:cultural:wikivoyage:text,"
-    "hf:coral-nlp/german-commons:cultural:wikiquote:text",
+    "hf:coral-nlp/german-commons:cultural:wikivoyage:text",
 )
 
 ###

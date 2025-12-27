@@ -341,8 +341,18 @@ def load_dataset_from_spec(spec, cache_dir=None, streaming=True, data_files=None
         return _rename_text_column(dataset, spec.get("text_key", "text"))
     raise ValueError(f"Unsupported dataset spec kind: {spec['kind']}")
 
-def resolve_total_rows(dataset, spec):
+def resolve_total_rows(dataset, spec, cache_dir=None):
     # Resolve total rows for streaming token estimates.
+    if spec["kind"] == "hf":
+        # Prefer parquet metadata for accurate row counts on streaming datasets.
+        files, row_counts = _load_hf_parquet_index(
+            spec["repo_id"],
+            spec.get("split", "train"),
+            cache_dir=cache_dir,
+            name=spec.get("name"),
+        )
+        if row_counts:
+            return sum(row_counts)
     if spec["kind"] == "txt":
         # Text files have no metadata, so count lines on disk.
         return sum(_count_text_rows(path) for path in _resolve_text_files(spec["path"]))

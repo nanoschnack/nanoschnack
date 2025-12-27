@@ -235,7 +235,7 @@ for dataset_index, spec in enumerate(dataset_specs):
         except (IndexError, ValueError) as exc:
             if is_master:
                 print(f"    Skipping sharding for {dataset_label(spec)}: {exc}")
-    total_rows = resolve_total_rows(raw_dataset, spec)
+    total_rows = resolve_total_rows(raw_dataset, spec, cache_dir=data_dir)
     total_rows_by_spec[spec["spec"]] = total_rows
     if total_rows is None:
         raise ValueError("Dataset split metadata missing num_examples for token estimate.")
@@ -261,6 +261,7 @@ dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
 if is_master:
     print(f"    Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}")
     print(f"    Target: epochs={target_epochs:,} target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
+
 
 # %% [markdown]
 # ## Progress and Plotting

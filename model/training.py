@@ -24,18 +24,16 @@ import torch
 from device import device_info, pick_device, print_ddp_info, print_device_info, print_sdpa_info
 
 # Setup distributed data parallel (DDP)
-ddp_enabled = False
-is_master = True
-ddp_local_rank = 0
-if os.getenv("RANK", None) is not None and torch.cuda.is_available():
-    ddp_enabled = True
-    ddp_rank = int(os.getenv("RANK", "0"))
-    ddp_world_size = int(os.getenv("WORLD_SIZE", "1"))
-    ddp_local_rank = int(os.getenv("LOCAL_RANK", "0"))
-    ddp_master_addr = os.getenv("MASTER_ADDR", None)
-    ddp_master_port = os.getenv("MASTER_PORT", None)
-    is_master = ddp_rank == 0
-
+ddp_rank = int(os.getenv("RANK", "0"))
+ddp_world_size = int(os.getenv("WORLD_SIZE", "1"))
+ddp_local_rank = int(os.getenv("LOCAL_RANK", "0"))
+ddp_master_addr = os.getenv("MASTER_ADDR", None)
+ddp_master_port = os.getenv("MASTER_PORT", None)
+ddp_enabled = ddp_world_size > 1
+is_master = ddp_rank == 0
+if ddp_enabled:
+    if not torch.cuda.is_available():
+        raise RuntimeError("DDP requested without CUDA availability.")
     import torch.distributed as dist
     dist.init_process_group(backend="nccl")
 
@@ -198,7 +196,7 @@ for dataset_index, spec in enumerate(dataset_specs):
         cache_dir=data_dir,
         streaming=True,
     )
-    if ddp_enabled and ddp_world_size > 1:
+    if ddp_enabled:
         raw_dataset = raw_dataset.shard(num_shards=ddp_world_size, index=ddp_rank)
     total_rows = resolve_total_rows(raw_dataset, spec)
     total_rows_by_spec[spec["spec"]] = total_rows
@@ -304,7 +302,7 @@ if resume_tokens:
 resume_rows = normalize_resume_rows(resume_state, dataset_specs)
 
 # Convert global resume offsets to per-rank offsets for sharded streams.
-if ddp_enabled and ddp_world_size > 1:
+if ddp_enabled:
     def _per_rank_row_offset(row_offset):
         return 0 if row_offset <= ddp_rank else (row_offset - ddp_rank + ddp_world_size - 1) // ddp_world_size
     resume_rows = {spec_key: _per_rank_row_offset(offset) for spec_key, offset in resume_rows.items()}
@@ -343,7 +341,7 @@ for dataset_index, spec in enumerate(dataset_specs):
         streaming=True,
         data_files=data_files,
     )
-    if ddp_enabled and ddp_world_size > 1:
+    if ddp_enabled:
         raw_streaming = raw_streaming.shard(num_shards=ddp_world_size, index=ddp_rank)
     if row_offset > 0:
         if data_files is None:
@@ -483,8 +481,16 @@ for current_epoch in itertools.count(resume_epoch):
         # Log progress and plot loss history.
         next_total_tokens = progress.total_tokens + micro_token_total
         remaining_tokens = max(target_tokens - next_total_tokens, 0)
+
+        # Average the micro loss across ranks for consistent logging.
+        logged_loss_total = micro_loss_total
+        if ddp_enabled:
+            loss_tensor = torch.tensor(micro_loss_total, device=device)
+            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+            logged_loss_total = loss_tensor.item() / ddp_world_size
+
         progress.tick(
-            micro_loss_total / micro_steps,
+            logged_loss_total / micro_steps,
             micro_sample_total,
             micro_token_total,
             optimizer.param_groups[0]["lr"],
@@ -520,7 +526,7 @@ for current_epoch in itertools.count(resume_epoch):
             resume_state = build_resume_state(source_row_counts, dataset_specs)
 
             # Aggregate per-rank row counts for global resume offsets.
-            if ddp_enabled and ddp_world_size > 1:
+            if ddp_enabled:
                 spec_keys = [spec["spec"] for spec in dataset_specs]
                 counts_tensor = torch.tensor(
                     [source_row_counts.get(spec_key, 0) for spec_key in spec_keys],

@@ -572,6 +572,8 @@ for current_epoch in itertools.count(resume_epoch):
                     progress.total_tokens,
                     resume_state=resume_state,
                 )
+            if ddp_enabled:
+                dist.barrier()
             last_ckpt_time = now
 
         # Exit after the current step if SIGINT was requested.

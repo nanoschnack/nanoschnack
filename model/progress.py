@@ -188,7 +188,7 @@ class ProgressLogger:
 
     def _format_loss(self, value, width=6):
         # Cap loss to two digits before the decimal to stabilize width.
-        text = f"{value:05.2f}" if value < 100 else f"{value:05.1f}"
+        text = f"{value:5.2f}" if value < 100 else f"{value:5.1f}"
         return text.rjust(width) if len(text) < width else text
 
     def _format_lr(self, value, width=9):

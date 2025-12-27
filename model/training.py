@@ -312,6 +312,7 @@ from scheduler import build_warmup_cosine_tokens
 from torch.utils.data import DataLoader
 import itertools
 import os
+import random
 import signal
 import time
 
@@ -550,15 +551,16 @@ for current_epoch in itertools.count(resume_epoch):
                 remaining_tokens=remaining_tokens,
             )
 
-        # Print a short target tail alongside log output when debugging.
-        if debug_level >= 1 and is_master:
-            target_ids = targets[-1]
+        # Print a per-rank input snippet when debugging.
+        if debug_level >= 1:
+            sample_index = random.randrange(inputs.size(0))
+            input_ids_sample = inputs[sample_index]
             if attention_mask is not None:
-                mask = attention_mask[-1, 1:].bool()
-                target_ids = target_ids[mask]
-            decoded_target = tokenizer.decode(target_ids.tolist())
-            tail = decoded_target[-80:]
-            print(f"Input: {tail}")
+                mask = attention_mask[sample_index, :-1].bool()
+                input_ids_sample = input_ids_sample[mask]
+            decoded_input = tokenizer.decode(input_ids_sample.tolist())
+            snippet = decoded_input[-120:]
+            print(f"{ddp_rank}: {snippet}")
 
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

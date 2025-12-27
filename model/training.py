@@ -151,7 +151,13 @@ if ddp_enabled:
 
 param_count, quantization = config.model_info(model)
 if is_master:
-    config.print_training_hyperparams(param_count=param_count, quantization=quantization)
+    config.print_training_hyperparams(
+        param_count=param_count,
+        quantization=quantization,
+        ddp_enabled=ddp_enabled,
+        ddp_world_size=ddp_world_size,
+    )
+
 
 # %% [markdown]
 # ## Create vizualization of the model
@@ -288,10 +294,9 @@ def plot_with_completion(points):
     finally:
         if was_training:
             model.train()
-    return (
-        f"{chart}\n\ncompletion ({config.PLOT_COMPLETION_TOKENS} tokens)\n"
-        f"{config.PLOT_COMPLETION_PROMPT}{completion}"
-    )
+    formatted = progress.format_completion("Validation |> ", completion)
+    return formatted + "\n"
+
 
 
 # %% [markdown]
@@ -417,9 +422,9 @@ current_step = resume_step
 current_sample_index = resume_sample_index
 current_micro_step = 0
 micro_steps = (config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE
-micro_loss_total = 0.0
 micro_token_total = 0
 micro_sample_total = 0
+micro_loss_total = 0
 
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
@@ -491,19 +496,17 @@ for current_epoch in itertools.count(resume_epoch):
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
             logits = model(inputs, attention_mask=attn_mask)
             loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+            loss /= micro_steps # to make micro_loss_total equal average loss over the macro batch
 
-        # Scale loss for gradient accumulation.
-        scaled_loss = loss / micro_steps
-
-        # Avoid all-reduce on accumulation steps.
+            # Avoid all-reduce on accumulation steps.
         with model.no_sync() if ddp_enabled and current_micro_step != micro_steps - 1 else contextlib.nullcontext():
-            scaled_loss.backward()
+            loss.backward()
 
         # Micro step bookkeeping.
-        micro_loss_total += loss.item()
         token_count = attention_mask[:, 1:].sum().item()
         micro_token_total += token_count
         micro_sample_total += input_ids.size(0)
+        micro_loss_total += loss.item()
 
         # Advance per-source row counters for resume safety.
         row_counts = batch["row_count"].tolist()
@@ -524,40 +527,32 @@ for current_epoch in itertools.count(resume_epoch):
         remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
         # Average the micro loss across ranks for consistent logging.
-        logged_loss_total = micro_loss_total
-
-        # Sum token counts across ranks for accurate progress.
-        logged_token_total = micro_token_total
+        logged_loss = micro_loss_total
+        logged_tokens = micro_token_total
         if ddp_enabled:
             loss_tensor = torch.tensor(micro_loss_total, device=device)
             token_tensor = torch.tensor(micro_token_total, device=device)
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
             dist.all_reduce(token_tensor, op=dist.ReduceOp.SUM)
-            logged_loss_total = loss_tensor.item() / ddp_world_size
-            logged_token_total = int(token_tensor.item())
-            next_total_tokens = progress.total_tokens + logged_token_total
+            logged_loss = loss_tensor.item() / ddp_world_size
+            logged_tokens = int(token_tensor.item())
+            next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
         if is_master:
-            progress.tick(
-                logged_loss_total / micro_steps,
+            plot_printed = progress.tick(
+                logged_loss,
                 micro_sample_total,
-                logged_token_total,
+                logged_tokens,
                 optimizer.param_groups[0]["lr"],
                 current_epoch,
                 current_step,
                 remaining_tokens=remaining_tokens,
             )
 
-        # Print a short target tail alongside log output when debugging.
-        if debug_level >= 1 and is_master:
-            target_ids = targets[-1]
-            if attention_mask is not None:
-                mask = attention_mask[-1, 1:].bool()
-                target_ids = target_ids[mask]
-            decoded_target = tokenizer.decode(target_ids.tolist())
-            tail = decoded_target[-80:]
-            print(f"Input: {tail}")
+        # Emit a per-rank input sample for shard sanity checks.
+        if debug_level >= 1:
+            progress.print_input_sample(ddp_rank, inputs, attention_mask, tokenizer)
 
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -628,5 +623,7 @@ for current_epoch in itertools.count(resume_epoch):
     if stop_requested:
         break
 
-
+# Clean up the process group after training completes.
+if ddp_enabled:
+    dist.destroy_process_group()
 

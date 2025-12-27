@@ -1,4 +1,7 @@
+import random
+import shutil
 import time
+import unicodedata
 from collections import deque
 
 
@@ -55,7 +58,6 @@ class ProgressLogger:
         # Log throughput and loss for every tick (caller controls cadence).
         self.total_samples += batch_size
         elapsed = now - self.last_tick_time
-        avg_loss = loss_value
         samples_per_sec = batch_size / elapsed if elapsed > 0 else 0.0
         tokens_per_sec = token_count / elapsed if elapsed > 0 else 0.0
         self.samples_per_sec = samples_per_sec
@@ -76,7 +78,7 @@ class ProgressLogger:
             f"Epoch {epoch+1} | "
             f"Step {step+1} | "
             f"Global {self.global_step+1} | "
-            f"Loss {self._format_loss(avg_loss)} | "
+            f"Loss {self._format_loss(loss_value)} | "
             f"LR {self._format_lr(lr)} | "
             f"Samples/s {self._format_rate(samples_per_sec)} | "
             f"Tokens/s {self._format_rate(tokens_per_sec)} | "
@@ -86,6 +88,7 @@ class ProgressLogger:
         self.last_tick_time = now
 
         # Plot loss every minute for the first 10 minutes, then every 10 minutes.
+        plot_printed = False
         interval = (
             self.warmup_plot_interval
             if (now - self.start_time) < self.warmup_window_secs
@@ -94,9 +97,49 @@ class ProgressLogger:
         if now - self.last_plot_time >= interval:
             print(self.plot_fn(list(self.loss_history)))
             self.last_plot_time = now
+            plot_printed = True
 
         # Keep a global step counter for resuming logs across restarts.
         self.global_step += 1
+        return plot_printed
+
+    def print_input_sample(self, rank, inputs, attention_mask, tokenizer, width=120, sample_index=None):
+        # Emit a per-rank input sample for shard sanity checks.
+        if sample_index is None:
+            sample_index = random.randrange(inputs.size(0))
+        input_ids = inputs[sample_index]
+        if attention_mask is not None:
+            mask = attention_mask[sample_index]
+            if mask.size(0) == inputs.size(1) + 1:
+                mask = mask[:-1]
+            if mask.size(0) == inputs.size(1):
+                input_ids = input_ids[mask.bool()]
+        decoded_input = tokenizer.decode(input_ids.tolist())
+        escaped = (
+            decoded_input.replace("\\", "\\\\")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        )
+        prefix = f"{rank}: "
+        term_width = shutil.get_terminal_size((width, 20)).columns
+        max_len = max(0, term_width - self._display_width(prefix))
+        snippet = self._truncate_to_width(escaped, max_len)
+        print(f"{prefix}{snippet}")
+
+    def format_completion(self, prompt, completion, width=120):
+        # Format a completion block with escaped, truncated content.
+        escaped = (
+            completion.replace("\\", "\\\\")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        )
+        prefix = prompt
+        term_width = shutil.get_terminal_size((width, 20)).columns
+        max_len = max(0, term_width - self._display_width(prefix))
+        snippet = self._truncate_to_width(escaped, max_len)
+        return f"{prefix}{snippet}"
 
     def _format_eta(self, remaining_units, units_per_sec):
         # Format an ETA string from remaining samples and throughput.
@@ -143,12 +186,40 @@ class ProgressLogger:
             return f"{value:.2f}"
         return f"{value:.3f}"
 
-    def _format_loss(self, value, width=6):
+    def _format_loss(self, value, width=5):
         # Cap loss to two digits before the decimal to stabilize width.
-        text = f"{value:05.2f}" if value < 100 else f"{value:05.1f}"
+        text = f"{value:5.2f}" if value < 100 else f"{value:5.1f}"
         return text.rjust(width) if len(text) < width else text
 
-    def _format_lr(self, value, width=9):
-        # Allow non-exponent LR while keeping a fixed width.
-        text = f"{value:.8f}".rstrip("0").rstrip(".")
+    def _format_lr(self, value, width=8):
+        # Keep a fixed-width LR with six decimals.
+        text = f"{value:.6f}"
         return text.rjust(width) if len(text) < width else text
+
+    def _display_width(self, text):
+        # Approximate terminal column width for escaped strings.
+        width = 0
+        for char in text:
+            if unicodedata.combining(char):
+                continue
+            east_asian = unicodedata.east_asian_width(char)
+            width += 2 if east_asian in ("W", "F") else 1
+        return width
+
+    def _truncate_to_width(self, text, max_width):
+        # Truncate text to fit within the requested display width.
+        if max_width <= 0:
+            return ""
+        width = 0
+        out = []
+        for char in text:
+            if unicodedata.combining(char):
+                out.append(char)
+                continue
+            east_asian = unicodedata.east_asian_width(char)
+            char_width = 2 if east_asian in ("W", "F") else 1
+            if width + char_width > max_width:
+                break
+            out.append(char)
+            width += char_width
+        return "".join(out)

@@ -65,12 +65,18 @@ def _resolve_vocab_size(state_dict):
 
 
 def _select_state_dict_key(state_dict, key):
-    # Find an exact or compiled-prefixed key in a state dict.
+    # Find a matching key across compiled or distributed wrappers.
     if key in state_dict:
         return key
     prefixed = f"_orig_mod.{key}"
     if prefixed in state_dict:
         return prefixed
+    module_key = f"module.{key}"
+    if module_key in state_dict:
+        return module_key
+    module_prefixed = f"module._orig_mod.{key}"
+    if module_prefixed in state_dict:
+        return module_prefixed
     return None
 
 
@@ -158,6 +164,11 @@ def load_model_state_dict(model, state_dict):
             return "compiled"
         if _load_into_compiled_wrapper(model, state_dict):
             return "compiled"
+        if hasattr(model, "module"):
+            try:
+                return load_model_state_dict(model.module, state_dict)
+            except Exception:
+                pass
         remapped = _remap_legacy_state_dict(state_dict)
         if remapped is None:
             raise

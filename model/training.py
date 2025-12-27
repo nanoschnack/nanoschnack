@@ -456,7 +456,10 @@ for current_epoch in itertools.count(resume_epoch):
 
         # Scale loss for gradient accumulation.
         scaled_loss = loss / micro_steps
-        scaled_loss.backward()
+
+        # Avoid all-reduce on accumulation steps.
+        with model.no_sync() if ddp_enabled and current_micro_step != micro_steps - 1 else contextlib.nullcontext():
+            scaled_loss.backward()
 
         # Micro step bookkeeping.
         micro_loss_total += loss.item()

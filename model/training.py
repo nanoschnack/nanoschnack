@@ -219,7 +219,16 @@ for dataset_index, spec in enumerate(dataset_specs):
         streaming=True,
     )
     if ddp_enabled:
-        raw_dataset = raw_dataset.shard(num_shards=ddp_world_size, index=ddp_rank)
+        # Skip sharding when the dataset does not expose data sources for splitting.
+        shard_count = getattr(getattr(raw_dataset, "_ex_iterable", None), "n_shards", None)
+        try:
+            if shard_count is None or shard_count >= ddp_world_size:
+                raw_dataset = raw_dataset.shard(num_shards=ddp_world_size, index=ddp_rank)
+            elif is_master:
+                print(f"    Skipping sharding for {dataset_label(spec)}: shards={shard_count}")
+        except (IndexError, ValueError) as exc:
+            if is_master:
+                print(f"    Skipping sharding for {dataset_label(spec)}: {exc}")
     total_rows = resolve_total_rows(raw_dataset, spec)
     total_rows_by_spec[spec["spec"]] = total_rows
     if total_rows is None:

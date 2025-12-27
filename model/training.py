@@ -151,7 +151,13 @@ if ddp_enabled:
 
 param_count, quantization = config.model_info(model)
 if is_master:
-    config.print_training_hyperparams(param_count=param_count, quantization=quantization)
+    config.print_training_hyperparams(
+        param_count=param_count,
+        quantization=quantization,
+        ddp_enabled=ddp_enabled,
+        ddp_world_size=ddp_world_size,
+    )
+
 
 # %% [markdown]
 # ## Create vizualization of the model

@@ -187,7 +187,12 @@ def model_info(model):
     return _model_param_count(model), _model_quantization(model)
 
 
-def print_training_hyperparams(param_count=None, quantization=None):
+def print_training_hyperparams(
+    param_count=None,
+    quantization=None,
+    ddp_enabled=False,
+    ddp_world_size=None,
+):
     """Print the training-related hyperparameters."""
     lines = _architecture_lines() + [
         "Training:",
@@ -199,6 +204,18 @@ def print_training_hyperparams(param_count=None, quantization=None):
         f"  shuffle_buffer={SHUFFLE_BUFFER}",
         f"  dataset_specs={DATASET_SPECS}",
     ]
+    if ddp_enabled:
+        ddp_world_size = ddp_world_size or 1
+        ddp_local_macro_batch = MACRO_BATCH_SIZE // ddp_world_size
+        ddp_micro_steps = ddp_local_macro_batch // BATCH_SIZE
+        ddp_global_macro_batch = MACRO_BATCH_SIZE
+        lines += [
+            "DDP:",
+            f"  world_size={ddp_world_size} (number of ranks)",
+            f"  local_macro_batch={ddp_local_macro_batch} (macro batch per rank)",
+            f"  micro_steps={ddp_micro_steps} (local macro / batch_size)",
+            f"  global_macro_batch={ddp_global_macro_batch} (macro batch across ranks)",
+        ]
     if param_count is not None or quantization is not None:
         lines += [
             "Model:",

@@ -21,6 +21,9 @@ import contextlib
 import os
 import torch
 
+# Avoid tokenizers fork warnings in worker processes.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from device import device_info, pick_device, print_ddp_info, print_device_info, print_sdpa_info
 
 # Setup distributed data parallel (DDP)

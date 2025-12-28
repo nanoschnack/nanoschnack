@@ -269,7 +269,7 @@ class ProgressLogger:
 
     def _format_duration(self, seconds):
         if seconds < 1.0:
-            return f"{seconds * 1000:.0f}ms"
+            return f"{seconds * 1000:3.0f}ms"
         if seconds < 10.0:
             return f"{seconds:.2f}s"
         return f"{seconds:.1f}s"

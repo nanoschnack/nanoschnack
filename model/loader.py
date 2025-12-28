@@ -104,6 +104,16 @@ def load_dataset_source(repo_id, split="train", data_files=None, cache_dir=None,
         **kwargs,
     )
 
+
+def cap_streaming_rows(dataset, remaining_rows):
+    # Limit a streaming dataset to a fixed number of rows.
+    if remaining_rows is None:
+        return dataset
+    if remaining_rows <= 0:
+        return dataset.take(0)
+    return dataset.take(remaining_rows)
+
+
 def parse_dataset_specs(specs_str):
     # Parse a comma-separated list of dataset specs into dictionaries.
     if specs_str is None:

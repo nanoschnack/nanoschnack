@@ -16,6 +16,35 @@ def normalize_resume_rows(resume_state, dataset_specs):
     return resume_rows
 
 
+def cap_resume_rows(resume_rows, total_rows_by_spec):
+    # Clamp resume offsets to known totals and align full passes across specs.
+    if not total_rows_by_spec:
+        return dict(resume_rows)
+
+    adjusted = dict(resume_rows)
+    totals = {
+        spec_key: total_rows_by_spec.get(spec_key)
+        for spec_key in adjusted.keys()
+    }
+    valid_totals = {spec_key: total for spec_key, total in totals.items() if total}
+    if not valid_totals:
+        return adjusted
+
+    pass_counts = [
+        adjusted.get(spec_key, 0) // total
+        for spec_key, total in valid_totals.items()
+    ]
+    min_passes = min(pass_counts) if pass_counts else 0
+    if min_passes:
+        for spec_key, total in valid_totals.items():
+            adjusted[spec_key] = max(0, adjusted.get(spec_key, 0) - (min_passes * total))
+
+    for spec_key, total in valid_totals.items():
+        if adjusted.get(spec_key, 0) > total:
+            adjusted[spec_key] = total
+    return adjusted
+
+
 def build_resume_state(source_row_counts, dataset_specs):
     # Emit current specs first so checkpoints remain easy to read.
     datasets = []

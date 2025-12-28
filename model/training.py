@@ -211,13 +211,14 @@ from loader import (
     TokenEstimator,
     build_interleaved_dataset,
     build_packed_dataset,
+    cap_streaming_rows,
     load_dataset_from_spec,
     parse_dataset_specs,
     resolve_resume_plan,
     resolve_total_rows,
     dataset_label,
 )
-from resume import build_resume_state, is_resume_exhausted, normalize_resume_rows
+from resume import build_resume_state, cap_resume_rows, is_resume_exhausted, normalize_resume_rows
 import math
 
 # Download shards on demand and shuffle within each dataset.
@@ -323,6 +324,20 @@ if is_master and resume_info:
 # Ensure current specs always have a default offset for safe lookups.
 # This drives shard/row skipping during resume and checkpointing.
 resume_rows = normalize_resume_rows(resume_state, dataset_specs)
+resume_rows = cap_resume_rows(resume_rows, total_rows_by_spec)
+
+# Cap resume offsets to the known total rows to avoid invalid states.
+for spec in dataset_specs:
+    spec_key = spec["spec"]
+    row_offset = resume_rows.get(spec_key, 0)
+    total_rows = total_rows_by_spec.get(spec_key)
+    if total_rows is not None and row_offset > total_rows:
+        if is_master:
+            print(
+                f"Clamping resume rows for {spec_key}: {row_offset} -> {total_rows}",
+                flush=True,
+            )
+        resume_rows[spec_key] = total_rows
 
 # Track per-rank row counts for shard-aware resume.
 source_row_counts = {spec["spec"]: 0 for spec in dataset_specs}
@@ -378,6 +393,12 @@ for dataset_index, spec in enumerate(dataset_specs):
             raw_streaming = raw_streaming.skip(row_offset)
         else:
             print(f"Resume rows: {spec_key} -> {shard_label} +{in_shard_offset}") if is_master else None
+
+    # Cap each dataset to its remaining rows so exhausted specs stop contributing.
+    remaining_rows = None
+    if total_rows is not None:
+        remaining_rows = max(total_rows - row_offset, 0)
+    raw_streaming = cap_streaming_rows(raw_streaming, remaining_rows)
     if ddp_enabled:
         # Split the stream across ranks to avoid duplicate samples.
         raw_streaming = raw_streaming.filter(
@@ -663,7 +684,14 @@ for current_epoch in itertools.count(resume_epoch):
         if is_master and plot_printed:
             should_print_input = True
         if should_print_input:
-            progress.print_input_sample(ddp_rank, inputs, attention_mask, tokenizer)
+            progress.print_input_sample(
+                ddp_rank,
+                inputs,
+                attention_mask,
+                tokenizer,
+                source_ids=batch.get("source_id"),
+                dataset_specs=dataset_specs,
+            )
         if input_request:
             input_request = False
 

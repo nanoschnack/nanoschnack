@@ -223,6 +223,7 @@ enable_progress_bar()
 # Cache dataset specs for reuse across steps.
 dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
 
+
 # Track total rows per dataset for resume validation.
 total_rows_by_spec = {}
 estimated_total_tokens = 0
@@ -234,17 +235,6 @@ for dataset_index, spec in enumerate(dataset_specs):
         cache_dir=data_dir,
         streaming=True,
     )
-    if ddp_enabled:
-        # Skip sharding when the dataset does not expose data sources for splitting.
-        shard_count = getattr(getattr(raw_dataset, "_ex_iterable", None), "n_shards", None)
-        try:
-            if shard_count is None or shard_count >= ddp_world_size:
-                raw_dataset = raw_dataset.shard(num_shards=ddp_world_size, index=ddp_rank)
-            elif is_master:
-                print(f"    Skipping sharding for {dataset_label(spec)}: shards={shard_count}")
-        except (IndexError, ValueError) as exc:
-            if is_master:
-                print(f"    Skipping sharding for {dataset_label(spec)}: {exc}")
     total_rows = resolve_total_rows(raw_dataset, spec, cache_dir=data_dir)
     total_rows_by_spec[spec["spec"]] = total_rows
     if total_rows is None:
@@ -349,7 +339,6 @@ if ddp_enabled:
             except StopIteration:
                 pass
     dist.barrier()
-
 # Build packed datasets per source with row-offset resumes.
 # Resolve shard-aware resume plans, then stream from the right shard/offset.
 # Pack each source into fixed-length token blocks with source IDs.
@@ -357,16 +346,13 @@ if ddp_enabled:
 # Row offsets are tracked for checkpoint-safe restarts.
 packed_datasets = []
 for dataset_index, spec in enumerate(dataset_specs):
-    row_offset = resume_rows.get(spec["spec"], 0)
-    # Compute per-rank offsets after global resume mapping.
-    per_rank_offset = row_offset
-    if ddp_enabled:
-        per_rank_offset = 0 if row_offset <= ddp_rank else (row_offset - ddp_rank + ddp_world_size - 1) // ddp_world_size
+    spec_key = spec["spec"]
+    row_offset = resume_rows.get(spec_key, 0)
 
     # Skip datasets that are already fully consumed by resume offsets.
-    total_rows = total_rows_by_spec.get(spec["spec"])
+    total_rows = total_rows_by_spec.get(spec_key)
     if is_resume_exhausted(row_offset, total_rows):
-        print(f"Skipping exhausted dataset {spec['spec']}: row_offset {row_offset} >= total_rows {total_rows}") if is_master else None
+        print(f"Skipping exhausted dataset {spec_key}: row_offset {row_offset} >= total_rows {total_rows}") if is_master else None
         continue
     data_files, in_shard_offset, shard_label = resolve_resume_plan(
         spec,
@@ -380,26 +366,21 @@ for dataset_index, spec in enumerate(dataset_specs):
         data_files=data_files,
     )
 
-    # Apply shard-local resume offset before sharding.
+    # Apply shard-local resume offset before splitting.
     if data_files is not None and in_shard_offset > 0:
         raw_streaming = raw_streaming.skip(in_shard_offset)
-    if ddp_enabled:
-        # Skip sharding when the dataset does not expose data sources for splitting.
-        shard_count = getattr(getattr(raw_streaming, "_ex_iterable", None), "n_shards", None)
-        try:
-            if shard_count is None or shard_count >= ddp_world_size:
-                raw_streaming = raw_streaming.shard(num_shards=ddp_world_size, index=ddp_rank)
-            elif is_master:
-                print(f"    Skipping sharding for {dataset_label(spec)}: shards={shard_count}")
-        except (IndexError, ValueError) as exc:
-            if is_master:
-                print(f"    Skipping sharding for {dataset_label(spec)}: {exc}")
     if row_offset > 0:
         if data_files is None:
-            print(f"Resume rows (linear): {spec['spec']} -> {row_offset}") if is_master else None
-            raw_streaming = raw_streaming.skip(per_rank_offset)
+            print(f"Resume rows (linear): {spec_key} -> {row_offset}") if is_master else None
+            raw_streaming = raw_streaming.skip(row_offset)
         else:
-            print(f"Resume rows: {spec['spec']} -> {shard_label} +{in_shard_offset}") if is_master else None
+            print(f"Resume rows: {spec_key} -> {shard_label} +{in_shard_offset}") if is_master else None
+    if ddp_enabled:
+        # Split the stream across ranks to avoid duplicate samples.
+        raw_streaming = raw_streaming.filter(
+            lambda _, idx: idx % ddp_world_size == ddp_rank,
+            with_indices=True,
+        )
     packed = build_packed_dataset(
         raw_streaming,
         tokenizer=tokenizer,
@@ -409,7 +390,6 @@ for dataset_index, spec in enumerate(dataset_specs):
         source_id=dataset_index,
     )
     packed_datasets.append(packed)
-
 if not packed_datasets:
     raise ValueError("All datasets exhausted after resume; check DATASET_SPECS.")
 
@@ -624,7 +604,7 @@ for current_epoch in itertools.count(resume_epoch):
             spec_keys = [spec["spec"] for spec in dataset_specs]
             if ddp_enabled:
                 counts_tensor = torch.tensor(
-                    [source_row_counts.get(key, 0) for key in spec_keys],
+                    [source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
                     dtype=torch.long,
                     device=device,
                 )
@@ -718,6 +698,4 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
-
-
 

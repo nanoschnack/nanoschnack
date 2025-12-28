@@ -82,7 +82,7 @@ DATA_LOADER_WORKERS = _env_int("DATA_LOADER_WORKERS", 0)
 os.environ.setdefault("DATA_LOADER_WORKERS", str(DATA_LOADER_WORKERS))
 
 # Batch size for dataset packing during tokenization.
-PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 1000)
+PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 200)
 
 ###
 ### Dataset defaults

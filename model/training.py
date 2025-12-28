@@ -626,8 +626,8 @@ for current_epoch in itertools.count(resume_epoch):
                     is_master,
                 )
 
-        if plot_printed and plot_debug:
-            # Summarize dataset positions on demand.
+        if plot_printed:
+            # Summarize dataset positions when plotting.
             spec_keys = [spec["spec"] for spec in dataset_specs]
             resume_base = resume_rows if current_epoch == resume_epoch else {}
             if ddp_enabled:
@@ -647,6 +647,12 @@ for current_epoch in itertools.count(resume_epoch):
                     f"target={target_tokens}",
                     flush=True,
                 )
+                # Format per-spec row counts without decimals for small values.
+                def _format_row_count(value):
+                    if value < 10000:
+                        return str(int(value))
+                    return progress._format_compact(value)
+
                 for spec in dataset_specs:
                     spec_key = spec["spec"]
                     current_rows = global_counts.get(spec_key, 0) + resume_base.get(spec_key, 0)
@@ -655,15 +661,15 @@ for current_epoch in itertools.count(resume_epoch):
                     if total_rows:
                         pct = (current_rows / total_rows) * 100
                         print(
-                            f"  {spec_key}: resume={progress._format_compact(resume_rows_count)} "
-                            f"current={progress._format_compact(current_rows)}"
-                            f"/{progress._format_compact(total_rows)} ({pct:.1f}%)",
+                            f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
+                            f"current={_format_row_count(current_rows)}"
+                            f"/{_format_row_count(total_rows)} ({pct:.1f}%)",
                             flush=True,
                         )
                     else:
                         print(
-                            f"  {spec_key}: resume={progress._format_compact(resume_rows_count)} "
-                            f"current={progress._format_compact(current_rows)}",
+                            f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
+                            f"current={_format_row_count(current_rows)}",
                             flush=True,
                         )
             plot_debug = False

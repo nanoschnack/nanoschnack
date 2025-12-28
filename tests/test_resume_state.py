@@ -1,6 +1,6 @@
 import unittest
 
-from model.resume import build_resume_state, is_resume_exhausted, normalize_resume_rows
+from model.resume import build_resume_state, cap_resume_rows, is_resume_exhausted, normalize_resume_rows
 
 
 class ResumeStateTests(unittest.TestCase):
@@ -47,3 +47,21 @@ class ResumeStateTests(unittest.TestCase):
         self.assertFalse(is_resume_exhausted(3, None))
         self.assertFalse(is_resume_exhausted(3, 4))
         self.assertTrue(is_resume_exhausted(4, 4))
+
+    def test_cap_resume_rows_clamps_excess_offsets(self):
+        resume_rows = {"a": 15, "b": 3}
+        totals = {"a": 10, "b": 10}
+
+        capped = cap_resume_rows(resume_rows, totals)
+
+        self.assertEqual(capped["a"], 10)
+        self.assertEqual(capped["b"], 3)
+
+    def test_cap_resume_rows_aligns_completed_passes(self):
+        resume_rows = {"a": 12, "b": 15}
+        totals = {"a": 10, "b": 10}
+
+        capped = cap_resume_rows(resume_rows, totals)
+
+        self.assertEqual(capped["a"], 2)
+        self.assertEqual(capped["b"], 5)

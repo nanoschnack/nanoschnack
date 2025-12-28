@@ -1,6 +1,7 @@
 import asciichartpy
 
 from chat import generate_reply_stream
+from tokenizer import DATASET_EOS_TOKEN
 
 
 def plot_with_completion(points, model, tokenizer, config, device, progress):
@@ -13,11 +14,12 @@ def plot_with_completion(points, model, tokenizer, config, device, progress):
     if was_training:
         model.eval()
     try:
+        completion_prompt = f"{DATASET_EOS_TOKEN}{config.PLOT_COMPLETION_PROMPT}"
         reply_parts = []
         for token in generate_reply_stream(
                 model,
                 tokenizer,
-                config.PLOT_COMPLETION_PROMPT,
+                completion_prompt,
                 context_len=config.CONTEXT_LEN,
                 max_new_tokens=config.PLOT_COMPLETION_TOKENS,
                 temperature=config.TEMPERATURE,

@@ -16,7 +16,7 @@ from checkpointer import (
     resize_vocab_state_dict,
     select_state_dict,
 )
-from tokenizer import load_tokenizer
+from tokenizer import DATASET_EOS_TOKEN, load_tokenizer
 
 
 def load_model(checkpoint_path, vocab_size, device):
@@ -161,7 +161,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if use_chat_template:
             prompt = f"User: {user_text}\nAssistant:"
         else:
-            prompt = user_text
+            prompt = f"{DATASET_EOS_TOKEN}{user_text}"
 
         if show_tokens:
             print(f"tokens> {tokenizer.encode(user_text).ids}")

@@ -92,6 +92,57 @@ DATASET_SPECS="hf:coral-nlp/german-commons:web:onemillionposts:text,txt:data/goe
 DATASET_SPECS="txt:data/goethe.txt:body" python model/training.py
 ```
 
+## Dataset pipeline
+
+1) parse_dataset_specs  
+`dataset_specs = parse_dataset_specs(config.DATASET_SPECS)`
+
+2) load_dataset_from_spec (streaming)  
+`raw_dataset = load_dataset_from_spec(spec, cache_dir=data_dir, streaming=True)`
+
+3) resolve_total_rows + token estimate  
+`total_rows = resolve_total_rows(raw_dataset, spec, cache_dir=data_dir)`  
+`avg_tokens, est_total_tokens = TokenEstimator(...).estimate_streaming(raw_dataset, total_rows)`
+
+4) load checkpoint / normalize_resume_rows  
+`resume_epoch, ..., resume_state = checkpointer.load_latest()`  
+`resume_rows = normalize_resume_rows(resume_state, dataset_specs)`
+
+5) rank0 warm cache + dist.barrier  
+`warm_dataset = load_dataset_from_spec(spec, cache_dir=data_dir, streaming=True)`  
+`next(iter(warm_dataset.take(1)))`  
+`dist.barrier()`
+
+6) resolve_resume_plan  
+`data_files, in_shard_offset, shard_label = resolve_resume_plan(spec, row_offset, cache_dir=data_dir)`
+
+7) load_dataset_from_spec (data_files)  
+`raw_streaming = load_dataset_from_spec(spec, cache_dir=data_dir, streaming=True, data_files=data_files)`
+
+8) skip(in_shard_offset) + skip(row_offset)  
+`raw_streaming = raw_streaming.skip(in_shard_offset)`  
+`raw_streaming = raw_streaming.skip(row_offset)`
+
+9) DDP split: filter(idx % world_size == rank)  
+`raw_streaming = raw_streaming.filter(lambda _, idx: idx % ddp_world_size == ddp_rank, with_indices=True)`
+
+10) tokenizer.map -> input_ids  
+`tokenized = dataset.map(tokenizer_batch, batched=True, remove_columns=...)`
+
+11) pack_tokens -> fixed blocks  
+`packed = tokenized.map(lambda batch: pack_tokens(...), batched=True, batch_size=pack_batch_size)`
+
+12) interleave_datasets  
+`base_dataset = build_interleaved_dataset(packed_datasets, seed=42)`
+
+13) shuffle(buffer) -> DataLoader  
+`dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=...)`  
+`loader = DataLoader(dataset_epoch, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.DATA_LOADER_WORKERS)`
+
+14) row_count aggregation -> SUM across ranks  
+`dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)`  
+`resume_state = build_resume_state(global_counts, dataset_specs)`
+
 To run distributed training with 8 GPUs:
 
 ```sh

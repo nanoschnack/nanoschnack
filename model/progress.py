@@ -134,9 +134,9 @@ class ProgressLogger:
         resume_base,
         dataset_specs,
         total_rows_by_spec,
+        target_tokens,
         avg_tokens_by_spec=None,
         est_tokens_by_spec=None,
-        target_tokens,
     ):
         # Emit dataset position summaries for each spec.
         if avg_tokens_by_spec is None:

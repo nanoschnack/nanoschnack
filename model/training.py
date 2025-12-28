@@ -323,14 +323,6 @@ resume_rows = normalize_resume_rows(resume_state, dataset_specs)
 # Track per-rank row counts for shard-aware resume.
 source_row_counts = {spec["spec"]: 0 for spec in dataset_specs}
 
-# Report when resuming via the legacy sample index.
-use_row_resume = any(resume_rows.get(spec["spec"], 0) > 0 for spec in dataset_specs)
-# Track the dataset position for skipping/checkpointing when row offsets are unavailable.
-loader_skip_samples = 0 if use_row_resume else resume_sample_index
-if resume_sample_index > 0 and not use_row_resume:
-    print(f"Resume rows unavailable; falling back to linear sample skip ({resume_sample_index}).")
-
-
 # Pre-warm dataset shards on the master to avoid DDP startup stalls.
 if ddp_enabled:
     if is_master:
@@ -417,7 +409,7 @@ macro_compute_time = 0.0
 # Track current counters for checkpointing and interrupts.
 current_epoch = resume_epoch
 current_step = resume_step
-current_sample_index = resume_sample_index
+current_sample_index = 0
 current_micro_step = 0
 micro_steps = (config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE
 micro_token_total = 0
@@ -430,16 +422,25 @@ timing_line = None
 progress = ProgressLogger(
     lambda points: plot_with_completion(points, model, tokenizer, config, device, progress, timing_line),
     start_global_step=global_step,
-    start_total_samples=resume_sample_index,
+    start_total_samples=0,
     start_total_tokens=resume_tokens,
     warmup_plot_interval=config.PLOT_WARMUP_SECS,
     plot_interval=config.PLOT_INTERVAL_SECS,
     warmup_window_secs=config.WARMUP_WINDOW_SECS,
     estimated_total_tokens=target_tokens,
 )
+if is_master:
+    progress.print_dataset_pos(
+        global_counts={spec["spec"]: 0 for spec in dataset_specs},
+        resume_base=resume_rows,
+        dataset_specs=dataset_specs,
+        total_rows_by_spec=total_rows_by_spec,
+        target_tokens=target_tokens,
+    )
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
 printed_debug_sample = False
+
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
 plot_request = make_input_poller(is_master)
@@ -459,8 +460,7 @@ for current_epoch in itertools.count(resume_epoch):
             source_row_counts[spec["spec"]] = 0
     dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch)
     dataset_epoch = dataset_epoch.with_format("torch")
-    if current_epoch == resume_epoch and loader_skip_samples > 0:
-        dataset_epoch = dataset_epoch.skip(loader_skip_samples)
+
     # Configure DataLoader workers for background prefetch.
     loader_workers = config.DATA_LOADER_WORKERS
     loader = DataLoader(
@@ -493,9 +493,11 @@ for current_epoch in itertools.count(resume_epoch):
         attn_mask = None
         if attention_mask is not None and not attention_mask.all():
             attn_mask = attention_mask[:, :-1].to(device)
+
         # Build next-token prediction pairs.
         inputs = input_ids[:, :-1].to(device) # everything from the first token except the last
         targets = input_ids[:, 1:].to(device) # everything from the second token onward
+
         # Preview tokenization outputs for debugging.
         if debug_level >= 2 and not printed_debug_sample and is_master:
             input_preview = inputs[0].tolist()
@@ -505,12 +507,14 @@ for current_epoch in itertools.count(resume_epoch):
             print(f"Input text: {tokenizer.decode(input_preview)}")
             print(f"Target text: {tokenizer.decode(target_preview)}")
             printed_debug_sample = True
+
         # Clear accumulated gradients before the first micro step in the macro batch.
         if current_micro_step == 0:
             optimizer.zero_grad()
             micro_loss_total = 0.0
             micro_token_total = 0
             micro_sample_total = 0
+
         # Run the forward pass with autocast and compute loss.
         micro_compute_start = time.time()
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
@@ -626,8 +630,8 @@ for current_epoch in itertools.count(resume_epoch):
                     is_master,
                 )
 
-        if plot_printed and plot_debug:
-            # Summarize dataset positions on demand.
+        if plot_printed:
+            # Summarize dataset positions when plotting.
             spec_keys = [spec["spec"] for spec in dataset_specs]
             resume_base = resume_rows if current_epoch == resume_epoch else {}
             if ddp_enabled:
@@ -641,31 +645,13 @@ for current_epoch in itertools.count(resume_epoch):
             else:
                 global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
             if is_master:
-                print(
-                    f"dataset-pos: resume={resume_sample_index} "
-                    f"skip={loader_skip_samples} tokens={progress.total_tokens} "
-                    f"target={target_tokens}",
-                    flush=True,
+                progress.print_dataset_pos(
+                    global_counts=global_counts,
+                    resume_base=resume_base,
+                    dataset_specs=dataset_specs,
+                    total_rows_by_spec=total_rows_by_spec,
+                    target_tokens=target_tokens,
                 )
-                for spec in dataset_specs:
-                    spec_key = spec["spec"]
-                    current_rows = global_counts.get(spec_key, 0) + resume_base.get(spec_key, 0)
-                    resume_rows_count = resume_base.get(spec_key, 0)
-                    total_rows = total_rows_by_spec.get(spec_key)
-                    if total_rows:
-                        pct = (current_rows / total_rows) * 100
-                        print(
-                            f"  {spec_key}: resume={progress._format_compact(resume_rows_count)} "
-                            f"current={progress._format_compact(current_rows)}"
-                            f"/{progress._format_compact(total_rows)} ({pct:.1f}%)",
-                            flush=True,
-                        )
-                    else:
-                        print(
-                            f"  {spec_key}: resume={progress._format_compact(resume_rows_count)} "
-                            f"current={progress._format_compact(current_rows)}",
-                            flush=True,
-                        )
             plot_debug = False
 
         # Emit a per-rank input sample for shard sanity checks.
@@ -745,8 +731,6 @@ for current_epoch in itertools.count(resume_epoch):
             break
         current_micro_step = 0
 
-    # Reset sample skip counter after the first epoch; partial macro batches spill to next epoch.
-    loader_skip_samples = 0
     current_sample_index = 0
     if stop_requested:
         break

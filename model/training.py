@@ -417,11 +417,11 @@ micro_token_total = 0
 micro_sample_total = 0
 micro_loss_total = 0
 # Track timing output for plot logs.
-timing_state = {"line": None}
+timing_line = None
 
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
-    lambda points: plot_with_completion(points, model, tokenizer, config, device, progress, timing_state["line"]),
+    lambda points: plot_with_completion(points, model, tokenizer, config, device, progress, timing_line),
     start_global_step=global_step,
     start_total_samples=resume_sample_index,
     start_total_tokens=resume_tokens,
@@ -556,7 +556,6 @@ for current_epoch in itertools.count(resume_epoch):
                 f"Timing: data_wait={macro_data_wait:.3f}s "
                 f"compute={macro_compute_elapsed:.3f}s total={total_time:.3f}s"
             )
-        timing_state["line"] = timing_line
 
         # Log macro step counts while keeping micro-step checkpointing intact.
         plot_printed = False

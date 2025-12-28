@@ -320,8 +320,8 @@ if is_master and resume_info:
 # This drives shard/row skipping during resume and checkpointing.
 resume_rows = normalize_resume_rows(resume_state, dataset_specs)
 
-# Track row offsets for shard-aware resume.
-source_row_counts = dict(resume_rows)
+# Track per-rank row counts for shard-aware resume.
+source_row_counts = {spec["spec"]: 0 for spec in dataset_specs}
 
 # Report when resuming via the legacy sample index.
 use_row_resume = any(resume_rows.get(spec["spec"], 0) > 0 for spec in dataset_specs)
@@ -629,6 +629,7 @@ for current_epoch in itertools.count(resume_epoch):
         if plot_printed and plot_debug:
             # Summarize dataset positions on demand.
             spec_keys = [spec["spec"] for spec in dataset_specs]
+            resume_base = resume_rows if current_epoch == resume_epoch else {}
             if ddp_enabled:
                 counts_tensor = torch.tensor(
                     [source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
@@ -648,8 +649,8 @@ for current_epoch in itertools.count(resume_epoch):
                 )
                 for spec in dataset_specs:
                     spec_key = spec["spec"]
-                    current_rows = global_counts.get(spec_key, 0)
-                    resume_rows_count = resume_rows.get(spec_key, 0)
+                    current_rows = global_counts.get(spec_key, 0) + resume_base.get(spec_key, 0)
+                    resume_rows_count = resume_base.get(spec_key, 0)
                     total_rows = total_rows_by_spec.get(spec_key)
                     if total_rows:
                         pct = (current_rows / total_rows) * 100
@@ -703,7 +704,12 @@ for current_epoch in itertools.count(resume_epoch):
             should_checkpoint = bool(ckpt_flag.item())
         if should_checkpoint:
             # Build the resume state for the checkpoint.
-            resume_state = build_resume_state(source_row_counts, dataset_specs)
+            resume_base = resume_rows if current_epoch == resume_epoch else {}
+            combined_counts = dict(resume_base)
+            for spec in dataset_specs:
+                spec_key = spec["spec"]
+                combined_counts[spec_key] = combined_counts.get(spec_key, 0) + source_row_counts.get(spec_key, 0)
+            resume_state = build_resume_state(combined_counts, dataset_specs)
 
             # Aggregate per-rank row counts for global resume offsets.
             if ddp_enabled:
@@ -715,9 +721,9 @@ for current_epoch in itertools.count(resume_epoch):
                 )
                 dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
                 if is_master:
-                    global_counts = dict(source_row_counts)
+                    global_counts = dict(resume_base)
                     for spec_key, value in zip(spec_keys, counts_tensor.tolist()):
-                        global_counts[spec_key] = int(value)
+                        global_counts[spec_key] = global_counts.get(spec_key, 0) + int(value)
                     resume_state = build_resume_state(global_counts, dataset_specs)
 
             # Persist checkpoints only from the master process.

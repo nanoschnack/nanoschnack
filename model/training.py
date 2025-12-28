@@ -333,6 +333,23 @@ loader_skip_samples = 0 if use_row_resume else resume_sample_index
 if resume_sample_index > 0 and not use_row_resume:
     print(f"Resume rows unavailable; falling back to linear sample skip ({resume_sample_index}).")
 
+
+# Pre-warm dataset shards on the master to avoid DDP startup stalls.
+if ddp_enabled:
+    if is_master:
+        print("Warming dataset cache...", flush=True)
+        for spec in dataset_specs:
+            warm_dataset = load_dataset_from_spec(
+                spec,
+                cache_dir=data_dir,
+                streaming=True,
+            )
+            try:
+                next(iter(warm_dataset.take(1)))
+            except StopIteration:
+                pass
+    dist.barrier()
+
 # Build packed datasets per source with row-offset resumes.
 # Resolve shard-aware resume plans, then stream from the right shard/offset.
 # Pack each source into fixed-length token blocks with source IDs.
@@ -457,7 +474,6 @@ for current_epoch in itertools.count(resume_epoch):
     dataset_epoch = dataset_epoch.with_format("torch")
     if current_epoch == resume_epoch and loader_skip_samples > 0:
         dataset_epoch = dataset_epoch.skip(loader_skip_samples)
-
     # Configure DataLoader workers for background prefetch.
     loader_workers = config.DATA_LOADER_WORKERS
     loader = DataLoader(
@@ -466,7 +482,16 @@ for current_epoch in itertools.count(resume_epoch):
         shuffle=False,
         num_workers=loader_workers,
     )
+
+    # Announce first-batch wait to avoid silent startup stalls.
+    first_batch_start = time.time()
+    if is_master:
+        print("Waiting for first batch...", flush=True)
     for current_step, batch in enumerate(loader):
+        # Note time-to-first-batch for this epoch.
+        if current_step == 0 and is_master:
+            print(f"First batch after {time.time() - first_batch_start:.1f}s", flush=True)
+
         # Track macro step timing across micro steps.
         if current_micro_step == 0:
             macro_data_wait = 0.0

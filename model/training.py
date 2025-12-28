@@ -333,6 +333,23 @@ loader_skip_samples = 0 if use_row_resume else resume_sample_index
 if resume_sample_index > 0 and not use_row_resume:
     print(f"Resume rows unavailable; falling back to linear sample skip ({resume_sample_index}).")
 
+
+# Pre-warm dataset shards on the master to avoid DDP startup stalls.
+if ddp_enabled:
+    if is_master:
+        print("Warming dataset cache...", flush=True)
+        for spec in dataset_specs:
+            warm_dataset = load_dataset_from_spec(
+                spec,
+                cache_dir=data_dir,
+                streaming=True,
+            )
+            try:
+                next(iter(warm_dataset.take(1)))
+            except StopIteration:
+                pass
+    dist.barrier()
+
 # Build packed datasets per source with row-offset resumes.
 # Resolve shard-aware resume plans, then stream from the right shard/offset.
 # Pack each source into fixed-length token blocks with source IDs.

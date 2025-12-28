@@ -134,13 +134,24 @@ class ProgressLogger:
         resume_base,
         dataset_specs,
         total_rows_by_spec,
+        avg_tokens_by_spec=None,
+        est_tokens_by_spec=None,
         target_tokens,
     ):
         # Emit dataset position summaries for each spec.
+        if avg_tokens_by_spec is None:
+            avg_tokens_by_spec = {}
+        if est_tokens_by_spec is None:
+            est_tokens_by_spec = {}
         def _format_row_count(value):
             if value < 10000:
                 return str(int(value))
             return self._format_compact(value)
+
+        def _format_token_count(value):
+            if value is None:
+                return "?"
+            return self._format_compact(int(value))
 
         print(
             f"Dataset Position: tokens={self.total_tokens} target={target_tokens}",
@@ -151,18 +162,38 @@ class ProgressLogger:
             current_rows = global_counts.get(spec_key, 0) + resume_base.get(spec_key, 0)
             resume_rows_count = resume_base.get(spec_key, 0)
             total_rows = total_rows_by_spec.get(spec_key)
+            avg_tokens = avg_tokens_by_spec.get(spec_key)
+            est_tokens = est_tokens_by_spec.get(spec_key)
+            current_tokens = None
+            if avg_tokens is not None:
+                current_tokens = int(current_rows * avg_tokens)
+            tokens_pct = None
+            if est_tokens:
+                tokens_pct = (current_tokens or 0) / est_tokens * 100
             if total_rows:
                 pct = (current_rows / total_rows) * 100
+                token_detail = (
+                    f" tokens={_format_token_count(current_tokens)}"
+                    f"/{_format_token_count(est_tokens)} ({tokens_pct:.1f}%)"
+                    if tokens_pct is not None
+                    else f" tokens={_format_token_count(current_tokens)}/{_format_token_count(est_tokens)}"
+                )
                 print(
                     f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
-                    f"current={_format_row_count(current_rows)}"
-                    f"/{_format_row_count(total_rows)} ({pct:.1f}%)",
+                    f"rows={_format_row_count(current_rows)}"
+                    f"/{_format_row_count(total_rows)} ({pct:.1f}%)"
+                    f"{token_detail}",
                     flush=True,
                 )
             else:
+                token_detail = (
+                    f" tokens={_format_token_count(current_tokens)}"
+                    f"/{_format_token_count(est_tokens)}"
+                )
                 print(
                     f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
-                    f"current={_format_row_count(current_rows)}",
+                    f"rows={_format_row_count(current_rows)}"
+                    f"{token_detail}",
                     flush=True,
                 )
 

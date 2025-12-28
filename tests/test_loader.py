@@ -1,6 +1,8 @@
 import unittest
 from unittest import mock
 
+from datasets import IterableDataset
+
 from model import loader
 
 
@@ -48,3 +50,10 @@ class LoaderHelperTests(unittest.TestCase):
         spec = {"repo_id": "coral-nlp/german-commons", "split": "wiki", "name": "web"}
         with mock.patch.object(loader, "_load_hf_parquet_index", return_value=(["file.parquet"], [10])):
             self.assertEqual(loader._select_hf_data_files(spec, cache_dir="cache"), ["file.parquet"])
+
+    def test_cap_streaming_rows_limits_stream(self):
+        dataset = IterableDataset.from_generator(lambda: ({"x": i} for i in range(5)))
+
+        capped = loader.cap_streaming_rows(dataset, 2)
+
+        self.assertEqual([row["x"] for row in capped], [0, 1])

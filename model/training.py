@@ -211,6 +211,7 @@ from loader import (
     TokenEstimator,
     build_interleaved_dataset,
     build_packed_dataset,
+    cap_streaming_rows,
     load_dataset_from_spec,
     parse_dataset_specs,
     resolve_resume_plan,
@@ -392,6 +393,12 @@ for dataset_index, spec in enumerate(dataset_specs):
             raw_streaming = raw_streaming.skip(row_offset)
         else:
             print(f"Resume rows: {spec_key} -> {shard_label} +{in_shard_offset}") if is_master else None
+
+    # Cap each dataset to its remaining rows so exhausted specs stop contributing.
+    remaining_rows = None
+    if total_rows is not None:
+        remaining_rows = max(total_rows - row_offset, 0)
+    raw_streaming = cap_streaming_rows(raw_streaming, remaining_rows)
     if ddp_enabled:
         # Split the stream across ranks to avoid duplicate samples.
         raw_streaming = raw_streaming.filter(

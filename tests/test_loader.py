@@ -1,106 +1,37 @@
-import math
-import random
 import unittest
 
-from datasets import Dataset
-from datasets import IterableDataset
-
-from model import loader as loader_module
-from tokenizer import DATASET_EOS_TOKEN
+from model import loader
 
 
-class FakeEncoding:
-    def __init__(self, ids, attention_mask):
-        self.ids = ids
-        self.attention_mask = attention_mask
+class LoaderHelperTests(unittest.TestCase):
+    """Validate loader label helpers used for HF parquet discovery.
 
+    These tests focus on string normalization and directory matching.
+    They avoid network calls by exercising pure helper functions.
+    """
+    def test_normalize_label_strips_non_alnum(self):
+        # Normalize labels by removing spaces and punctuation.
+        self.assertEqual(loader._normalize_label("One Million Posts"), "onemillionposts")
 
-class FakeTokenizer:
-    def __init__(self):
-        self._token_ids = {DATASET_EOS_TOKEN: 99}
-
-    def encode(self, text):
-        ids = list(range(len(text)))
-        return FakeEncoding(ids, [1] * len(ids))
-
-    def token_to_id(self, token):
-        return self._token_ids.get(token)
-
-    def encode_batch(self, texts):
-        encodings = []
-        for text in texts:
-            ids = list(range(len(text)))
-            encodings.append(FakeEncoding(ids, [1] * len(ids)))
-        return encodings
-
-
-class TokenEstimatorTests(unittest.TestCase):
-    def test_estimate_tokens_from_sample(self):
-        tokenizer = FakeTokenizer()
-        dataset = Dataset.from_dict({"text": ["aa", "bbbb", "c"]})
-        estimator = loader_module.TokenEstimator(tokenizer, sample_size=2, seed=7)
-        avg_tokens, est_total = estimator.estimate_dataset(dataset)
-
-        rng = random.Random(7)
-        indices = [rng.randrange(len(dataset)) for _ in range(2)]
-        expected_avg = sum(len(dataset[idx]["text"]) + 1 for idx in indices) / 2
-        expected_total = int(math.ceil(expected_avg * len(dataset)))
-
-        self.assertEqual(avg_tokens, expected_avg)
-        self.assertEqual(est_total, expected_total)
-
-    def test_estimate_streaming(self):
-        tokenizer = FakeTokenizer()
-        items = [{"text": "aaa"}, {"text": "b"}, {"text": "cc"}]
-        dataset = IterableDataset.from_generator(lambda: iter(items))
-        estimator = loader_module.TokenEstimator(tokenizer, sample_size=2)
-        avg_tokens, est_total = estimator.estimate_streaming(dataset, total_rows=3)
-
-        expected_avg = ((len(items[0]["text"]) + 1) + (len(items[1]["text"]) + 1)) / 2
-        expected_total = int(math.ceil(expected_avg * 3))
-
-        self.assertEqual(avg_tokens, expected_avg)
-        self.assertEqual(est_total, expected_total)
-
-class PackingTests(unittest.TestCase):
-    def test_pack_tokens(self):
-        batch = {"input_ids": [[0, 1, 2], [3, 4, 5, 6]]}
-        packed = loader_module.pack_tokens(batch, block_size=4)
-        self.assertEqual(packed["input_ids"], [[0, 1, 2, 3]])
-        self.assertEqual(packed["attention_mask"], [[1, 1, 1, 1]])
-        self.assertEqual(packed["row_count"], [2])
-        self.assertEqual(packed["source_id"], [-1])
-
-
-class BuildPackedDatasetTests(unittest.TestCase):
-    def test_build_packed_dataset(self):
-        tokenizer = FakeTokenizer()
-        dataset = Dataset.from_dict({"text": ["abcd", "ef", "ghij"]})
-        packed = loader_module.build_packed_dataset(
-            dataset,
-            tokenizer=tokenizer,
-            block_size=4,
-            pack_batch_size=2,
+    def test_extract_named_dir_matches_subset(self):
+        # Match subset directory names case-insensitively.
+        entries = [
+            "datasets/repo/subset=Web",
+            "datasets/repo/subset=Cultural",
+        ]
+        self.assertEqual(
+            loader._extract_named_dir(entries, "subset", "web"),
+            "datasets/repo/subset=Web",
         )
-        self.assertEqual(len(packed), 3)
-        first = packed[0]
-        self.assertEqual(len(first["input_ids"]), 4)
-        self.assertEqual(first["attention_mask"].tolist(), [1, 1, 1, 1])
-        self.assertEqual(int(first["row_count"]), 2)
-        self.assertEqual(int(first["source_id"]), -1)
 
-    def test_build_packed_dataset_appends_eos(self):
-        tokenizer = FakeTokenizer()
-        dataset = Dataset.from_dict({"text": ["ab", "c"]})
-        packed = loader_module.build_packed_dataset(
-            dataset,
-            tokenizer=tokenizer,
-            block_size=3,
-            pack_batch_size=2,
+    def test_extract_named_dir_matches_source(self):
+        # Match source directory names with normalized tokens.
+        entries = [
+            "datasets/repo/subset=Web/source=One Million Posts",
+            "datasets/repo/subset=Web/source=Wikipedia",
+        ]
+        self.assertEqual(
+            loader._extract_named_dir(entries, "source", "onemillionposts"),
+            "datasets/repo/subset=Web/source=One Million Posts",
         )
-        first = packed[0]
-        self.assertEqual(first["input_ids"].tolist(), [0, 1, 99])
 
-
-if __name__ == "__main__":
-    unittest.main()

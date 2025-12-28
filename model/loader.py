@@ -5,6 +5,7 @@ import math
 import random
 from bisect import bisect_right
 from pathlib import Path
+import re
 
 from datasets import interleave_datasets, load_dataset
 
@@ -187,7 +188,25 @@ def _write_resume_cache(cache_path, payload):
         json.dump(payload, handle)
     tmp_path.replace(cache_path)
 
-def _hf_parquet_files(repo_id, split):
+def _normalize_label(value):
+    # Normalize labels to compare dataset names across filesystem layouts.
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _extract_named_dir(entries, key, target):
+    # Pick a directory with a matching name component like subset= or source=.
+    token = f"{key}="
+    normalized_target = _normalize_label(target)
+    for entry in entries:
+        if token not in entry:
+            continue
+        name = entry.split(token, 1)[1].split("/", 1)[0]
+        if _normalize_label(name) == normalized_target:
+            return entry
+    return None
+
+
+def _hf_parquet_files(repo_id, split, name=None):
     # Enumerate parquet shard files for an HF dataset split.
     from huggingface_hub import HfFileSystem
 
@@ -196,14 +215,43 @@ def _hf_parquet_files(repo_id, split):
     try:
         entries = fs.ls(data_root, detail=False)
     except Exception:
-        return []
+        entries = []
     split_prefix = f"{split}-"
     rel_files = []
     for path in entries:
         filename = path.split("/")[-1]
         if filename.startswith(split_prefix) and filename.endswith(".parquet"):
             rel_files.append(path.replace(f"datasets/{repo_id}/", ""))
-    return sorted(rel_files)
+    if rel_files or not name:
+        return sorted(rel_files)
+
+    base_root = f"datasets/{repo_id}"
+    try:
+        base_entries = fs.ls(base_root, detail=False)
+    except Exception:
+        return []
+    subset_dirs = [entry for entry in base_entries if "/subset=" in entry]
+    subset_dir = _extract_named_dir(subset_dirs, "subset", name) if subset_dirs else None
+    if not subset_dir:
+        return []
+    try:
+        subset_entries = fs.ls(subset_dir, detail=False)
+    except Exception:
+        return []
+    source_dirs = [entry for entry in subset_entries if "/source=" in entry]
+    source_dir = _extract_named_dir(source_dirs, "source", split) if source_dirs else None
+    if source_dir:
+        source_entries = fs.ls(source_dir, detail=False)
+        return sorted(
+            entry.replace(f"datasets/{repo_id}/", "")
+            for entry in source_entries
+            if entry.endswith(".parquet")
+        )
+    return sorted(
+        entry.replace(f"datasets/{repo_id}/", "")
+        for entry in subset_entries
+        if entry.endswith(".parquet")
+    )
 
 def _hf_parquet_row_counts(repo_id, rel_files):
     # Read parquet metadata to get row counts per shard.
@@ -234,7 +282,7 @@ def _load_hf_parquet_index(repo_id, split, cache_dir, name=None):
     ):
         return cached.get("files", []), cached.get("row_counts", [])
 
-    files = _hf_parquet_files(repo_id, split)
+    files = _hf_parquet_files(repo_id, split, name=name)
     if not files:
         return [], []
 

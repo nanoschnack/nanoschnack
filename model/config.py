@@ -77,7 +77,7 @@ MAX_TRAINING_FACTOR = _env_int("MAX_TRAINING_FACTOR", 20)
 SHUFFLE_BUFFER = _env_int("SHUFFLE_BUFFER", 100_000)
 
 # DataLoader workers for streaming prefetch.
-DATA_LOADER_WORKERS = _env_int("DATA_LOADER_WORKERS", max(2, min(4, os.cpu_count() or 1)))
+DATA_LOADER_WORKERS = _env_int("DATA_LOADER_WORKERS", 0)
 # Keep worker count visible to child processes for data loading.
 os.environ.setdefault("DATA_LOADER_WORKERS", str(DATA_LOADER_WORKERS))
 

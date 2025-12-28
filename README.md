@@ -69,7 +69,7 @@ BATCH_SIZE=16 python model/training.py
 ```
 
 To adjust background data loading workers for streaming, set `DATA_LOADER_WORKERS`
-(default: `min(4, max(2, cpu_count))`):
+(default: `0`):
 
 ```sh
 DATA_LOADER_WORKERS=4 python model/training.py

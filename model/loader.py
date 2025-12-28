@@ -253,6 +253,19 @@ def _hf_parquet_files(repo_id, split, name=None):
         if entry.endswith(".parquet")
     )
 
+
+def _select_hf_data_files(spec, cache_dir):
+    # Prefer parquet files for german-commons to unify normal and resume loads.
+    if spec.get("repo_id") != "coral-nlp/german-commons":
+        return None
+    files, _ = _load_hf_parquet_index(
+        spec["repo_id"],
+        spec.get("split", "train"),
+        cache_dir,
+        name=spec.get("name"),
+    )
+    return files or None
+
 def _hf_parquet_row_counts(repo_id, rel_files):
     # Read parquet metadata to get row counts per shard.
     from huggingface_hub import HfFileSystem
@@ -369,6 +382,8 @@ def load_dataset_from_spec(spec, cache_dir=None, streaming=True, data_files=None
     if spec["kind"] == "hf":
         # HF datasets are loaded directly from the hub.
         split = spec.get("split", "train")
+        if data_files is None:
+            data_files = _select_hf_data_files(spec, cache_dir)
         if data_files is not None:
             split = "train"
         dataset = load_dataset_source(

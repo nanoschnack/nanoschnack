@@ -368,9 +368,12 @@ def load_dataset_from_spec(spec, cache_dir=None, streaming=True, data_files=None
     # Load a dataset based on a parsed spec dictionary.
     if spec["kind"] == "hf":
         # HF datasets are loaded directly from the hub.
+        split = spec.get("split", "train")
+        if data_files is not None:
+            split = "train"
         dataset = load_dataset_source(
             spec["repo_id"],
-            split=spec.get("split", "train"),
+            split=split,
             data_files=data_files,
             cache_dir=cache_dir,
             streaming=streaming,

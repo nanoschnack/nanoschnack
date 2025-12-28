@@ -404,6 +404,9 @@ if is_master:
 
 # %%
 last_ckpt_time = time.time()
+last_step_end = time.time()
+macro_data_wait = 0.0
+macro_compute_time = 0.0
 # Track current counters for checkpointing and interrupts.
 current_epoch = resume_epoch
 current_step = resume_step
@@ -431,6 +434,7 @@ printed_debug_sample = False
 stop_requested = False
 plot_request = make_input_poller(is_master)
 debug_inputs = False
+debug_timing = False
 plot_debug = False
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
@@ -450,6 +454,14 @@ for current_epoch in itertools.count(resume_epoch):
         dataset_epoch = dataset_epoch.skip(loader_skip_samples)
     loader = DataLoader(dataset_epoch, batch_size=config.BATCH_SIZE, shuffle=False)
     for current_step, batch in enumerate(loader):
+        # Track macro step timing across micro steps.
+        if current_micro_step == 0:
+            macro_data_wait = 0.0
+            macro_compute_time = 0.0
+
+        step_start = time.time()
+        macro_data_wait += step_start - last_step_end
+
         # Move batch tensors to the device and prepare an optional attention mask.
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
@@ -475,6 +487,7 @@ for current_epoch in itertools.count(resume_epoch):
             micro_token_total = 0
             micro_sample_total = 0
         # Run the forward pass with autocast and compute loss.
+        micro_compute_start = time.time()
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
             logits = model(inputs, attention_mask=attn_mask)
             loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
@@ -497,6 +510,8 @@ for current_epoch in itertools.count(resume_epoch):
         # Update checkpoint counters and save when needed.
         current_sample_index += input_ids.size(0)
         if current_micro_step != micro_steps - 1:
+            macro_compute_time += time.time() - micro_compute_start
+            last_step_end = time.time()
             current_micro_step += 1
             continue
         # Log progress and plot loss history.
@@ -511,6 +526,10 @@ for current_epoch in itertools.count(resume_epoch):
             debug_inputs = not debug_inputs
             if is_master:
                 print(f"Input debug: {'on' if debug_inputs else 'off'}", flush=True)
+        elif cmd == "t":
+            debug_timing = not debug_timing
+            if is_master:
+                print(f"Timing debug: {'on' if debug_timing else 'off'}", flush=True)
         # Average the micro loss across ranks for consistent logging.
         logged_loss = micro_loss_total
         logged_tokens = micro_token_total
@@ -535,6 +554,15 @@ for current_epoch in itertools.count(resume_epoch):
                 current_step // micro_steps,
                 remaining_tokens=remaining_tokens,
             )
+
+        if debug_timing and is_master:
+            total_time = macro_data_wait + macro_compute_time
+            print(
+                f"Timing: data_wait={macro_data_wait:.3f}s "
+                f"compute={macro_compute_time:.3f}s total={total_time:.3f}s",
+                flush=True,
+            )
+
         if ddp_enabled:
             plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)
             dist.broadcast(plot_flag, src=0)
@@ -589,6 +617,8 @@ for current_epoch in itertools.count(resume_epoch):
         # Apply the optimizer step and advance the token scheduler.
         scheduler.last_epoch = next_total_tokens - 1
         scheduler.step()
+        macro_compute_time += time.time() - micro_compute_start
+        last_step_end = time.time()
         now = time.time()
         ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
         should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested

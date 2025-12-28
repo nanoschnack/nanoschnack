@@ -463,6 +463,9 @@ def build_tokenizer(tokenizer, text_key="text"):
             if eos_token_id is not None:
                 ids.append(eos_token_id)
             input_ids.append(ids)
+        row_count = batch.get("row_count")
+        if row_count is not None:
+            return {"input_ids": input_ids, "row_count": row_count}
         return {"input_ids": input_ids}
 
     return tokenizer_batch
@@ -486,7 +489,11 @@ def pack_tokens(batch, block_size, source_id=None):
 
     # Record raw row consumption on the first packed block only.
     row_counts = [0] * len(input_ids)
-    row_counts[0] = len(batch["input_ids"])
+    batch_row_counts = batch.get("row_count")
+    if batch_row_counts is None:
+        row_counts[0] = len(batch["input_ids"])
+    else:
+        row_counts[0] = int(sum(batch_row_counts))
 
     # Tag each packed sample with its source id.
     source_ids = [
@@ -510,6 +517,12 @@ def build_packed_dataset(
     source_id=None,
 ):
     # Tokenize and pack a dataset into fixed-length blocks.
+
+    # Track raw rows so resume counts stay aligned with source rows.
+    def _add_row_count(batch):
+        return {"row_count": [1] * len(batch[text_key])}
+
+    dataset = dataset.map(_add_row_count, batched=True)
     tokenizer_batch = build_tokenizer(
         tokenizer,
         text_key=text_key,

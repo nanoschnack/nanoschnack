@@ -57,3 +57,23 @@ class LoaderHelperTests(unittest.TestCase):
         capped = loader.cap_streaming_rows(dataset, 2)
 
         self.assertEqual([row["x"] for row in capped], [0, 1])
+
+    def test_pack_tokens_uses_row_count(self):
+        batch = {
+            "input_ids": [[1, 2, 3], [4, 5, 6]],
+            "row_count": [2, 3],
+        }
+
+        packed = loader.pack_tokens(batch, block_size=3, source_id=1)
+
+        self.assertEqual(packed["row_count"][0], 5)
+
+    def test_pack_tokens_respects_row_count_over_expanded_inputs(self):
+        batch = {
+            "input_ids": [[1, 2, 3], [4, 5, 6], [7, 8, 9]],
+            "row_count": [1, 1, 1],
+        }
+
+        packed = loader.pack_tokens(batch, block_size=3, source_id=1)
+
+        self.assertEqual(packed["row_count"][0], 3)

@@ -281,6 +281,13 @@ import itertools
 import os
 import signal
 import time
+# Format timing values with adaptive units.
+def _format_duration(seconds):
+    if seconds < 1.0:
+        return f"{seconds * 1000:.0f}ms"
+    if seconds < 10.0:
+        return f"{seconds:.2f}s"
+    return f"{seconds:.1f}s"
 
 # Set up optimizer, learning-rate scheduler, and loss function
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
@@ -544,25 +551,37 @@ for current_epoch in itertools.count(resume_epoch):
             input_request = True
         # Average the micro loss across ranks for consistent logging.
         logged_loss = micro_loss_total
+        loss_delta = None
         logged_tokens = micro_token_total
         if ddp_enabled:
-            loss_tensor = torch.tensor(micro_loss_total, device=device)
+            loss_sum = torch.tensor(micro_loss_total, device=device)
+            loss_min = torch.tensor(micro_loss_total, device=device)
+            loss_max = torch.tensor(micro_loss_total, device=device)
             token_tensor = torch.tensor(micro_token_total, device=device)
-            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+            dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
+            dist.all_reduce(loss_min, op=dist.ReduceOp.MIN)
+            dist.all_reduce(loss_max, op=dist.ReduceOp.MAX)
             dist.all_reduce(token_tensor, op=dist.ReduceOp.SUM)
-            logged_loss = loss_tensor.item() / ddp_world_size
+            logged_loss = loss_sum.item() / ddp_world_size
+            loss_delta = loss_max.item() - loss_min.item()
             logged_tokens = int(token_tensor.item())
             next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
         # Update timing output for plot logs.
+        macro_compute_elapsed = macro_compute_time + (time.time() - micro_compute_start)
+        io_max = macro_data_wait
+        compute_max = macro_compute_elapsed
+        if ddp_enabled:
+            time_max = torch.tensor([macro_data_wait, macro_compute_elapsed], device=device)
+            dist.all_reduce(time_max, op=dist.ReduceOp.MAX)
+            io_max = time_max[0].item()
+            compute_max = time_max[1].item()
         timing_line = None
         if is_master:
-            macro_compute_elapsed = macro_compute_time + (time.time() - micro_compute_start)
-            total_time = macro_data_wait + macro_compute_elapsed
             timing_line = (
-                f"Timing: data_wait={macro_data_wait:.3f}s "
-                f"compute={macro_compute_elapsed:.3f}s total={total_time:.3f}s"
+                f"Timing: IO {_format_duration(io_max)} | "
+                f"GPU {_format_duration(compute_max)}"
             )
 
         # Log macro step counts while keeping micro-step checkpointing intact.
@@ -570,14 +589,16 @@ for current_epoch in itertools.count(resume_epoch):
         if is_master:
             plot_printed = progress.tick(
                 logged_loss,
-                micro_sample_total,
-                logged_tokens,
-                optimizer.param_groups[0]["lr"],
-                current_epoch,
-                current_step // micro_steps,
+                loss_delta=loss_delta,
+                batch_size=micro_sample_total,
+                token_count=logged_tokens,
+                lr=optimizer.param_groups[0]["lr"],
+                epoch=current_epoch,
+                step=current_step // micro_steps,
                 remaining_tokens=remaining_tokens,
+                io_time=io_max,
+                gpu_time=compute_max,
             )
-
 
         if ddp_enabled:
             plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)
@@ -698,4 +719,3 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
-

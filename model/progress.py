@@ -42,12 +42,12 @@ class ProgressLogger:
     def tick(
         self,
         loss_value,
-        loss_delta=None,
         batch_size,
         token_count,
         lr,
         epoch,
         step,
+        loss_delta=None,
         remaining_tokens=None,
         io_time=None,
         gpu_time=None,

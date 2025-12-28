@@ -102,6 +102,7 @@ class ProgressLogger:
 
         # Plot loss every minute for the first 10 minutes, then every 10 minutes.
         plot_printed = False
+
         # Honor explicit plot requests before checking time-based intervals.
         if self.force_plot:
             print(self.plot_fn(list(self.loss_history)))

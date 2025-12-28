@@ -457,7 +457,6 @@ for current_epoch in itertools.count(resume_epoch):
     dataset_epoch = dataset_epoch.with_format("torch")
     if current_epoch == resume_epoch and loader_skip_samples > 0:
         dataset_epoch = dataset_epoch.skip(loader_skip_samples)
-
     # Configure DataLoader workers for background prefetch.
     loader_workers = config.DATA_LOADER_WORKERS
     loader = DataLoader(
@@ -466,7 +465,16 @@ for current_epoch in itertools.count(resume_epoch):
         shuffle=False,
         num_workers=loader_workers,
     )
+
+    # Announce first-batch wait to avoid silent startup stalls.
+    first_batch_start = time.time()
+    if is_master:
+        print("Waiting for first batch...", flush=True)
     for current_step, batch in enumerate(loader):
+        # Note time-to-first-batch for this epoch.
+        if current_step == 0 and is_master:
+            print(f"First batch after {time.time() - first_batch_start:.1f}s", flush=True)
+
         # Track macro step timing across micro steps.
         if current_micro_step == 0:
             macro_data_wait = 0.0

@@ -128,6 +128,44 @@ class ProgressLogger:
         # Allow callers to force a plot on the next tick.
         self.force_plot = True
 
+    def print_dataset_pos(
+        self,
+        global_counts,
+        resume_base,
+        dataset_specs,
+        total_rows_by_spec,
+        target_tokens,
+    ):
+        # Emit dataset position summaries for each spec.
+        def _format_row_count(value):
+            if value < 10000:
+                return str(int(value))
+            return self._format_compact(value)
+
+        print(
+            f"Dataset Position: tokens={self.total_tokens} target={target_tokens}",
+            flush=True,
+        )
+        for spec in dataset_specs:
+            spec_key = spec["spec"]
+            current_rows = global_counts.get(spec_key, 0) + resume_base.get(spec_key, 0)
+            resume_rows_count = resume_base.get(spec_key, 0)
+            total_rows = total_rows_by_spec.get(spec_key)
+            if total_rows:
+                pct = (current_rows / total_rows) * 100
+                print(
+                    f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
+                    f"current={_format_row_count(current_rows)}"
+                    f"/{_format_row_count(total_rows)} ({pct:.1f}%)",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
+                    f"current={_format_row_count(current_rows)}",
+                    flush=True,
+                )
+
     def print_input_sample(self, rank, inputs, attention_mask, tokenizer, width=120, sample_index=None):
         # Emit a per-rank input sample for shard sanity checks.
         if sample_index is None:

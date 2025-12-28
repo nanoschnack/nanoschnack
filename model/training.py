@@ -437,7 +437,6 @@ printed_debug_sample = False
 stop_requested = False
 plot_request = make_input_poller(is_master)
 input_request = False
-debug_timing = False
 plot_debug = False
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
@@ -535,10 +534,6 @@ for current_epoch in itertools.count(resume_epoch):
             plot_debug = True
         elif cmd == "i":
             input_request = True
-        elif cmd == "t":
-            debug_timing = not debug_timing
-            if is_master:
-                print(f"Timing debug: {'on' if debug_timing else 'off'}", flush=True)
         # Average the micro loss across ranks for consistent logging.
         logged_loss = micro_loss_total
         logged_tokens = micro_token_total
@@ -554,7 +549,7 @@ for current_epoch in itertools.count(resume_epoch):
 
         # Update timing output for plot logs.
         timing_line = None
-        if debug_timing and is_master:
+        if is_master:
             macro_compute_elapsed = macro_compute_time + (time.time() - micro_compute_start)
             total_time = macro_data_wait + macro_compute_elapsed
             timing_line = (

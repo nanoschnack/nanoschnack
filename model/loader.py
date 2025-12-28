@@ -519,9 +519,10 @@ def build_packed_dataset(
 
 
 def build_interleaved_dataset(datasets, seed=42):
-    # Interleave datasets in a round-robin fashion.
+    # Interleave datasets with equal sampling across sources.
     return interleave_datasets(
         datasets,
         seed=seed,
+        probabilities=[1 / len(datasets)] * len(datasets),
         stopping_strategy="all_exhausted",
     )

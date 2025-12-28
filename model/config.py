@@ -76,6 +76,9 @@ MAX_TRAINING_FACTOR = _env_int("MAX_TRAINING_FACTOR", 20)
 # Shuffle buffer size for streaming datasets.
 SHUFFLE_BUFFER = _env_int("SHUFFLE_BUFFER", 100_000)
 
+# DataLoader workers for streaming prefetch.
+DATA_LOADER_WORKERS = _env_int("DATA_LOADER_WORKERS", max(2, min(4, os.cpu_count() or 1)))
+
 # Batch size for dataset packing during tokenization.
 PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 1000)
 
@@ -205,6 +208,7 @@ def print_training_hyperparams(
         f"  learning_rate={LEARNING_RATE}",
         f"  warmup_pct={WARMUP_PCT}",
         f"  max_training_factor={MAX_TRAINING_FACTOR}",
+        f"  data_loader_workers={DATA_LOADER_WORKERS}",
         f"  shuffle_buffer={SHUFFLE_BUFFER}",
         f"  dataset_specs={DATASET_SPECS}",
     ]

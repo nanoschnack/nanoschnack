@@ -416,9 +416,12 @@ micro_steps = (config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE
 micro_token_total = 0
 micro_sample_total = 0
 micro_loss_total = 0
+# Track timing output for plot logs.
+timing_state = {"line": None}
+
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
-    lambda points: plot_with_completion(points, model, tokenizer, config, device, progress),
+    lambda points: plot_with_completion(points, model, tokenizer, config, device, progress, timing_state["line"]),
     start_global_step=global_step,
     start_total_samples=resume_sample_index,
     start_total_tokens=resume_tokens,
@@ -433,7 +436,7 @@ printed_debug_sample = False
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
 plot_request = make_input_poller(is_master)
-debug_inputs = False
+input_request = False
 debug_timing = False
 plot_debug = False
 def _request_stop(signum, frame):
@@ -452,7 +455,15 @@ for current_epoch in itertools.count(resume_epoch):
     dataset_epoch = dataset_epoch.with_format("torch")
     if current_epoch == resume_epoch and loader_skip_samples > 0:
         dataset_epoch = dataset_epoch.skip(loader_skip_samples)
-    loader = DataLoader(dataset_epoch, batch_size=config.BATCH_SIZE, shuffle=False)
+
+    # Configure DataLoader workers for background prefetch.
+    loader_workers = config.DATA_LOADER_WORKERS
+    loader = DataLoader(
+        dataset_epoch,
+        batch_size=config.BATCH_SIZE,
+        shuffle=False,
+        num_workers=loader_workers,
+    )
     for current_step, batch in enumerate(loader):
         # Track macro step timing across micro steps.
         if current_micro_step == 0:
@@ -523,9 +534,7 @@ for current_epoch in itertools.count(resume_epoch):
             progress.request_plot()
             plot_debug = True
         elif cmd == "i":
-            debug_inputs = not debug_inputs
-            if is_master:
-                print(f"Input debug: {'on' if debug_inputs else 'off'}", flush=True)
+            input_request = True
         elif cmd == "t":
             debug_timing = not debug_timing
             if is_master:
@@ -542,6 +551,18 @@ for current_epoch in itertools.count(resume_epoch):
             logged_tokens = int(token_tensor.item())
             next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
+
+        # Update timing output for plot logs.
+        timing_line = None
+        if debug_timing and is_master:
+            macro_compute_elapsed = macro_compute_time + (time.time() - micro_compute_start)
+            total_time = macro_data_wait + macro_compute_elapsed
+            timing_line = (
+                f"Timing: data_wait={macro_data_wait:.3f}s "
+                f"compute={macro_compute_elapsed:.3f}s total={total_time:.3f}s"
+            )
+        timing_state["line"] = timing_line
+
         # Log macro step counts while keeping micro-step checkpointing intact.
         plot_printed = False
         if is_master:
@@ -555,13 +576,6 @@ for current_epoch in itertools.count(resume_epoch):
                 remaining_tokens=remaining_tokens,
             )
 
-        if debug_timing and is_master:
-            total_time = macro_data_wait + macro_compute_time
-            print(
-                f"Timing: data_wait={macro_data_wait:.3f}s "
-                f"compute={macro_compute_time:.3f}s total={total_time:.3f}s",
-                flush=True,
-            )
 
         if ddp_enabled:
             plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)
@@ -570,6 +584,9 @@ for current_epoch in itertools.count(resume_epoch):
             debug_flag = torch.tensor(1 if (is_master and plot_debug) else 0, device=device)
             dist.broadcast(debug_flag, src=0)
             plot_debug = bool(debug_flag.item())
+            input_flag = torch.tensor(1 if (is_master and input_request) else 0, device=device)
+            dist.broadcast(input_flag, src=0)
+            input_request = bool(input_flag.item())
             if plot_printed:
                 log_ddp_debug(
                     ddp_world_size,
@@ -608,8 +625,13 @@ for current_epoch in itertools.count(resume_epoch):
                     print(f"  {spec_key}: rows={global_counts.get(spec_key, 0)}", flush=True)
             plot_debug = False
         # Emit a per-rank input sample for shard sanity checks.
-        if debug_level >= 1 or debug_inputs:
+        should_print_input = debug_level >= 1 or input_request
+        if is_master and plot_printed:
+            should_print_input = True
+        if should_print_input:
             progress.print_input_sample(ddp_rank, inputs, attention_mask, tokenizer)
+        if input_request:
+            input_request = False
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         # Apply the optimizer step.

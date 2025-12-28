@@ -281,6 +281,13 @@ import itertools
 import os
 import signal
 import time
+# Format timing values with adaptive units.
+def _format_duration(seconds):
+    if seconds < 1.0:
+        return f"{seconds * 1000:.0f}ms"
+    if seconds < 10.0:
+        return f"{seconds:.2f}s"
+    return f"{seconds:.1f}s"
 
 # Set up optimizer, learning-rate scheduler, and loss function
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
@@ -513,11 +520,13 @@ for current_epoch in itertools.count(resume_epoch):
             # Avoid all-reduce on accumulation steps.
         with model.no_sync() if ddp_enabled and current_micro_step != micro_steps - 1 else contextlib.nullcontext():
             loss.backward()
+
         # Micro step bookkeeping.
         token_count = attention_mask[:, 1:].sum().item()
         micro_token_total += token_count
         micro_sample_total += input_ids.size(0)
         micro_loss_total += loss.item()
+
         # Advance per-source row counters for resume safety.
         row_counts = batch["row_count"].tolist()
         source_ids = batch["source_id"].tolist()
@@ -525,6 +534,7 @@ for current_epoch in itertools.count(resume_epoch):
             if row_count:
                 spec_key = dataset_specs[int(source_id)]["spec"]
                 source_row_counts[spec_key] += int(row_count)
+
         # Update checkpoint counters and save when needed.
         current_sample_index += input_ids.size(0)
         if current_micro_step != micro_steps - 1:
@@ -532,9 +542,11 @@ for current_epoch in itertools.count(resume_epoch):
             last_step_end = time.time()
             current_micro_step += 1
             continue
+
         # Log progress and plot loss history.
         next_total_tokens = progress.total_tokens + micro_token_total
         remaining_tokens = max(target_tokens - next_total_tokens, 0)
+
         # Check for on-demand plot requests from stdin.
         cmd = plot_request()
         if cmd == "p":
@@ -542,27 +554,40 @@ for current_epoch in itertools.count(resume_epoch):
             plot_debug = True
         elif cmd == "i":
             input_request = True
+
         # Average the micro loss across ranks for consistent logging.
         logged_loss = micro_loss_total
+        loss_delta = None
         logged_tokens = micro_token_total
         if ddp_enabled:
-            loss_tensor = torch.tensor(micro_loss_total, device=device)
+            loss_sum = torch.tensor(micro_loss_total, device=device)
+            loss_min = torch.tensor(micro_loss_total, device=device)
+            loss_max = torch.tensor(micro_loss_total, device=device)
             token_tensor = torch.tensor(micro_token_total, device=device)
-            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+            dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
+            dist.all_reduce(loss_min, op=dist.ReduceOp.MIN)
+            dist.all_reduce(loss_max, op=dist.ReduceOp.MAX)
             dist.all_reduce(token_tensor, op=dist.ReduceOp.SUM)
-            logged_loss = loss_tensor.item() / ddp_world_size
+            logged_loss = loss_sum.item() / ddp_world_size
+            loss_delta = loss_max.item() - loss_min.item()
             logged_tokens = int(token_tensor.item())
             next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
         # Update timing output for plot logs.
+        macro_compute_elapsed = macro_compute_time + (time.time() - micro_compute_start)
+        io_max = macro_data_wait
+        compute_max = macro_compute_elapsed
+        if ddp_enabled:
+            time_max = torch.tensor([macro_data_wait, macro_compute_elapsed], device=device)
+            dist.all_reduce(time_max, op=dist.ReduceOp.MAX)
+            io_max = time_max[0].item()
+            compute_max = time_max[1].item()
         timing_line = None
         if is_master:
-            macro_compute_elapsed = macro_compute_time + (time.time() - micro_compute_start)
-            total_time = macro_data_wait + macro_compute_elapsed
             timing_line = (
-                f"Timing: data_wait={macro_data_wait:.3f}s "
-                f"compute={macro_compute_elapsed:.3f}s total={total_time:.3f}s"
+                f"Timing: IO {_format_duration(io_max)} | "
+                f"GPU {_format_duration(compute_max)}"
             )
 
         # Log macro step counts while keeping micro-step checkpointing intact.
@@ -570,14 +595,16 @@ for current_epoch in itertools.count(resume_epoch):
         if is_master:
             plot_printed = progress.tick(
                 logged_loss,
-                micro_sample_total,
-                logged_tokens,
-                optimizer.param_groups[0]["lr"],
-                current_epoch,
-                current_step // micro_steps,
+                loss_delta=loss_delta,
+                batch_size=micro_sample_total,
+                token_count=logged_tokens,
+                lr=optimizer.param_groups[0]["lr"],
+                epoch=current_epoch,
+                step=current_step // micro_steps,
                 remaining_tokens=remaining_tokens,
+                io_time=io_max,
+                gpu_time=compute_max,
             )
-
 
         if ddp_enabled:
             plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)
@@ -614,18 +641,32 @@ for current_epoch in itertools.count(resume_epoch):
                 global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
             if is_master:
                 print(
-                    f"dataset-pos: epoch={current_epoch + 1} "
-                    f"macro={current_step // micro_steps} "
-                    f"micro={current_micro_step} sample={current_sample_index} "
-                    f"global={progress.global_step} resume={resume_sample_index} "
+                    f"dataset-pos: resume={resume_sample_index} "
                     f"skip={loader_skip_samples} tokens={progress.total_tokens} "
                     f"target={target_tokens}",
                     flush=True,
                 )
                 for spec in dataset_specs:
                     spec_key = spec["spec"]
-                    print(f"  {spec_key}: rows={global_counts.get(spec_key, 0)}", flush=True)
+                    current_rows = global_counts.get(spec_key, 0)
+                    resume_rows_count = resume_rows.get(spec_key, 0)
+                    total_rows = total_rows_by_spec.get(spec_key)
+                    if total_rows:
+                        pct = (current_rows / total_rows) * 100
+                        print(
+                            f"  {spec_key}: resume={progress._format_compact(resume_rows_count)} "
+                            f"current={progress._format_compact(current_rows)}"
+                            f"/{progress._format_compact(total_rows)} ({pct:.1f}%)",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"  {spec_key}: resume={progress._format_compact(resume_rows_count)} "
+                            f"current={progress._format_compact(current_rows)}",
+                            flush=True,
+                        )
             plot_debug = False
+
         # Emit a per-rank input sample for shard sanity checks.
         should_print_input = debug_level >= 1 or input_request
         if is_master and plot_printed:
@@ -634,10 +675,13 @@ for current_epoch in itertools.count(resume_epoch):
             progress.print_input_sample(ddp_rank, inputs, attention_mask, tokenizer)
         if input_request:
             input_request = False
+
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
         # Apply the optimizer step.
         optimizer.step()
+
         # Apply the optimizer step and advance the token scheduler.
         scheduler.last_epoch = next_total_tokens - 1
         scheduler.step()
@@ -652,6 +696,7 @@ for current_epoch in itertools.count(resume_epoch):
             dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
             stop_requested = bool(stop_flag.item())
             should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
+
             # Sync checkpoint decision across ranks.
             ckpt_flag = torch.tensor(1 if (is_master and should_checkpoint) else 0, device=device)
             dist.broadcast(ckpt_flag, src=0)
@@ -659,6 +704,7 @@ for current_epoch in itertools.count(resume_epoch):
         if should_checkpoint:
             # Build the resume state for the checkpoint.
             resume_state = build_resume_state(source_row_counts, dataset_specs)
+
             # Aggregate per-rank row counts for global resume offsets.
             if ddp_enabled:
                 spec_keys = [spec["spec"] for spec in dataset_specs]
@@ -673,6 +719,7 @@ for current_epoch in itertools.count(resume_epoch):
                     for spec_key, value in zip(spec_keys, counts_tensor.tolist()):
                         global_counts[spec_key] = int(value)
                     resume_state = build_resume_state(global_counts, dataset_specs)
+
             # Persist checkpoints only from the master process.
             if is_master:
                 checkpointer.save_latest(
@@ -686,16 +733,18 @@ for current_epoch in itertools.count(resume_epoch):
             if ddp_enabled:
                 dist.barrier()
             last_ckpt_time = now
+
         # Exit after the current step if SIGINT was requested.
         if stop_requested:
             break
         current_micro_step = 0
+
     # Reset sample skip counter after the first epoch; partial macro batches spill to next epoch.
     loader_skip_samples = 0
     current_sample_index = 0
     if stop_requested:
         break
+
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
-

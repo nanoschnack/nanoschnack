@@ -42,12 +42,15 @@ class ProgressLogger:
     def tick(
         self,
         loss_value,
+        loss_delta=None,
         batch_size,
         token_count,
         lr,
         epoch,
         step,
         remaining_tokens=None,
+        io_time=None,
+        gpu_time=None,
     ):
         # Record the latest loss and retain a rolling window for plotting.
         now = time.time()
@@ -72,24 +75,34 @@ class ProgressLogger:
             pct = 0.0
             eta = "?"
 
-        message = (
-            f"Tokens {self._format_count(self.total_tokens)} | "
-            f"Total {pct:.1f}% | "
-            f"Samples {self._format_count(self.total_samples)} | "
-            f"Epoch {epoch+1} | "
-            f"Step {step+1} | "
-            f"Global {self.global_step+1} | "
-            f"Loss {self._format_loss(loss_value)} | "
-            f"LR {self._format_lr(lr)} | "
-            f"Samples/s {self._format_rate(samples_per_sec)} | "
-            f"Tokens/s {self._format_rate(tokens_per_sec)} | "
-            f"ETA {eta}"
+        parts = [
+            f"Tokens {self._format_count(self.total_tokens)}",
+            f"Total {pct:.1f}%",
+            f"Samples {self._format_count(self.total_samples)}",
+            f"Epoch {epoch+1}",
+            f"Steps {step+1}/{self.global_step+1}",
+            f"Loss {self._format_loss(loss_value)}",
+        ]
+        if loss_delta is not None:
+            parts[-1] = f"Loss {self._format_loss(loss_value)} (Δ{loss_delta:.2f})"
+        if io_time is not None and gpu_time is not None:
+            parts.append(f"IO {self._format_duration(io_time)}")
+            parts.append(f"GPU {self._format_duration(gpu_time)}")
+        parts.extend(
+            [
+                f"LR {self._format_lr(lr)}",
+                f"Samples/s {self._format_rate(samples_per_sec)}",
+                f"Tokens/s {self._format_rate(tokens_per_sec)}",
+                f"ETA {eta}",
+            ]
         )
+        message = " | ".join(parts)
         print(message, flush=True)
         self.last_tick_time = now
 
         # Plot loss every minute for the first 10 minutes, then every 10 minutes.
         plot_printed = False
+
         # Honor explicit plot requests before checking time-based intervals.
         if self.force_plot:
             print(self.plot_fn(list(self.loss_history)))
@@ -160,12 +173,11 @@ class ProgressLogger:
         remaining_secs = remaining_units / units_per_sec
         hours = int(remaining_secs // 3600)
         minutes = int((remaining_secs % 3600) // 60)
-        return f"{hours:>4d}h{minutes:02d}m"
+        return f"{hours}h{minutes:02d}m"
 
-    def _format_count(self, value, width=5):
-        # Format counts with fixed-width compact suffixes for readability.
-        text = self._format_compact(value)
-        return text.rjust(width) if len(text) < width else text
+    def _format_count(self, value):
+        # Format counts with compact suffixes for readability.
+        return self._format_compact(value)
 
     def _format_rate(self, value, width=6):
         # Format per-second rates with compact suffixes.
@@ -202,6 +214,13 @@ class ProgressLogger:
         # Cap loss to two digits before the decimal to stabilize width.
         text = f"{value:5.2f}" if value < 100 else f"{value:5.1f}"
         return text.rjust(width) if len(text) < width else text
+
+    def _format_duration(self, seconds):
+        if seconds < 1.0:
+            return f"{seconds * 1000:.0f}ms"
+        if seconds < 10.0:
+            return f"{seconds:.2f}s"
+        return f"{seconds:.1f}s"
 
     def _format_lr(self, value, width=8):
         # Keep a fixed-width LR with six decimals.

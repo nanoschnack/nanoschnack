@@ -641,17 +641,30 @@ for current_epoch in itertools.count(resume_epoch):
                 global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
             if is_master:
                 print(
-                    f"dataset-pos: epoch={current_epoch + 1} "
-                    f"macro={current_step // micro_steps} "
-                    f"micro={current_micro_step} sample={current_sample_index} "
-                    f"global={progress.global_step} resume={resume_sample_index} "
+                    f"dataset-pos: resume={resume_sample_index} "
                     f"skip={loader_skip_samples} tokens={progress.total_tokens} "
                     f"target={target_tokens}",
                     flush=True,
                 )
                 for spec in dataset_specs:
                     spec_key = spec["spec"]
-                    print(f"  {spec_key}: rows={global_counts.get(spec_key, 0)}", flush=True)
+                    current_rows = global_counts.get(spec_key, 0)
+                    resume_rows_count = resume_rows.get(spec_key, 0)
+                    total_rows = total_rows_by_spec.get(spec_key)
+                    if total_rows:
+                        pct = (current_rows / total_rows) * 100
+                        print(
+                            f"  {spec_key}: resume={progress._format_compact(resume_rows_count)} "
+                            f"current={progress._format_compact(current_rows)}"
+                            f"/{progress._format_compact(total_rows)} ({pct:.1f}%)",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"  {spec_key}: resume={progress._format_compact(resume_rows_count)} "
+                            f"current={progress._format_compact(current_rows)}",
+                            flush=True,
+                        )
             plot_debug = False
 
         # Emit a per-rank input sample for shard sanity checks.

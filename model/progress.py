@@ -170,30 +170,29 @@ class ProgressLogger:
             tokens_pct = None
             if est_tokens:
                 tokens_pct = (current_tokens or 0) / est_tokens * 100
+            pct = None
             if total_rows:
                 pct = (current_rows / total_rows) * 100
-                token_detail = (
-                    f" tokens={_format_token_count(current_tokens)}"
-                    f"/{_format_token_count(est_tokens)} ({tokens_pct:.1f}%)"
-                    if tokens_pct is not None
-                    else f" tokens={_format_token_count(current_tokens)}/{_format_token_count(est_tokens)}"
-                )
+            if pct is None and tokens_pct is not None:
+                pct = tokens_pct
+            pct_label = f" ({pct:.1f}%)" if pct is not None else ""
+            token_detail = (
+                f" tokens={_format_token_count(current_tokens)}"
+                f"/{_format_token_count(est_tokens)}"
+            )
+            if total_rows:
                 print(
                     f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
                     f"rows={_format_row_count(current_rows)}"
-                    f"/{_format_row_count(total_rows)} ({pct:.1f}%)"
-                    f"{token_detail}",
+                    f"/{_format_row_count(total_rows)}"
+                    f"{token_detail}{pct_label}",
                     flush=True,
                 )
             else:
-                token_detail = (
-                    f" tokens={_format_token_count(current_tokens)}"
-                    f"/{_format_token_count(est_tokens)}"
-                )
                 print(
                     f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
                     f"rows={_format_row_count(current_rows)}"
-                    f"{token_detail}",
+                    f"{token_detail}{pct_label}",
                     flush=True,
                 )
 

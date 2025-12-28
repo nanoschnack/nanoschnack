@@ -92,7 +92,7 @@ PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 200)
 DATASET_SPECS = _env_str(
     "DATASET_SPECS",
     "hf:coral-nlp/german-commons:web:onemillionposts:text,"
-    "hf:coral-nlp/german-commons:web:wikipedia:text,"
+    # "hf:coral-nlp/german-commons:web:wikipedia:text,"
     "hf:coral-nlp/german-commons:web:youtubecommons:text,"
     "hf:coral-nlp/german-commons:cultural:wikivoyage:text,"
     "hf:PatrickHaller/fineweb-2-de-1B:train:text",

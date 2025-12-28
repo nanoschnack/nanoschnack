@@ -166,7 +166,17 @@ class ProgressLogger:
                     flush=True,
                 )
 
-    def print_input_sample(self, rank, inputs, attention_mask, tokenizer, width=120, sample_index=None):
+    def print_input_sample(
+        self,
+        rank,
+        inputs,
+        attention_mask,
+        tokenizer,
+        width=120,
+        sample_index=None,
+        source_ids=None,
+        dataset_specs=None,
+    ):
         # Emit a per-rank input sample for shard sanity checks.
         if sample_index is None:
             sample_index = random.randrange(inputs.size(0))
@@ -184,7 +194,11 @@ class ProgressLogger:
             .replace("\r", "\\r")
             .replace("\t", "\\t")
         )
-        prefix = f"{rank}: "
+        prefix = f"{rank} "
+        if source_ids is not None and dataset_specs is not None:
+            source_id = int(source_ids[sample_index])
+            if 0 <= source_id < len(dataset_specs):
+                prefix = f"{rank} {dataset_specs[source_id]['spec']}: "
         term_width = shutil.get_terminal_size((width, 20)).columns
         max_len = max(0, term_width - self._display_width(prefix))
         snippet = self._truncate_to_width(escaped, max_len)

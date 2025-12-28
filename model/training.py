@@ -44,7 +44,11 @@ if ddp_enabled:
     if ddp_backend == "nccl" and not torch.cuda.is_available():
         raise RuntimeError("DDP requested without CUDA availability.")
     import torch.distributed as dist
-    dist.init_process_group(backend=ddp_backend)
+    # Pin the process group to the local device to avoid barrier warnings.
+    dist.init_process_group(
+        backend=ddp_backend,
+        device_id=ddp_local_rank if ddp_backend == "nccl" else None,
+    )
 
 # Select the device for this process.
 if ddp_enabled and ddp_backend == "gloo":

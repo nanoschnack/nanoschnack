@@ -68,6 +68,13 @@ To override batch size without editing code, set `BATCH_SIZE`:
 BATCH_SIZE=16 python model/training.py
 ```
 
+To adjust background data loading workers for streaming, set `DATA_LOADER_WORKERS`
+(default: `min(4, max(2, cpu_count))`):
+
+```sh
+DATA_LOADER_WORKERS=4 python model/training.py
+```
+
 Configure training datasets with `DATASET_SPECS` (comma-separated):
 
 - `hf:<repo_id>[:split][:text_key]`

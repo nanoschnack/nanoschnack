@@ -202,7 +202,8 @@ if is_notebook:
 # ## Load the Training Data
 
 # %%
-from datasets.utils.logging import enable_progress_bar, set_verbosity_error
+from datasets.utils.logging import enable_progress_bar, set_verbosity_debug, set_verbosity_error
+from huggingface_hub.utils import logging as hf_logging
 from loader import (
     TokenEstimator,
     build_interleaved_dataset,
@@ -217,12 +218,17 @@ from resume import build_resume_state, is_resume_exhausted, normalize_resume_row
 import math
 
 # Download shards on demand and shuffle within each dataset.
-set_verbosity_error()
+hf_debug = int(os.getenv("DEBUG", "0")) >= 2
+if hf_debug:
+    set_verbosity_debug()
+    hf_logging.set_verbosity_debug()
+else:
+    set_verbosity_error()
+    hf_logging.set_verbosity_error()
 enable_progress_bar()
 
 # Cache dataset specs for reuse across steps.
 dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
-
 
 # Track total rows per dataset for resume validation.
 total_rows_by_spec = {}
@@ -281,6 +287,25 @@ import itertools
 import os
 import signal
 import time
+import threading
+# Report cache growth while waiting for the first batch.
+def _dir_size_bytes(root):
+    total = 0
+    for base, _, files in os.walk(root):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(base, name))
+            except OSError:
+                continue
+    return total
+
+def _report_cache_growth(cache_dir, stop_event, interval=5.0):
+    last_size = _dir_size_bytes(cache_dir)
+    while not stop_event.wait(interval):
+        size = _dir_size_bytes(cache_dir)
+        delta = size - last_size
+        last_size = size
+        print(f"Cache size: {size / 1_000_000:.1f} MB (+{delta / 1_000_000:.1f} MB)", flush=True)
 
 # Set up optimizer, learning-rate scheduler, and loss function
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
@@ -463,6 +488,18 @@ for current_epoch in itertools.count(resume_epoch):
         num_workers=loader_workers,
     )
 
+
+    # Track cache growth while waiting for the first batch.
+    cache_stop = None
+    cache_thread = None
+    if is_master:
+        cache_stop = threading.Event()
+        cache_thread = threading.Thread(
+            target=_report_cache_growth,
+            args=(str(data_dir), cache_stop),
+            daemon=True,
+        )
+        cache_thread.start()
     # Announce first-batch wait to avoid silent startup stalls.
     first_batch_start = time.time()
     if is_master:
@@ -470,6 +507,9 @@ for current_epoch in itertools.count(resume_epoch):
     for current_step, batch in enumerate(loader):
         # Note time-to-first-batch for this epoch.
         if current_step == 0 and is_master:
+            if cache_stop is not None:
+                cache_stop.set()
+                cache_thread.join(timeout=1.0)
             print(f"First batch after {time.time() - first_batch_start:.1f}s", flush=True)
 
         # Track macro step timing across micro steps.

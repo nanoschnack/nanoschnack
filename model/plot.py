@@ -3,7 +3,7 @@ import asciichartpy
 from chat import generate_reply_stream
 
 
-def plot_with_completion(points, model, tokenizer, config, device, progress, timing_line=None):
+def plot_with_completion(points, model, tokenizer, config, device, progress):
     """Render a loss chart with a sample completion appended."""
     # Render the loss plot first so completion failures don't block logs.
     chart = ascii_loss_plot(points)
@@ -35,8 +35,6 @@ def plot_with_completion(points, model, tokenizer, config, device, progress, tim
         "Validation: ",
         f"{config.PLOT_COMPLETION_PROMPT}|>{completion}",
     )
-    if timing_line:
-        return f"{chart}\n{timing_line}\n{formatted}\n"
     return f"{chart}\n{formatted}\n"
 
 

@@ -231,6 +231,8 @@ dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
 
 # Track total rows per dataset for resume validation.
 total_rows_by_spec = {}
+avg_tokens_by_spec = {}
+est_tokens_by_spec = {}
 estimated_total_tokens = 0
 
 print("Datasets:") if is_master else None
@@ -249,6 +251,8 @@ for dataset_index, spec in enumerate(dataset_specs):
         text_key=spec["text_key"],
     )
     avg_tokens, est_total_tokens = token_estimator.estimate_streaming(raw_dataset, total_rows)
+    avg_tokens_by_spec[spec["spec"]] = avg_tokens
+    est_tokens_by_spec[spec["spec"]] = est_total_tokens
     estimated_total_tokens += est_total_tokens
     print(f"    {dataset_label(spec)}: avg_tokens={avg_tokens:.1f}, est_tokens={est_total_tokens}") if is_master else None
 
@@ -286,14 +290,6 @@ import itertools
 import os
 import signal
 import time
-# Format timing values with adaptive units.
-def _format_duration(seconds):
-    if seconds < 1.0:
-        return f"{seconds * 1000:.0f}ms"
-    if seconds < 10.0:
-        return f"{seconds:.2f}s"
-    return f"{seconds:.1f}s"
-
 # Set up optimizer, learning-rate scheduler, and loss function
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
 scheduler = build_warmup_cosine_tokens(optimizer, target_tokens, config.WARMUP_PCT)
@@ -440,12 +436,9 @@ micro_steps = (config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE
 micro_token_total = 0
 micro_sample_total = 0
 micro_loss_total = 0
-# Track timing output for plot logs.
-timing_line = None
-
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
-    lambda points: plot_with_completion(points, model, tokenizer, config, device, progress, timing_line),
+    lambda points: plot_with_completion(points, model, tokenizer, config, device, progress),
     start_global_step=global_step,
     start_total_samples=0,
     start_total_tokens=resume_tokens,
@@ -460,6 +453,8 @@ if is_master:
         resume_base=resume_rows,
         dataset_specs=dataset_specs,
         total_rows_by_spec=total_rows_by_spec,
+        avg_tokens_by_spec=avg_tokens_by_spec,
+        est_tokens_by_spec=est_tokens_by_spec,
         target_tokens=target_tokens,
     )
 # Enable debug output with DEBUG levels.
@@ -612,13 +607,6 @@ for current_epoch in itertools.count(resume_epoch):
             dist.all_reduce(time_max, op=dist.ReduceOp.MAX)
             io_max = time_max[0].item()
             compute_max = time_max[1].item()
-        timing_line = None
-        if is_master:
-            timing_line = (
-                f"Timing: IO {_format_duration(io_max)} | "
-                f"GPU {_format_duration(compute_max)}"
-            )
-
         # Log macro step counts while keeping micro-step checkpointing intact.
         plot_printed = False
         if is_master:
@@ -675,6 +663,8 @@ for current_epoch in itertools.count(resume_epoch):
                     resume_base=resume_base,
                     dataset_specs=dataset_specs,
                     total_rows_by_spec=total_rows_by_spec,
+                    avg_tokens_by_spec=avg_tokens_by_spec,
+                    est_tokens_by_spec=est_tokens_by_spec,
                     target_tokens=target_tokens,
                 )
             plot_debug = False

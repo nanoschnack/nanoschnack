@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -127,6 +128,40 @@ class GPT(nn.Module):
         self.lm = nn.Linear(embed_size, vocab_size, bias=False)
         # Share weights between token embedding and output projection.
         self.tok.weight = self.lm.weight
+
+        # Apply GPT-2 initialization after tying weights.
+        self._init_weights(num_layers)
+
+    def _init_weights(self, num_layers):
+        # Apply GPT-2 initialization for all module types.
+        self.apply(self._init_module_weights)
+
+        # Scale GPT-2 residual projections below the base 0.02 std to control residual growth.
+        # The attention/MLP outputs are added back into the residual stream, so large
+        # projections compound over layers and can destabilize training without scaling.
+        scaled_std = 0.02 / math.sqrt(2 * num_layers)
+        for block in self.blocks:
+            block.attn.proj.weight.data.normal_(mean=0.0, std=scaled_std)
+            block.mlp.output.weight.data.normal_(mean=0.0, std=scaled_std)
+
+    @staticmethod
+    def _init_module_weights(module):
+        # Use GPT-2 linear init: normal(0, 0.02) instead of PyTorch's Kaiming uniform.
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            # Use zero biases instead of PyTorch's uniform bias init.
+            if module.bias is not None:
+                module.bias.data.zero_()
+
+        # Use GPT-2 embedding init: normal(0, 0.02) instead of PyTorch's normal(0, 1).
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+
+        # Keep LayerNorm weights at 1 and biases at 0, matching PyTorch defaults.
+        elif isinstance(module, nn.LayerNorm):
+            module.weight.data.fill_(1.0)
+            if module.bias is not None:
+                module.bias.data.zero_()
 
     def forward(self, x, attention_mask=None):
         seq_length = x.size(1)

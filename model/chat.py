@@ -39,6 +39,7 @@ def load_model(checkpoint_path, vocab_size, device):
         num_heads=config.NUM_HEADS,
         hidden_size=config.HIDDEN_SIZE,
         context_len=config.CONTEXT_LEN,
+        dropout=0.0,
     ).to(device).eval()
 
     if state_dict is not None:

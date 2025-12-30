@@ -427,6 +427,7 @@ last_ckpt_time = time.time()
 last_step_end = time.time()
 macro_data_wait = 0.0
 macro_compute_time = 0.0
+
 # Track current counters for checkpointing and interrupts.
 current_epoch = resume_epoch
 current_step = resume_step
@@ -436,6 +437,7 @@ micro_steps = (config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE
 micro_token_total = 0
 micro_sample_total = 0
 micro_loss_total = 0
+
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
     lambda points: plot_with_completion(points, model, tokenizer, config, device, progress),
@@ -457,6 +459,7 @@ if is_master:
         est_tokens_by_spec=est_tokens_by_spec,
         target_tokens=target_tokens,
     )
+
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
 printed_debug_sample = False
@@ -472,22 +475,19 @@ def _request_stop(signum, frame):
     global stop_requested
     stop_requested = True
 signal.signal(signal.SIGINT, _request_stop)
+
 print("Starting training loop...", flush=True) if is_master else None
 for current_epoch in itertools.count(resume_epoch):
     # Reset row counters at epoch boundaries beyond the resume epoch.
     if current_epoch != resume_epoch:
         for spec in dataset_specs:
             source_row_counts[spec["spec"]] = 0
-    dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch)
-    dataset_epoch = dataset_epoch.with_format("torch")
-
-    # Configure DataLoader workers for background prefetch.
-    loader_workers = config.DATA_LOADER_WORKERS
+    dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch).with_format("torch")
     loader = DataLoader(
         dataset_epoch,
         batch_size=config.BATCH_SIZE,
         shuffle=False,
-        num_workers=loader_workers,
+        num_workers=config.DATA_LOADER_WORKERS,
     )
 
     # Announce first-batch wait to avoid silent startup stalls.
@@ -572,8 +572,7 @@ for current_epoch in itertools.count(resume_epoch):
         remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
         # Check for on-demand plot requests from stdin.
-        cmd = plot_request()
-        if cmd == "p":
+        if (cmd := plot_request()) == "p":
             progress.request_plot()
             plot_debug = True
         elif cmd == "i":
@@ -697,19 +696,21 @@ for current_epoch in itertools.count(resume_epoch):
         macro_compute_time += time.time() - micro_compute_start
         last_step_end = time.time()
         now = time.time()
-        ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
-        should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
+
+        # Sync stop requests across ranks.
         if ddp_enabled:
-            # Sync stop requests across ranks.
             stop_flag = torch.tensor(1 if stop_requested else 0, device=device)
             dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
             stop_requested = bool(stop_flag.item())
-            should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
 
-            # Sync checkpoint decision across ranks.
+        # Determine if we should checkpoint at this step.
+        ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
+        should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
+        if ddp_enabled:
             ckpt_flag = torch.tensor(1 if (is_master and should_checkpoint) else 0, device=device)
             dist.broadcast(ckpt_flag, src=0)
             should_checkpoint = bool(ckpt_flag.item())
+
         if should_checkpoint:
             # Build the resume state for the checkpoint.
             resume_base = resume_rows if current_epoch == resume_epoch else {}

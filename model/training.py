@@ -425,7 +425,7 @@ if is_master:
 
 # %%
 @dataclass
-class MacroStepState:
+class MacroStep:
     """Track macro-step state across gradient accumulation.
     Owns micro-step counters and timing totals.
     Resets accumulators at macro boundaries.
@@ -478,8 +478,22 @@ class MacroStepState:
         self.io_wait = 0.0
         self.current_micro_step = 0
 
+
+# Emit a first-batch timing log while streaming batches.
+def time_until_first_batch(loader, is_master):
+    start = time.time()
+    if is_master:
+        print("Waiting for first batch...", flush=True)
+    first = True
+    for batch in loader:
+        if first:
+            if is_master:
+                print(f"First batch after {time.time() - start:.1f}s", flush=True)
+            first = False
+        yield batch
+
 last_ckpt_time = time.time()
-macro_step = MacroStepState(
+macro_step = MacroStep(
     micro_steps=(config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE,
 )
 
@@ -531,14 +545,7 @@ for current_epoch in itertools.count(resume_epoch):
     )
 
     # Announce first-batch wait to avoid silent startup stalls.
-    first_batch_start = time.time()
-    if is_master:
-        print("Waiting for first batch...", flush=True)
-    for current_step, batch in enumerate(macro_step.measure_io(loader)):
-        # Note time-to-first-batch for this epoch.
-        if current_step == 0 and is_master:
-            print(f"First batch after {time.time() - first_batch_start:.1f}s", flush=True)
-
+    for current_step, batch in enumerate(macro_step.measure_io(time_until_first_batch(loader, is_master))):
         # Reset macro-step accumulators and track data wait time.
         if macro_step.current_micro_step == 0:
             macro_step.begin(optimizer)

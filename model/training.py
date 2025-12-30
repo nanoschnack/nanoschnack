@@ -447,6 +447,8 @@ class MacroStepState:
         self.micro_token_total = 0
         self.micro_sample_total = 0
 
+
+    # Return True only for the final micro step in the macro batch.
     def micro_step(self, token_count, sample_count, loss_value):
         self.micro_token_total += token_count
         self.micro_sample_total += sample_count

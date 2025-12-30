@@ -15,6 +15,7 @@
 - Avoid duplicate code; prefer shared helpers or a single source of truth.
 - Keep a blank line above comments unless the comment starts a scope.
 - Preserve existing formatting/line breaks unless changing semantics or improving clarity; avoid re-wrapping long expressions purely for style.
+- If a comment is not the first line in a scope, add a blank line before it.
 
 ## Testing
 - Non-trivial infrastructure code must include unit tests in `tests/`.

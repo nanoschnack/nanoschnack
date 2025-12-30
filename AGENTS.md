@@ -12,6 +12,9 @@
 
 ## Coding Conventions
 - Comment style: add a one-line comment above small blocks of logically connected lines; no blank line before the first block comment in a scope, and a blank line before each subsequent block comment; add a 3–5 line class docstring to explain purpose and constraints.
+- Avoid duplicate code; prefer shared helpers or a single source of truth.
+- Keep a blank line above comments unless the comment starts a scope.
+- Preserve existing formatting/line breaks unless changing semantics or improving clarity; avoid re-wrapping long expressions purely for style.
 
 ## Testing
 - Non-trivial infrastructure code must include unit tests in `tests/`.

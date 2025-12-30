@@ -20,6 +20,7 @@
 import contextlib
 import os
 import torch
+from dataclasses import dataclass
 
 # Avoid tokenizers fork warnings in worker processes.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -423,20 +424,67 @@ if is_master:
 # ## Run the Training
 
 # %%
+@dataclass
+class MacroStepState:
+    """Track macro-step state across gradient accumulation.
+    Owns micro-step counters and timing totals.
+    Resets accumulators at macro boundaries.
+    Tracks accumulated IO/compute time per macro step.
+    """
+    micro_steps: int
+    current_micro_step: int = 0
+    micro_token_total: int = 0
+    micro_sample_total: int = 0
+    micro_loss_total: float = 0.0
+    io_wait: float = 0.0
+    compute_time: float = 0.0
+
+    def begin(self, optimizer):
+        self.compute_time = 0.0
+        self.io_wait = 0.0
+        optimizer.zero_grad()
+        self.micro_loss_total = 0.0
+        self.micro_token_total = 0
+        self.micro_sample_total = 0
+
+    def micro_step(self, token_count, sample_count, loss_value):
+        self.micro_token_total += token_count
+        self.micro_sample_total += sample_count
+        self.micro_loss_total += loss_value
+        if self.current_micro_step != self.micro_steps - 1:
+            self.current_micro_step += 1
+            return False
+        return True
+
+    @contextlib.contextmanager
+    def measure_compute(self):
+        start = time.time()
+        try:
+            yield
+        finally:
+            self.compute_time += time.time() - start
+
+    def measure_io(self, loader):
+        prev = time.time()
+        for batch in loader:
+            now = time.time()
+            self.io_wait += now - prev
+            yield batch
+            prev = time.time()
+
+    def finish(self):
+        self.io_wait = 0.0
+        self.current_micro_step = 0
+
 last_ckpt_time = time.time()
-last_step_end = time.time()
-macro_data_wait = 0.0
-macro_compute_time = 0.0
+macro_step = MacroStepState(
+    micro_steps=(config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE,
+)
 
 # Track current counters for checkpointing and interrupts.
 current_epoch = resume_epoch
 current_step = resume_step
 current_sample_index = 0
-current_micro_step = 0
-micro_steps = (config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE
-micro_token_total = 0
-micro_sample_total = 0
-micro_loss_total = 0
 
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
@@ -449,16 +497,6 @@ progress = ProgressLogger(
     warmup_window_secs=config.WARMUP_WINDOW_SECS,
     estimated_total_tokens=target_tokens,
 )
-if is_master:
-    progress.print_dataset_pos(
-        global_counts={spec["spec"]: 0 for spec in dataset_specs},
-        resume_base=resume_rows,
-        dataset_specs=dataset_specs,
-        total_rows_by_spec=total_rows_by_spec,
-        avg_tokens_by_spec=avg_tokens_by_spec,
-        est_tokens_by_spec=est_tokens_by_spec,
-        target_tokens=target_tokens,
-    )
 
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
@@ -494,18 +532,14 @@ for current_epoch in itertools.count(resume_epoch):
     first_batch_start = time.time()
     if is_master:
         print("Waiting for first batch...", flush=True)
-    for current_step, batch in enumerate(loader):
+    for current_step, batch in enumerate(macro_step.measure_io(loader)):
         # Note time-to-first-batch for this epoch.
         if current_step == 0 and is_master:
             print(f"First batch after {time.time() - first_batch_start:.1f}s", flush=True)
 
-        # Track macro step timing across micro steps.
-        if current_micro_step == 0:
-            macro_data_wait = 0.0
-            macro_compute_time = 0.0
-
-        step_start = time.time()
-        macro_data_wait += step_start - last_step_end
+        # Reset macro-step accumulators and track data wait time.
+        if macro_step.current_micro_step == 0:
+            macro_step.begin(optimizer)
 
         # Move batch tensors to the device and prepare an optional attention mask.
         input_ids = batch["input_ids"]
@@ -528,47 +562,34 @@ for current_epoch in itertools.count(resume_epoch):
             print(f"Target text: {tokenizer.decode(target_preview)}")
             printed_debug_sample = True
 
-        # Clear accumulated gradients before the first micro step in the macro batch.
-        if current_micro_step == 0:
-            optimizer.zero_grad()
-            micro_loss_total = 0.0
-            micro_token_total = 0
-            micro_sample_total = 0
-
         # Run the forward pass with autocast and compute loss.
-        micro_compute_start = time.time()
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
-            logits = model(inputs, attention_mask=attn_mask)
-            loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
-            loss /= micro_steps # to make micro_loss_total equal average loss over the macro batch
-            # Avoid all-reduce on accumulation steps.
-        with model.no_sync() if ddp_enabled and current_micro_step != micro_steps - 1 else contextlib.nullcontext():
-            loss.backward()
+        with macro_step.measure_compute():
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
+                logits = model(inputs, attention_mask=attn_mask)
+                loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+                loss /= macro_step.micro_steps # to make macro_step.micro_loss_total equal average loss over the macro batch
+                # Avoid all-reduce on accumulation steps.
+            with model.no_sync() if ddp_enabled and macro_step.current_micro_step != macro_step.micro_steps - 1 else contextlib.nullcontext():
+                loss.backward()
 
-        # Micro step bookkeeping.
-        token_count = attention_mask[:, 1:].sum().item()
-        micro_token_total += token_count
-        micro_sample_total += input_ids.size(0)
-        micro_loss_total += loss.item()
+            # Micro step bookkeeping.
+            token_count = attention_mask[:, 1:].sum().item()
 
-        # Advance per-source row counters for resume safety.
-        row_counts = batch["row_count"].tolist()
-        source_ids = batch["source_id"].tolist()
-        for source_id, row_count in zip(source_ids, row_counts):
-            if row_count:
-                spec_key = dataset_specs[int(source_id)]["spec"]
-                source_row_counts[spec_key] += int(row_count)
+            # Advance per-source row counters for resume safety.
+            row_counts = batch["row_count"].tolist()
+            source_ids = batch["source_id"].tolist()
+            for source_id, row_count in zip(source_ids, row_counts):
+                if row_count:
+                    spec_key = dataset_specs[int(source_id)]["spec"]
+                    source_row_counts[spec_key] += int(row_count)
 
-        # Update checkpoint counters and save when needed.
-        current_sample_index += input_ids.size(0)
-        if current_micro_step != micro_steps - 1:
-            macro_compute_time += time.time() - micro_compute_start
-            last_step_end = time.time()
-            current_micro_step += 1
-            continue
+            # Update checkpoint counters and save when needed.
+            current_sample_index += input_ids.size(0)
+            if not macro_step.micro_step(token_count, input_ids.size(0), loss.item()):
+                continue
 
         # Log progress and plot loss history.
-        next_total_tokens = progress.total_tokens + micro_token_total
+        next_total_tokens = progress.total_tokens + macro_step.micro_token_total
         remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
         # Check for on-demand plot requests from stdin.
@@ -579,14 +600,14 @@ for current_epoch in itertools.count(resume_epoch):
             input_request = True
 
         # Average the micro loss across ranks for consistent logging.
-        logged_loss = micro_loss_total
+        logged_loss = macro_step.micro_loss_total
         loss_delta = None
-        logged_tokens = micro_token_total
+        logged_tokens = macro_step.micro_token_total
         if ddp_enabled:
-            loss_sum = torch.tensor(micro_loss_total, device=device)
-            loss_min = torch.tensor(micro_loss_total, device=device)
-            loss_max = torch.tensor(micro_loss_total, device=device)
-            token_tensor = torch.tensor(micro_token_total, device=device)
+            loss_sum = torch.tensor(macro_step.micro_loss_total, device=device)
+            loss_min = torch.tensor(macro_step.micro_loss_total, device=device)
+            loss_max = torch.tensor(macro_step.micro_loss_total, device=device)
+            token_tensor = torch.tensor(macro_step.micro_token_total, device=device)
             dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
             dist.all_reduce(loss_min, op=dist.ReduceOp.MIN)
             dist.all_reduce(loss_max, op=dist.ReduceOp.MAX)
@@ -598,13 +619,12 @@ for current_epoch in itertools.count(resume_epoch):
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
 
         # Update timing output for plot logs.
-        macro_compute_elapsed = macro_compute_time + (time.time() - micro_compute_start)
-        io_max = macro_data_wait
-        compute_max = macro_compute_elapsed
+        io_wait_max = macro_step.io_wait
+        compute_max = macro_step.compute_time
         if ddp_enabled:
-            time_max = torch.tensor([macro_data_wait, macro_compute_elapsed], device=device)
+            time_max = torch.tensor([macro_step.io_wait, macro_step.compute_time], device=device)
             dist.all_reduce(time_max, op=dist.ReduceOp.MAX)
-            io_max = time_max[0].item()
+            io_wait_max = time_max[0].item()
             compute_max = time_max[1].item()
         # Log macro step counts while keeping micro-step checkpointing intact.
         plot_printed = False
@@ -612,13 +632,13 @@ for current_epoch in itertools.count(resume_epoch):
             plot_printed = progress.tick(
                 logged_loss,
                 loss_delta=loss_delta,
-                batch_size=micro_sample_total,
+                batch_size=macro_step.micro_sample_total,
                 token_count=logged_tokens,
                 lr=optimizer.param_groups[0]["lr"],
                 epoch=current_epoch,
-                step=current_step // micro_steps,
+                step=current_step // macro_step.micro_steps,
                 remaining_tokens=remaining_tokens,
-                io_time=io_max,
+                io_time=io_wait_max,
                 gpu_time=compute_max,
             )
 
@@ -635,9 +655,9 @@ for current_epoch in itertools.count(resume_epoch):
             if plot_printed:
                 log_ddp_debug(
                     ddp_world_size,
-                    micro_loss_total,
-                    micro_token_total,
-                    micro_sample_total,
+                    macro_step.micro_loss_total,
+                    macro_step.micro_token_total,
+                    macro_step.micro_sample_total,
                     device,
                     is_master,
                 )
@@ -693,8 +713,8 @@ for current_epoch in itertools.count(resume_epoch):
         # Apply the optimizer step and advance the token scheduler.
         scheduler.last_epoch = next_total_tokens - 1
         scheduler.step()
-        macro_compute_time += time.time() - micro_compute_start
-        last_step_end = time.time()
+
+        macro_step.finish()
         now = time.time()
 
         # Sync stop requests across ranks.
@@ -752,7 +772,6 @@ for current_epoch in itertools.count(resume_epoch):
         # Exit after the current step if SIGINT was requested.
         if stop_requested:
             break
-        current_micro_step = 0
 
     current_sample_index = 0
     if stop_requested:

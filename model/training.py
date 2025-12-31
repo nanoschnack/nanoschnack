@@ -269,8 +269,8 @@ if max_tokens and estimated_total_tokens > 0:
 tokens_per_step = config.MACRO_BATCH_SIZE * (config.CONTEXT_LEN - 1)
 dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
 if is_master:
-    print(f"    Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}")
-    print(f"    Target: epochs={target_epochs:,} target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
+    print(f"  Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}")
+    print(f"  Target: epochs={target_epochs:,} target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
 
 
 # %% [markdown]
@@ -612,11 +612,8 @@ for current_epoch in itertools.count(resume_epoch):
         attention_mask = batch["attention_mask"]
         attn_mask = None
         if attention_mask is not None and not attention_mask.all():
-            print("Using attention mask.")
             attn_mask = attention_mask[:, :-1].to(device)
-        elif attention_mask.all():
-            print("Using all-attend attention mask.")
-
+            
         # Build next-token prediction pairs.
         inputs = input_ids[:, :-1].to(device) # everything from the first token except the last
         targets = input_ids[:, 1:].to(device) # everything from the second token onward

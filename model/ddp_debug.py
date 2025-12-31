@@ -3,13 +3,15 @@ import hashlib
 import torch
 
 
-def build_rng_label(device):
-    """Build a compact RNG fingerprint for cross-rank parity checks."""
-    cpu_hash = hashlib.sha1(torch.random.get_rng_state().numpy().tobytes()).hexdigest()[:8]
-    cuda_hash = None
+def build_rng_tensor(device):
+    """Build a compact RNG fingerprint tensor for cross-rank parity checks."""
+    cpu_hash = hashlib.sha1(torch.random.get_rng_state().numpy().tobytes()).hexdigest()
+    cpu_value = int(cpu_hash[:16], 16)
+    cuda_value = 0
     if device.type == "cuda":
-        cuda_hash = hashlib.sha1(torch.cuda.get_rng_state().cpu().numpy().tobytes()).hexdigest()[:8]
-    return f"cpu:{cpu_hash}" + (f" cuda:{cuda_hash}" if cuda_hash else "")
+        cuda_hash = hashlib.sha1(torch.cuda.get_rng_state().cpu().numpy().tobytes()).hexdigest()
+        cuda_value = int(cuda_hash[:16], 16)
+    return torch.tensor([cpu_value, cuda_value], dtype=torch.uint64, device=device)
 
 
 def log_ddp_debug(gathered_losses, stats_gathered, rng_gathered, is_master):
@@ -21,5 +23,8 @@ def log_ddp_debug(gathered_losses, stats_gathered, rng_gathered, is_master):
         for idx, value in enumerate(stats_gathered)
     )
     print(f"ddp-batch: {stats}", flush=True)
-    rngs = " ".join(f"{idx}={label}" for idx, label in enumerate(rng_gathered))
+    rngs = " ".join(
+        f"{idx}=cpu:{int(value[0].item()):016x} cuda:{int(value[1].item()):016x}"
+        for idx, value in enumerate(rng_gathered)
+    )
     print(f"ddp-rng: {rngs}", flush=True)

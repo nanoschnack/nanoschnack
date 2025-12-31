@@ -282,7 +282,7 @@ if is_master:
 # %%
 from plot import Plotter, plot_with_completion
 from progress import ProgressLogger
-from ddp_debug import build_rng_label, log_ddp_debug
+from ddp_debug import build_rng_tensor, log_ddp_debug
 from input import make_input_poller
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine_tokens
@@ -625,7 +625,8 @@ for current_epoch in itertools.count(resume_epoch):
             stop_flag = torch.tensor(1 if stop_requested else 0, device=device)
             loss_tensor = torch.tensor([macro_step.micro_loss_total], device=device)
             stats_tensor = torch.tensor([macro_step.micro_token_total, macro_step.micro_sample_total], dtype=torch.long,device=device)
-            rng_gathered = [None for _ in range(ddp_world_size)]
+            rng_tensor = build_rng_tensor(device)
+            rng_gathered = [torch.zeros_like(rng_tensor) for _ in range(ddp_world_size)]
 
             dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
             dist.all_reduce(loss_min, op=dist.ReduceOp.MIN)
@@ -634,9 +635,11 @@ for current_epoch in itertools.count(resume_epoch):
             dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
             dist.broadcast(input_flag, src=0)
             dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
-            dist.all_gather([torch.zeros_like(loss_tensor) for _ in range(ddp_world_size)], loss_tensor)
-            dist.all_gather([torch.zeros_like(stats_tensor) for _ in range(ddp_world_size)], stats_tensor)
-            dist.all_gather_object(rng_gathered, build_rng_label(device))
+            gathered_losses = [torch.zeros_like(loss_tensor) for _ in range(ddp_world_size)]
+            dist.all_gather(gathered_losses, loss_tensor)
+            stats_gathered = [torch.zeros_like(stats_tensor) for _ in range(ddp_world_size)]
+            dist.all_gather(stats_gathered, stats_tensor)
+            dist.all_gather(rng_gathered, rng_tensor)
 
             logged_loss = loss_sum.item() / ddp_world_size
             loss_delta = loss_max.item() - loss_min.item()
@@ -646,8 +649,6 @@ for current_epoch in itertools.count(resume_epoch):
             global_counts = {key: int(value) for key, value in zip(spec_keys, counts_tensor.tolist())}
             input_request = bool(input_flag.item())
             stop_requested = bool(stop_flag.item())
-            gathered = [loss_tensor[i].item() for i in range(ddp_world_size)]
-            stats_gathered = [stats_tensor[i].tolist() for i in range(ddp_world_size)]
 
         # Update timing output for plot logs.
         io_wait_max = macro_step.io_wait
@@ -679,7 +680,7 @@ for current_epoch in itertools.count(resume_epoch):
             is_master=is_master,
         )
         if ddp_enabled and plot_printed and is_master:
-            log_ddp_debug(gathered, stats_gathered, rng_gathered, is_master)
+            log_ddp_debug(gathered_losses, stats_gathered, rng_gathered, is_master)
 
         if plot_printed and is_master:
             plotter.print_dataset_pos(

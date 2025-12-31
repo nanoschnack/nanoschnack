@@ -38,8 +38,9 @@ class ProgressLogger:
         step,
         loss_delta=None,
         remaining_tokens=None,
-        io_time=None,
-        gpu_time=None,
+        io_time=0.0,
+        gpu_time=0.0,
+        sync_time=0.0,
     ):
         # Log throughput and loss for every tick (caller controls cadence).
         now = time.time()
@@ -69,9 +70,12 @@ class ProgressLogger:
         ]
         if loss_delta is not None:
             parts[-1] = f"Loss {self._format_loss(loss_value)} (Δ{loss_delta:.2f})"
-        if io_time is not None and gpu_time is not None:
-            parts.append(f"IO {self._format_duration(io_time)}")
-            parts.append(f"GPU {self._format_duration(gpu_time)}")
+        parts.append(
+            "Wait IO/GPU/Sync "
+            f"{self._format_duration(io_time)}/"
+            f"{self._format_duration(gpu_time)}/"
+            f"{self._format_duration(sync_time)}"
+        )
         parts.extend(
             [
                 f"LR {self._format_lr(lr)}",
@@ -175,11 +179,13 @@ class ProgressLogger:
         return text.rjust(width) if len(text) < width else text
 
     def _format_duration(self, seconds):
+        # Keep a fixed-width duration for log alignment (5 chars).
         if seconds < 1.0:
-            return f"{seconds * 1000:3.0f}ms"
-        if seconds < 10.0:
-            return f"{seconds:.2f}s"
-        return f"{seconds:.1f}s"
+            ms = int(seconds * 1000)
+            return f"{ms:>3d}ms"
+        if seconds < 100.0:
+            return f"{seconds:>4.1f}s"
+        return f"{int(seconds):>4d}s"
 
     def _format_lr(self, value, width=8):
         # Keep a fixed-width LR with six decimals.

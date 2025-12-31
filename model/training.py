@@ -532,6 +532,7 @@ signal.signal(signal.SIGINT, _request_stop)
 
 print("Starting training loop...", flush=True) if is_master else None
 for current_epoch in itertools.count(resume_epoch):
+    is_resume_epoch = current_epoch == resume_epoch
     # Reset row counters at epoch boundaries beyond the resume epoch.
     if current_epoch != resume_epoch:
         for spec in dataset_specs:
@@ -613,7 +614,6 @@ for current_epoch in itertools.count(resume_epoch):
         logged_loss = macro_step.micro_loss_total
         loss_delta = None
         logged_tokens = macro_step.micro_token_total
-        resume_base = resume_rows if current_epoch == resume_epoch else {}
         global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
         if ddp_enabled:
             loss_sum = torch.tensor(macro_step.micro_loss_total, device=device)
@@ -676,7 +676,7 @@ for current_epoch in itertools.count(resume_epoch):
             plotter.print_dataset_pos(
                 total_tokens=progress.total_tokens,
                 global_counts=global_counts,
-                resume_base=resume_base,
+                resume_base=resume_rows if is_resume_epoch else {},
                 dataset_specs=dataset_specs,
                 total_rows_by_spec=total_rows_by_spec,
                 avg_tokens_by_spec=avg_tokens_by_spec,
@@ -735,8 +735,7 @@ for current_epoch in itertools.count(resume_epoch):
 
         if should_checkpoint:
             # Build the resume state for the checkpoint.
-            resume_base = resume_rows if current_epoch == resume_epoch else {}
-            combined_counts = dict(resume_base)
+            combined_counts = dict(resume_rows if is_resume_epoch else {})
             for spec in dataset_specs:
                 spec_key = spec["spec"]
                 combined_counts[spec_key] = combined_counts.get(spec_key, 0) + source_row_counts.get(spec_key, 0)
@@ -752,7 +751,7 @@ for current_epoch in itertools.count(resume_epoch):
                 )
                 dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
                 if is_master:
-                    global_counts = dict(resume_base)
+                    global_counts = dict(resume_rows if is_resume_epoch else {})
                     for spec_key, value in zip(spec_keys, counts_tensor.tolist()):
                         global_counts[spec_key] = global_counts.get(spec_key, 0) + int(value)
                     resume_state = build_resume_state(global_counts, dataset_specs)

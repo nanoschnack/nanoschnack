@@ -214,21 +214,66 @@ def _remap_legacy_state_dict(state_dict):
 def _load_optimizer_state(optimizer, state_dict):
     # Load optimizer state and validate tensor shapes against parameters.
     if not state_dict:
-        return False
+        return False, {"reason": "missing_state"}
     original_param_groups = copy.deepcopy(optimizer.param_groups)
     try:
         optimizer.load_state_dict(state_dict)
-    except Exception:
+    except Exception as exc:
         optimizer.state.clear()
         optimizer.param_groups = original_param_groups
-        return False
+        return False, {"reason": "load_exception", "error": str(exc)}
+
+    mismatches = []
     for param, state in optimizer.state.items():
-        for value in state.values():
-            if torch.is_tensor(value) and value.shape != param.shape:
-                optimizer.state.clear()
-                optimizer.param_groups = original_param_groups
-                return False
-    return True
+        for key, value in state.items():
+            if torch.is_tensor(value) and value.ndim > 0 and value.shape != param.shape:
+                mismatches.append(
+                    {
+                        "state_key": key,
+                        "param_shape": tuple(param.shape),
+                        "state_shape": tuple(value.shape),
+                    }
+                )
+                if len(mismatches) >= 3:
+                    break
+        if len(mismatches) >= 3:
+            break
+    if mismatches:
+        optimizer.state.clear()
+        optimizer.param_groups = original_param_groups
+        return False, {
+            "reason": "shape_mismatch",
+            "mismatches": mismatches,
+            "optimizer_param_groups": len(optimizer.param_groups),
+            "state_param_groups": len(state_dict.get("param_groups", [])),
+            "state_entries": len(state_dict.get("state", {})),
+        }
+    return True, {}
+
+
+def _print_optimizer_mismatch(info):
+    # Emit extra debug lines to help trace optimizer resume failures.
+    if not info:
+        return
+    reason = info.get("reason")
+    if reason:
+        print(f"Optimizer resume detail: reason={reason}.")
+    error = info.get("error")
+    if error:
+        print(f"Optimizer resume detail: error={error}")
+    if "optimizer_param_groups" in info:
+        print(
+            "Optimizer resume detail: param_groups="
+            f"{info['optimizer_param_groups']} "
+            f"checkpoint_param_groups={info.get('state_param_groups', 0)} "
+            f"checkpoint_state_entries={info.get('state_entries', 0)}."
+        )
+    for mismatch in info.get("mismatches", []):
+        print(
+            "Optimizer resume detail: state tensor "
+            f"{mismatch.get('state_key')} shape {mismatch.get('state_shape')} "
+            f"!= param shape {mismatch.get('param_shape')}."
+        )
 
 
 class Checkpointer:
@@ -291,10 +336,13 @@ class Checkpointer:
             print(f"Loaded legacy checkpoint weights from {self.path}.")
 
         # Restore optimizer and scheduler state, falling back to fresh state on failure.
-        optimizer_loaded = _load_optimizer_state(self.optimizer, ckpt.get("optimizer", {}))
+        optimizer_loaded, optimizer_info = _load_optimizer_state(
+            self.optimizer, ckpt.get("optimizer", {})
+        )
         scheduler_loaded = False
         if not optimizer_loaded:
             print("Optimizer state mismatch; continuing with fresh optimizer state.")
+            _print_optimizer_mismatch(optimizer_info)
         else:
             # Attempt to restore scheduler state but keep training if it mismatches.
             try:

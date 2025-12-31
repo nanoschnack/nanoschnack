@@ -3,7 +3,7 @@ import unittest
 
 import torch
 
-from checkpointer import Checkpointer
+from checkpointer import Checkpointer, _load_optimizer_state
 from gpt import GPT
 
 
@@ -57,6 +57,51 @@ class CheckpointerOptimizerResetTests(unittest.TestCase):
             checkpointer.load_latest()
 
         self.assertEqual(len(optimizer_b.state), 0)
+
+    def test_load_optimizer_state_reports_shape_mismatch(self):
+        model = GPT(
+            vocab_size=11,
+            embed_size=8,
+            num_layers=1,
+            num_heads=1,
+            hidden_size=16,
+            context_len=4,
+        )
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        loss = sum(param.sum() for param in model.parameters())
+        loss.backward()
+        optimizer.step()
+        state_dict = optimizer.state_dict()
+        state = next(iter(state_dict["state"].values()))
+        tensor_key = next(key for key, value in state.items() if torch.is_tensor(value))
+        state[tensor_key] = torch.zeros(1, dtype=state[tensor_key].dtype)
+
+        loaded, info = _load_optimizer_state(optimizer, state_dict)
+
+        self.assertFalse(loaded)
+        self.assertEqual(info.get("reason"), "shape_mismatch")
+        self.assertTrue(info.get("mismatches"))
+
+    def test_load_optimizer_state_accepts_scalar_state(self):
+        model = GPT(
+            vocab_size=11,
+            embed_size=8,
+            num_layers=1,
+            num_heads=1,
+            hidden_size=16,
+            context_len=4,
+        )
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        loss = sum(param.sum() for param in model.parameters())
+        loss.backward()
+        optimizer.step()
+        state_dict = optimizer.state_dict()
+        optimizer_fresh = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+        loaded, info = _load_optimizer_state(optimizer_fresh, state_dict)
+
+        self.assertTrue(loaded)
+        self.assertEqual(info, {})
 
 
 if __name__ == "__main__":

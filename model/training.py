@@ -282,7 +282,6 @@ if is_master:
 # %%
 from plot import Plotter, plot_with_completion
 from progress import ProgressLogger
-from ddp_debug import log_ddp_debug
 from input import make_input_poller
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine_tokens
@@ -651,22 +650,19 @@ for current_epoch in itertools.count(resume_epoch):
                 io_time=io_wait_max,
                 gpu_time=compute_max,
             )
-            plot_printed = plotter.tick(logged_tokens, logged_loss)
-
-        # Sync plot printed status across ranks.
-        if ddp_enabled:
-            plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)
-            dist.broadcast(plot_flag, src=0)
-            plot_printed = bool(plot_flag.item())
-            if plot_printed:
-                log_ddp_debug(
-                    ddp_world_size,
-                    macro_step.micro_loss_total,
-                    macro_step.micro_token_total,
-                    macro_step.micro_sample_total,
-                    device,
-                    is_master,
-                )
+        plot_printed = plotter.tick(
+            logged_tokens,
+            logged_loss,
+            ddp_enabled=ddp_enabled,
+            is_master=is_master,
+            device=device,
+            ddp_world_size=ddp_world_size,
+            debug_payload=(
+                macro_step.micro_loss_total,
+                macro_step.micro_token_total,
+                macro_step.micro_sample_total,
+            ),
+        )
 
         # Sync input requests across ranks.
         if ddp_enabled:

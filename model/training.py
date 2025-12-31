@@ -282,6 +282,7 @@ if is_master:
 # %%
 from plot import Plotter, plot_with_completion
 from progress import ProgressLogger
+from ddp_debug import build_rng_label, log_ddp_debug
 from input import make_input_poller
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine_tokens
@@ -598,10 +599,6 @@ for current_epoch in itertools.count(resume_epoch):
             if not macro_step.micro_step(token_count, input_ids.size(0), loss.item()):
                 continue
 
-        # Log progress and plot loss history.
-        next_total_tokens = progress.total_tokens + macro_step.micro_token_total
-        remaining_tokens = max(target_tokens - next_total_tokens, 0)
-
         # Check for on-demand plot requests from stdin.
         if (cmd := plot_request()) == "p":
             plotter.request_plot()
@@ -614,7 +611,10 @@ for current_epoch in itertools.count(resume_epoch):
         logged_loss = macro_step.micro_loss_total
         loss_delta = None
         logged_tokens = macro_step.micro_token_total
+        next_total_tokens = progress.total_tokens + macro_step.micro_token_total
+        remaining_tokens = max(target_tokens - next_total_tokens, 0)
         global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
+
         if ddp_enabled:
             loss_sum = torch.tensor(macro_step.micro_loss_total, device=device)
             loss_min = torch.tensor(macro_step.micro_loss_total, device=device)
@@ -623,6 +623,9 @@ for current_epoch in itertools.count(resume_epoch):
             counts_tensor = torch.tensor([source_row_counts.get(spec_key, 0) for spec_key in spec_keys], dtype=torch.long, device=device)
             input_flag = torch.tensor(1 if (is_master and input_request) else 0, device=device)
             stop_flag = torch.tensor(1 if stop_requested else 0, device=device)
+            loss_tensor = torch.tensor([macro_step.micro_loss_total], device=device)
+            stats_tensor = torch.tensor([macro_step.micro_token_total, macro_step.micro_sample_total], dtype=torch.long,device=device)
+            rng_gathered = [None for _ in range(ddp_world_size)]
 
             dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
             dist.all_reduce(loss_min, op=dist.ReduceOp.MIN)
@@ -631,6 +634,9 @@ for current_epoch in itertools.count(resume_epoch):
             dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
             dist.broadcast(input_flag, src=0)
             dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
+            dist.all_gather([torch.zeros_like(loss_tensor) for _ in range(ddp_world_size)], loss_tensor)
+            dist.all_gather([torch.zeros_like(stats_tensor) for _ in range(ddp_world_size)], stats_tensor)
+            dist.all_gather_object(rng_gathered, build_rng_label(device))
 
             logged_loss = loss_sum.item() / ddp_world_size
             loss_delta = loss_max.item() - loss_min.item()
@@ -640,6 +646,8 @@ for current_epoch in itertools.count(resume_epoch):
             global_counts = {key: int(value) for key, value in zip(spec_keys, counts_tensor.tolist())}
             input_request = bool(input_flag.item())
             stop_requested = bool(stop_flag.item())
+            gathered = [loss_tensor[i].item() for i in range(ddp_world_size)]
+            stats_gathered = [stats_tensor[i].tolist() for i in range(ddp_world_size)]
 
         # Update timing output for plot logs.
         io_wait_max = macro_step.io_wait
@@ -668,16 +676,11 @@ for current_epoch in itertools.count(resume_epoch):
         plot_printed = plotter.tick(
             logged_tokens,
             logged_loss,
-            ddp_enabled=ddp_enabled,
             is_master=is_master,
-            device=device,
-            ddp_world_size=ddp_world_size,
-            debug_payload=(
-                macro_step.micro_loss_total,
-                macro_step.micro_token_total,
-                macro_step.micro_sample_total,
-            ),
         )
+        if ddp_enabled and plot_printed and is_master:
+            log_ddp_debug(gathered, stats_gathered, rng_gathered, is_master)
+
         if plot_printed and is_master:
             plotter.print_dataset_pos(
                 total_tokens=progress.total_tokens,

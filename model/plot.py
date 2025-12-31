@@ -3,11 +3,8 @@ from collections import deque
 from dataclasses import dataclass, field
 
 import asciichartpy
-import torch
-import torch.distributed as dist
 
 from chat import generate_reply_stream
-from ddp_debug import log_ddp_debug
 from text_format import format_compact, format_completion
 from tokenizer import DATASET_EOS_TOKEN
 
@@ -39,11 +36,7 @@ class Plotter:
         self,
         token_count,
         loss_value,
-        ddp_enabled=False,
         is_master=False,
-        device=None,
-        ddp_world_size=None,
-        debug_payload=None,
     ):
         self.record(token_count, loss_value)
         plot_printed = False
@@ -52,21 +45,6 @@ class Plotter:
             if self.should_plot(now):
                 self.print_plot(now)
                 plot_printed = True
-
-        if ddp_enabled:
-            plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)
-            dist.broadcast(plot_flag, src=0)
-            plot_printed = bool(plot_flag.item())
-            if plot_printed and debug_payload is not None:
-                micro_loss, micro_tokens, micro_samples = debug_payload
-                log_ddp_debug(
-                    ddp_world_size,
-                    micro_loss,
-                    micro_tokens,
-                    micro_samples,
-                    device,
-                    is_master,
-                )
 
         return plot_printed
 

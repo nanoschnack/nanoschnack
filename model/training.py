@@ -673,7 +673,6 @@ for current_epoch in itertools.count(resume_epoch):
 
         next_total_tokens = progress.total_tokens + synced.token_count
         global_counts = {key: int(value) for key, value in zip(spec_keys, synced.counts)}
-        stop_requested = synced.stop_flag
 
         # Update timing output for plot logs.
         io_wait_max = macro_step.io_wait
@@ -746,7 +745,7 @@ for current_epoch in itertools.count(resume_epoch):
 
         # Determine if we should checkpoint at this step.
         ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
-        should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
+        should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or synced.stop_flag
         if ddp_enabled:
             ckpt_flag = torch.tensor(1 if (is_master and should_checkpoint) else 0, device=device)
             dist.broadcast(ckpt_flag, src=0)
@@ -790,12 +789,17 @@ for current_epoch in itertools.count(resume_epoch):
             last_ckpt_time = now
 
         # Exit after the current step if SIGINT was requested.
-        if stop_requested:
+        if synced.stop_flag:
             break
 
-    current_sample_index = 0
-    if stop_requested:
-        break
+    else:
+        # Completed the epoch without interruption; reset sample index.
+        # Only called (Python \_(ツ)_/¯) if we didn't break from the loop for synced.stop_flag above.
+        current_sample_index = 0
+        continue
+
+    # Break from the outer epoch loop as well if the inner loop was interrupted.
+    break
 
 # Clean up the process group after training completes.
 if ddp_enabled:

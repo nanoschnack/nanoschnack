@@ -681,9 +681,6 @@ for current_epoch in itertools.count(resume_epoch):
         global_counts = {key: int(value) for key, value in zip(spec_keys, synced.counts)}
         input_request = synced.input_flag
         stop_requested = synced.stop_flag
-        gathered_losses = debug.gathered_losses
-        stats_gathered = debug.stats_gathered
-        rng_gathered = debug.rng_gathered
 
         # Update timing output for plot logs.
         io_wait_max = macro_step.io_wait
@@ -716,7 +713,7 @@ for current_epoch in itertools.count(resume_epoch):
             is_master=is_master,
         )
         if ddp_enabled and plot_printed and is_master:
-            log_ddp_debug(gathered_losses, stats_gathered, rng_gathered, is_master)
+            log_ddp_debug(debug.gathered_losses, debug.stats_gathered, debug.rng_gathered, is_master)
 
         if plot_printed and is_master:
             plotter.print_dataset_pos(
@@ -811,3 +808,4 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
+

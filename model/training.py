@@ -650,47 +650,40 @@ for current_epoch in itertools.count(resume_epoch):
         # Average the micro loss across ranks for consistent logging.
         # Sync per-spec row counts across ranks for plotting and resume logs.
         spec_keys = [spec["spec"] for spec in dataset_specs]
-        logged_loss = macro_step.micro_loss_total
-        loss_delta = None
-        logged_tokens = macro_step.micro_token_total
-        next_total_tokens = progress.total_tokens + macro_step.micro_token_total
+        synced = Synced(
+            loss_sum=macro_step.micro_loss_total,
+            loss_min=macro_step.micro_loss_total,
+            loss_max=macro_step.micro_loss_total,
+            token_count=macro_step.micro_token_total,
+            sample_count=macro_step.micro_sample_total,
+            stop_flag=stop_requested,
+            io_wait=macro_step.io_wait,
+            compute_time=macro_step.compute_time,
+            sync_wait=macro_step.sync_wait,
+            counts=[source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
+            input_flag=(is_master and input_request),
+        )
+        debug = SyncedDebug(
+            gathered_losses=macro_step.micro_loss_total,
+            stats_gathered=[macro_step.micro_token_total, macro_step.micro_sample_total],
+            rng_gathered=build_rng_tensor(device),
+        )
+        with macro_step.measure_sync() if ddp_enabled else contextlib.nullcontext():
+            synced = sync(synced, device, ddp_enabled=ddp_enabled)
+            debug = sync(debug, device, ddp_enabled=ddp_enabled)
+
+        divisor = ddp_world_size if ddp_enabled else 1
+        logged_loss = synced.loss_sum / divisor
+        loss_delta = synced.loss_max - synced.loss_min if ddp_enabled else None
+        logged_tokens = synced.token_count
+        next_total_tokens = progress.total_tokens + logged_tokens
         remaining_tokens = max(target_tokens - next_total_tokens, 0)
-        global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
-
-        if ddp_enabled:
-            synced = Synced(
-                loss_sum=macro_step.micro_loss_total,
-                loss_min=macro_step.micro_loss_total,
-                loss_max=macro_step.micro_loss_total,
-                token_count=macro_step.micro_token_total,
-                sample_count=macro_step.micro_sample_total,
-                stop_flag=stop_requested,
-                io_wait=macro_step.io_wait,
-                compute_time=macro_step.compute_time,
-                sync_wait=macro_step.sync_wait,
-                counts=[source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
-                input_flag=(is_master and input_request),
-            )
-            debug = SyncedDebug(
-                gathered_losses=macro_step.micro_loss_total,
-                stats_gathered=[macro_step.micro_token_total, macro_step.micro_sample_total],
-                rng_gathered=build_rng_tensor(device),
-            )
-            with macro_step.measure_sync():
-                synced = sync(synced, device)
-                debug = sync(debug, device)
-
-            logged_loss = synced.loss_sum / ddp_world_size
-            loss_delta = synced.loss_max - synced.loss_min
-            logged_tokens = synced.token_count
-            next_total_tokens = progress.total_tokens + logged_tokens
-            remaining_tokens = max(target_tokens - next_total_tokens, 0)
-            global_counts = {key: int(value) for key, value in zip(spec_keys, synced.counts)}
-            input_request = synced.input_flag
-            stop_requested = synced.stop_flag
-            gathered_losses = debug.gathered_losses
-            stats_gathered = debug.stats_gathered
-            rng_gathered = debug.rng_gathered
+        global_counts = {key: int(value) for key, value in zip(spec_keys, synced.counts)}
+        input_request = synced.input_flag
+        stop_requested = synced.stop_flag
+        gathered_losses = debug.gathered_losses
+        stats_gathered = debug.stats_gathered
+        rng_gathered = debug.rng_gathered
 
         # Update timing output for plot logs.
         io_wait_max = macro_step.io_wait

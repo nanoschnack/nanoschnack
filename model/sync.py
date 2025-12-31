@@ -100,7 +100,9 @@ def _value_from_tensor(tensor, shape, cast):
     return value
 
 
-def sync(state, device):
+def sync(state, device, ddp_enabled=True):
+    if not ddp_enabled or not dist.is_available() or not dist.is_initialized():
+        return state
     values = {sync_field.name: getattr(state, sync_field.name) for sync_field in fields(state)}
     groups = {}
     for sync_field in fields(state):

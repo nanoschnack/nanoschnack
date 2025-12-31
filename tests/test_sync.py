@@ -12,6 +12,12 @@ class _FakeDist:
         MIN = "min"
         MAX = "max"
 
+    def is_available(self):
+        return True
+
+    def is_initialized(self):
+        return True
+
     def all_reduce(self, tensor, op=None):
         return tensor
 

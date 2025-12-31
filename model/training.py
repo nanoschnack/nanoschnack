@@ -283,7 +283,7 @@ if is_master:
 from plot import Plotter, plot_with_completion
 from progress import ProgressLogger
 from ddp_debug import build_rng_tensor, log_ddp_debug
-from sync import all_gather, all_reduce, broadcast, sync
+from sync import all_gather, all_reduce, flag_broadcast, flag_reduce, sync
 from input import make_input_poller
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine_tokens
@@ -502,12 +502,12 @@ class Synced:
     loss_max: float = all_reduce("max")
     token_count: float = all_reduce("sum")
     sample_count: float = all_reduce("sum")
-    stop_flag: float = all_reduce("max")
+    stop_flag: bool = flag_reduce("max")
     io_wait: float = all_reduce("max")
     compute_time: float = all_reduce("max")
     sync_wait: float = all_reduce("max")
     counts: list = all_reduce("sum", dtype="i64")
-    input_flag: int = broadcast(src=0, dtype="u8")
+    input_flag: bool = flag_broadcast(src=0)
 
 
 @dataclass
@@ -664,12 +664,12 @@ for current_epoch in itertools.count(resume_epoch):
                 loss_max=macro_step.micro_loss_total,
                 token_count=macro_step.micro_token_total,
                 sample_count=macro_step.micro_sample_total,
-                stop_flag=float(stop_requested),
+                stop_flag=stop_requested,
                 io_wait=macro_step.io_wait,
                 compute_time=macro_step.compute_time,
                 sync_wait=macro_step.sync_wait,
                 counts=[source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
-                input_flag=int(is_master and input_request),
+                input_flag=(is_master and input_request),
             )
             debug = SyncedDebug(
                 gathered_losses=macro_step.micro_loss_total,
@@ -687,7 +687,7 @@ for current_epoch in itertools.count(resume_epoch):
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
             global_counts = {key: int(value) for key, value in zip(spec_keys, synced.counts)}
             input_request = bool(synced.input_flag)
-            stop_requested = bool(round(synced.stop_flag))
+            stop_requested = bool(synced.stop_flag)
             gathered_losses = debug.gathered_losses
             stats_gathered = debug.stats_gathered
             rng_gathered = debug.rng_gathered

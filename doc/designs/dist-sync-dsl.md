@@ -13,7 +13,7 @@
 ## Field Semantics
 - `all_reduce(reduce=...)` for scalars or small vectors.
 - `all_gather(...)` for per-rank debug payloads.
-- `broadcast(src=...)` for master-driven flags.
+- `broadcast(src=...)` for master-driven flags (use flag helpers for bools).
 - Shapes can be fixed or callable for dynamic lengths.
 
 ## Call-Site Sketch

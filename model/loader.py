@@ -389,6 +389,25 @@ def _rename_text_column(dataset, text_key):
         return dataset
     return dataset.rename_column("text", text_key)
 
+def _resolve_column_names(dataset, fallback=None):
+    # Resolve dataset column names from schema or a single sample fallback.
+    column_names = dataset.column_names
+    if column_names:
+        return list(column_names)
+    features = getattr(dataset, "features", None)
+    if features:
+        return list(features.keys())
+    take = getattr(dataset, "take", None)
+    if take is None:
+        return list(fallback) if fallback is not None else []
+    try:
+        sample = next(iter(take(1)))
+    except Exception:
+        return list(fallback) if fallback is not None else []
+    if isinstance(sample, dict):
+        return list(sample.keys())
+    return list(fallback) if fallback is not None else []
+
 def load_dataset_from_spec(spec, cache_dir=None, streaming=True, data_files=None):
     # Load a dataset based on a parsed spec dictionary.
     if spec["kind"] == "hf":
@@ -540,17 +559,25 @@ def build_packed_dataset(
         tokenizer,
         text_key=text_key,
     )
-    column_names = dataset.column_names or [text_key]
+    column_names = _resolve_column_names(dataset, fallback=[text_key])
     tokenized = dataset.map(
         tokenizer_batch,
         batched=True,
         remove_columns=column_names,
     )
+    packed_drop_columns = _resolve_column_names(tokenized)
     packed = tokenized.map(
         lambda batch: pack_tokens(batch, block_size, source_id=source_id),
         batched=True,
         batch_size=pack_batch_size,
+        remove_columns=packed_drop_columns,
     )
+    packed_column_names = _resolve_column_names(packed)
+    if packed_column_names:
+        keep_columns = {"input_ids", "attention_mask", "row_count", "source_id"}
+        drop_columns = [col for col in packed_column_names if col not in keep_columns]
+        if drop_columns:
+            packed = packed.remove_columns(drop_columns)
     return packed.with_format("torch")
 
 

@@ -78,6 +78,51 @@ class LoaderHelperTests(unittest.TestCase):
 
         self.assertEqual(packed["row_count"][0], 3)
 
+    def test_build_packed_dataset_drops_extra_columns(self):
+        class _Encoding:
+            def __init__(self, ids):
+                self.ids = ids
+
+        class _Tokenizer:
+            def encode_batch(self, texts):
+                return [_Encoding([1, 2, 3]) for _ in texts]
+
+            def token_to_id(self, token):
+                return None
+
+        dataset = IterableDataset.from_generator(
+            lambda: ({"text": "hello", "extra": i} for i in range(3))
+        )
+        packed = loader.build_packed_dataset(
+            dataset,
+            tokenizer=_Tokenizer(),
+            block_size=2,
+            text_key="text",
+            pack_batch_size=2,
+            source_id=0,
+        )
+
+        first = next(iter(packed))
+
+        self.assertEqual(
+            set(first.keys()),
+            {"input_ids", "attention_mask", "row_count", "source_id"},
+        )
+
+    def test_resolve_column_names_prefers_features(self):
+        class _Dataset:
+            column_names = None
+            features = {"text": None, "id": None}
+
+        self.assertEqual(loader._resolve_column_names(_Dataset()), ["text", "id"])
+
+    def test_resolve_column_names_falls_back_to_fallback(self):
+        class _Dataset:
+            column_names = None
+            features = None
+
+        self.assertEqual(loader._resolve_column_names(_Dataset(), fallback=["content"]), ["content"])
+
     def test_pack_tokens_raises_on_row_count_mismatch(self):
         batch = {
             "input_ids": [[1, 2], [3, 4]],

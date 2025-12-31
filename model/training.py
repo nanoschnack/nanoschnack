@@ -565,7 +565,6 @@ printed_debug_sample = False
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
 plot_requested = make_input_poller(is_master)
-input_requested = False
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
     print("Interrupted: saving checkpoint...") if is_master else None
@@ -674,7 +673,6 @@ for current_epoch in itertools.count(resume_epoch):
 
         next_total_tokens = progress.total_tokens + synced.token_count
         global_counts = {key: int(value) for key, value in zip(spec_keys, synced.counts)}
-        input_requested = synced.input_flag
         stop_requested = synced.stop_flag
 
         # Update timing output for plot logs.
@@ -723,7 +721,7 @@ for current_epoch in itertools.count(resume_epoch):
             )
 
         # Emit a per-rank input sample for shard sanity checks.
-        if debug_level >= 1 or input_requested:
+        if debug_level >= 1 or synced.input_flag:
             progress.print_input_sample(
                 ddp_rank,
                 inputs,
@@ -732,7 +730,6 @@ for current_epoch in itertools.count(resume_epoch):
                 source_ids=batch.get("source_id"),
                 dataset_specs=dataset_specs,
             )
-            input_requested = False
 
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

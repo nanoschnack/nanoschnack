@@ -45,3 +45,31 @@ def format_completion(prompt, completion, width=120):
     max_len = max(0, term_width - display_width(prefix))
     snippet = truncate_to_width(escaped, max_len)
     return f"{prefix}{snippet}"
+
+
+def format_sig(value, digits=3):
+    # Format up to the requested significant digits for compact displays.
+    if digits <= 3:
+        if value >= 100:
+            return f"{value:.0f}"
+        if value >= 10:
+            return f"{value:.1f}"
+        return f"{value:.2f}"
+    if value >= 1000:
+        return f"{value:.0f}"
+    if value >= 100:
+        return f"{value:.1f}"
+    if value >= 10:
+        return f"{value:.2f}"
+    return f"{value:.3f}"
+
+
+def format_compact(value, digits=3):
+    # Keep compact count outputs consistent across totals and rates.
+    if value >= 1_000_000_000:
+        return f"{format_sig(value / 1_000_000_000, digits=digits)}b"
+    if value >= 1_000_000:
+        return f"{format_sig(value / 1_000_000, digits=digits)}m"
+    if value >= 1_000:
+        return f"{format_sig(value / 1_000, digits=digits)}k"
+    return format_sig(value, digits=digits)

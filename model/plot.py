@@ -8,7 +8,7 @@ import torch.distributed as dist
 
 from chat import generate_reply_stream
 from ddp_debug import log_ddp_debug
-from text_format import format_completion
+from text_format import format_compact, format_completion
 from tokenizer import DATASET_EOS_TOKEN
 
 
@@ -87,6 +87,75 @@ class Plotter:
         print(self.plot_fn(list(self.loss_history)))
         self.last_plot_time = now
         self.plot_due = False
+
+    def print_dataset_pos(
+        self,
+        total_tokens,
+        global_counts,
+        resume_base,
+        dataset_specs,
+        total_rows_by_spec,
+        target_tokens,
+        avg_tokens_by_spec=None,
+        est_tokens_by_spec=None,
+    ):
+        # Emit dataset position summaries for each spec.
+        if avg_tokens_by_spec is None:
+            avg_tokens_by_spec = {}
+        if est_tokens_by_spec is None:
+            est_tokens_by_spec = {}
+        def _format_row_count(value):
+            if value < 10000:
+                return str(int(value))
+            return format_compact(value)
+
+        def _format_token_count(value):
+            if value is None:
+                return "?"
+            return format_compact(int(value))
+
+        print(
+            f"Dataset Position: tokens={total_tokens} target={target_tokens}",
+            flush=True,
+        )
+        for spec in dataset_specs:
+            spec_key = spec["spec"]
+            current_rows = global_counts.get(spec_key, 0) + resume_base.get(spec_key, 0)
+            resume_rows_count = resume_base.get(spec_key, 0)
+            total_rows = total_rows_by_spec.get(spec_key)
+            avg_tokens = avg_tokens_by_spec.get(spec_key)
+            est_tokens = est_tokens_by_spec.get(spec_key)
+            current_tokens = None
+            if avg_tokens is not None:
+                current_tokens = int(current_rows * avg_tokens)
+            tokens_pct = None
+            if est_tokens:
+                tokens_pct = (current_tokens or 0) / est_tokens * 100
+            pct = None
+            if total_rows:
+                pct = (current_rows / total_rows) * 100
+            if pct is None and tokens_pct is not None:
+                pct = tokens_pct
+            pct_label = f" ({pct:.1f}%)" if pct is not None else ""
+            token_detail = (
+                f" tokens={_format_token_count(current_tokens)}"
+                f"/{_format_token_count(est_tokens)}"
+            )
+            if total_rows:
+                print(
+                    f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
+                    f"rows={_format_row_count(current_rows)}"
+                    f"/{_format_row_count(total_rows)}"
+                    f"{token_detail}{pct_label}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
+                    f"rows={_format_row_count(current_rows)}"
+                    f"{token_detail}{pct_label}",
+                    flush=True,
+                )
 
 
 def plot_with_completion(points, model, tokenizer, config, device):

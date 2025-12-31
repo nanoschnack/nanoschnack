@@ -685,7 +685,8 @@ for current_epoch in itertools.count(resume_epoch):
             else:
                 global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
             if is_master:
-                progress.print_dataset_pos(
+                plotter.print_dataset_pos(
+                    total_tokens=progress.total_tokens,
                     global_counts=global_counts,
                     resume_base=resume_base,
                     dataset_specs=dataset_specs,

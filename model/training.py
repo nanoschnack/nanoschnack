@@ -508,6 +508,7 @@ class Synced:
     sync_wait: float = all_reduce("max")
     counts: list = all_reduce("sum", dtype="i64")
     print_input: bool = flag_broadcast(src=0)
+    should_checkpoint: bool = flag_broadcast(src=0)
 
 
 @dataclass
@@ -519,6 +520,7 @@ class SyncedDebug:
     gathered_losses: float = all_gather(dtype="f32")
     stats_gathered: list = all_gather(dtype="i64")
     rng_gathered: list = all_gather(dtype="u64")
+
 
 
 # Emit a first-batch timing log while streaming batches.
@@ -641,6 +643,7 @@ for current_epoch in itertools.count(resume_epoch):
                 continue
 
         # Check for on-demand plot requests from stdin.
+        input_requested = False
         if (cmd := plot_requested()) == "p":
             plotter.request_plot()
         elif cmd == "i":
@@ -649,6 +652,8 @@ for current_epoch in itertools.count(resume_epoch):
         # Average the micro loss across ranks for consistent logging.
         # Sync per-spec row counts across ranks for plotting and resume logs.
         spec_keys = [spec["spec"] for spec in dataset_specs]
+        now = time.time()
+        ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
         synced = Synced(
             average_loss=macro_step.micro_loss_total / (ddp_world_size if ddp_enabled else 1),
             loss_min=macro_step.micro_loss_total,
@@ -661,6 +666,7 @@ for current_epoch in itertools.count(resume_epoch):
             sync_wait=macro_step.sync_wait,
             counts=[source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
             print_input=(is_master and input_requested),
+            should_checkpoint=(now - last_ckpt_time >= ckpt_interval) if is_master else False,
         )
         debug = SyncedDebug(
             gathered_losses=macro_step.micro_loss_total,
@@ -744,14 +750,7 @@ for current_epoch in itertools.count(resume_epoch):
         now = time.time()
 
         # Determine if we should checkpoint at this step.
-        ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
-        should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or synced.stop_flag
-        if ddp_enabled:
-            ckpt_flag = torch.tensor(1 if (is_master and should_checkpoint) else 0, device=device)
-            dist.broadcast(ckpt_flag, src=0)
-            should_checkpoint = bool(ckpt_flag.item())
-
-        if should_checkpoint:
+        if synced.should_checkpoint or synced.stop_flag:
             # Build the resume state for the checkpoint.
             combined_counts = dict(resume_rows if is_resume_epoch else {})
             for spec in dataset_specs:
@@ -793,15 +792,15 @@ for current_epoch in itertools.count(resume_epoch):
             break
 
     else:
-        # Completed the epoch without interruption; reset sample index.
-        # Only called (Python \_(ツ)_/¯) if we didn't break from the loop for synced.stop_flag above.
+        # Reset the sample index after a full epoch without interruption.
         current_sample_index = 0
         continue
 
-    # Break from the outer epoch loop as well if the inner loop was interrupted.
+    # Stop training after an interrupted epoch.
     break
 
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
+
 

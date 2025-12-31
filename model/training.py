@@ -507,7 +507,7 @@ class Synced:
     compute_time: float = all_reduce("max")
     sync_wait: float = all_reduce("max")
     counts: list = all_reduce("sum", dtype="i64")
-    input_flag: bool = flag_broadcast(src=0)
+    print_input: bool = flag_broadcast(src=0)
 
 
 @dataclass
@@ -660,7 +660,7 @@ for current_epoch in itertools.count(resume_epoch):
             compute_time=macro_step.compute_time,
             sync_wait=macro_step.sync_wait,
             counts=[source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
-            input_flag=(is_master and input_requested),
+            print_input=(is_master and input_requested),
         )
         debug = SyncedDebug(
             gathered_losses=macro_step.micro_loss_total,
@@ -721,7 +721,7 @@ for current_epoch in itertools.count(resume_epoch):
             )
 
         # Emit a per-rank input sample for shard sanity checks.
-        if debug_level >= 1 or synced.input_flag:
+        if debug_level >= 1 or synced.print_input:
             progress.print_input_sample(
                 ddp_rank,
                 inputs,

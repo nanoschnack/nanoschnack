@@ -367,12 +367,6 @@ class Checkpointer:
         total_tokens = ckpt.get("total_tokens", 0)
         resume_state = ckpt.get("resume_state")
 
-        # Announce resume location for visibility.
-        display_epoch = saved_epoch if saved_epoch > 0 else 1
-        print(
-            f"Resuming from {self.path} at epoch {display_epoch}, step {resume_step}, "
-            f"sample index {sample_index}."
-        )
         resume_epoch = max(saved_epoch - 1, 0)
         return resume_epoch, resume_step, global_step, sample_index, total_tokens, resume_state
 

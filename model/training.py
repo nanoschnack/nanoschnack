@@ -255,7 +255,7 @@ for dataset_index, spec in enumerate(dataset_specs):
     avg_tokens_by_spec[spec["spec"]] = avg_tokens
     est_tokens_by_spec[spec["spec"]] = est_total_tokens
     estimated_total_tokens += est_total_tokens
-    print(f"    {dataset_label(spec)}: avg_tokens={avg_tokens:.1f}, est_tokens={est_total_tokens}") if is_master else None
+    print(f"  {dataset_label(spec)}: avg_tokens={avg_tokens:.1f}, est_tokens={est_total_tokens}") if is_master else None
 
 # Resolve model size for token budgeting.
 param_count, _ = config.model_info(model)
@@ -312,9 +312,19 @@ if resume_tokens:
 # Report resume state after aligning scheduler tokens.
 if is_master and resume_info:
     lr_after = optimizer.param_groups[0]["lr"]
+    display_epoch = max(resume_epoch + 1, 1)
+    print(f"Resume {checkpointer.path}:", flush=True)
     print(
-        f"Resume state: optimizer={resume_info['optimizer']} "
-        f"scheduler={resume_info['scheduler']} lr={lr_after:.8f}",
+        f"  Position: epoch {display_epoch}, step {resume_step}, "
+        f"sample index {resume_sample_index}.",
+        flush=True,
+    )
+    print(
+        f"  Optimizer: {resume_info['optimizer']}",
+        flush=True,
+    )
+    print(
+        f"  Scheduler: {resume_info['scheduler']} lr={lr_after:.8f}",
         flush=True,
     )
 
@@ -388,10 +398,10 @@ for dataset_index, spec in enumerate(dataset_specs):
         raw_streaming = raw_streaming.skip(in_shard_offset)
     if row_offset > 0:
         if data_files is None:
-            print(f"Resume rows (linear): {spec_key} -> {row_offset}") if is_master else None
+            print(f"  {spec_key}: row={row_offset}", flush=True) if is_master else None
             raw_streaming = raw_streaming.skip(row_offset)
         else:
-            print(f"Resume rows: {spec_key} -> {shard_label} +{in_shard_offset}") if is_master else None
+            print(f"  {spec_key}: shard={shard_label} row={in_shard_offset}", flush=True) if is_master else None
 
     # Cap each dataset to its remaining rows so exhausted specs stop contributing.
     remaining_rows = None
@@ -603,7 +613,10 @@ for current_epoch in itertools.count(resume_epoch):
         attention_mask = batch["attention_mask"]
         attn_mask = None
         if attention_mask is not None and not attention_mask.all():
+            print("Using attention mask.")
             attn_mask = attention_mask[:, :-1].to(device)
+        elif attention_mask.all():
+            print("Using all-attend attention mask.")
 
         # Build next-token prediction pairs.
         inputs = input_ids[:, :-1].to(device) # everything from the first token except the last

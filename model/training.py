@@ -497,7 +497,7 @@ class Synced:
     Groups reductions by op to keep the sync block small.
     Uses float fields to match collective expectations.
     """
-    loss_sum: float = all_reduce("sum")
+    average_loss: float = all_reduce("sum")
     loss_min: float = all_reduce("min")
     loss_max: float = all_reduce("max")
     token_count: int = all_reduce("sum", dtype="i64")
@@ -564,8 +564,8 @@ printed_debug_sample = False
 
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
-plot_request = make_input_poller(is_master)
-input_request = False
+plot_requested = make_input_poller(is_master)
+input_requested = False
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
     print("Interrupted: saving checkpoint...") if is_master else None
@@ -642,16 +642,16 @@ for current_epoch in itertools.count(resume_epoch):
                 continue
 
         # Check for on-demand plot requests from stdin.
-        if (cmd := plot_request()) == "p":
+        if (cmd := plot_requested()) == "p":
             plotter.request_plot()
         elif cmd == "i":
-            input_request = True
+            input_requested = True
 
         # Average the micro loss across ranks for consistent logging.
         # Sync per-spec row counts across ranks for plotting and resume logs.
         spec_keys = [spec["spec"] for spec in dataset_specs]
         synced = Synced(
-            loss_sum=macro_step.micro_loss_total,
+            average_loss=macro_step.micro_loss_total / (ddp_world_size if ddp_enabled else 1),
             loss_min=macro_step.micro_loss_total,
             loss_max=macro_step.micro_loss_total,
             token_count=macro_step.micro_token_total,
@@ -661,7 +661,7 @@ for current_epoch in itertools.count(resume_epoch):
             compute_time=macro_step.compute_time,
             sync_wait=macro_step.sync_wait,
             counts=[source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
-            input_flag=(is_master and input_request),
+            input_flag=(is_master and input_requested),
         )
         debug = SyncedDebug(
             gathered_losses=macro_step.micro_loss_total,
@@ -672,14 +672,9 @@ for current_epoch in itertools.count(resume_epoch):
             synced = sync(synced, device, ddp_enabled=ddp_enabled)
             debug = sync(debug, device, ddp_enabled=ddp_enabled)
 
-        divisor = ddp_world_size if ddp_enabled else 1
-        logged_loss = synced.loss_sum / divisor
-        loss_delta = synced.loss_max - synced.loss_min if ddp_enabled else None
-        logged_tokens = synced.token_count
-        next_total_tokens = progress.total_tokens + logged_tokens
-        remaining_tokens = max(target_tokens - next_total_tokens, 0)
+        next_total_tokens = progress.total_tokens + synced.token_count
         global_counts = {key: int(value) for key, value in zip(spec_keys, synced.counts)}
-        input_request = synced.input_flag
+        input_requested = synced.input_flag
         stop_requested = synced.stop_flag
 
         # Update timing output for plot logs.
@@ -695,21 +690,21 @@ for current_epoch in itertools.count(resume_epoch):
         plot_printed = False
         if is_master:
             progress.tick(
-                logged_loss,
-                loss_delta=loss_delta,
+                synced.average_loss,
+                loss_delta=(synced.loss_max - synced.loss_min if ddp_enabled else None),
                 batch_size=macro_step.micro_sample_total,
-                token_count=logged_tokens,
+                token_count=synced.token_count,
                 lr=optimizer.param_groups[0]["lr"],
                 epoch=current_epoch,
                 step=current_step // macro_step.micro_steps,
-                remaining_tokens=remaining_tokens,
+                remaining_tokens=max(target_tokens - next_total_tokens, 0),
                 io_time=io_wait_max,
                 gpu_time=compute_max,
                 sync_time=sync_wait_max,
             )
         plot_printed = plotter.tick(
-            logged_tokens,
-            logged_loss,
+            synced.token_count,
+            synced.average_loss,
             is_master=is_master,
         )
         if ddp_enabled and plot_printed and is_master:
@@ -728,7 +723,7 @@ for current_epoch in itertools.count(resume_epoch):
             )
 
         # Emit a per-rank input sample for shard sanity checks.
-        if debug_level >= 1 or input_request:
+        if debug_level >= 1 or input_requested:
             progress.print_input_sample(
                 ddp_rank,
                 inputs,
@@ -737,7 +732,7 @@ for current_epoch in itertools.count(resume_epoch):
                 source_ids=batch.get("source_id"),
                 dataset_specs=dataset_specs,
             )
-            input_request = False
+            input_requested = False
 
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

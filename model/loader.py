@@ -466,6 +466,11 @@ def build_tokenizer(tokenizer, text_key="text"):
                 ids.append(eos_token_id)
             input_ids.append(ids)
         row_count = batch.get("row_count")
+        if row_count is not None and len(row_count) != len(input_ids):
+            raise RuntimeError(
+                "Tokenizer row_count mismatch: "
+                f"text_rows={len(input_ids)} row_count_rows={len(row_count)}."
+            )
         if row_count is not None:
             return {"input_ids": input_ids, "row_count": row_count}
         return {"input_ids": input_ids}
@@ -483,6 +488,13 @@ def pack_tokens(batch, block_size, source_id=None):
     if total_length == 0:
         return {"input_ids": [], "attention_mask": [], "row_count": [], "source_id": []}
 
+    batch_row_counts = batch.get("row_count")
+    if batch_row_counts is not None and len(batch_row_counts) != len(batch["input_ids"]):
+        raise RuntimeError(
+            "Pack row_count mismatch: "
+            f"input_rows={len(batch['input_ids'])} "
+            f"row_count_rows={len(batch_row_counts)}."
+        )
     input_ids = [
         concatenated[i:i + block_size]
         for i in range(0, total_length, block_size)
@@ -491,7 +503,6 @@ def pack_tokens(batch, block_size, source_id=None):
 
     # Record raw row consumption on the first packed block only.
     row_counts = [0] * len(input_ids)
-    batch_row_counts = batch.get("row_count")
     if batch_row_counts is None:
         row_counts[0] = len(batch["input_ids"])
     else:
@@ -559,7 +570,22 @@ def time_until_first_batch(loader, is_master):
     if is_master:
         print("Waiting for first batch...", flush=True)
     first = True
-    for batch in loader:
+    iterator = iter(loader)
+    while True:
+        try:
+            batch = next(iterator)
+        except StopIteration:
+            return
+        except Exception:
+            if is_master:
+                dataset = getattr(loader, "dataset", None)
+                print("Failed while fetching a batch from the data loader.", flush=True)
+                if dataset is not None:
+                    print(f"Dataset type: {type(dataset)}", flush=True)
+                    column_names = getattr(dataset, "column_names", None)
+                    if column_names:
+                        print(f"Dataset columns: {column_names}", flush=True)
+            raise
         if first:
             if is_master:
                 print(f"First batch after {time.time() - start:.1f}s", flush=True)

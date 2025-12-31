@@ -77,3 +77,12 @@ class LoaderHelperTests(unittest.TestCase):
         packed = loader.pack_tokens(batch, block_size=3, source_id=1)
 
         self.assertEqual(packed["row_count"][0], 3)
+
+    def test_pack_tokens_raises_on_row_count_mismatch(self):
+        batch = {
+            "input_ids": [[1, 2], [3, 4]],
+            "row_count": [1],
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "Pack row_count mismatch"):
+            loader.pack_tokens(batch, block_size=2, source_id=1)

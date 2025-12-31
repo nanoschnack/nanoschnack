@@ -608,23 +608,32 @@ for current_epoch in itertools.count(resume_epoch):
             input_request = True
 
         # Average the micro loss across ranks for consistent logging.
+        # Sync per-spec row counts across ranks for plotting and resume logs.
+        spec_keys = [spec["spec"] for spec in dataset_specs]
         logged_loss = macro_step.micro_loss_total
         loss_delta = None
         logged_tokens = macro_step.micro_token_total
+        resume_base = resume_rows if current_epoch == resume_epoch else {}
+        global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
         if ddp_enabled:
             loss_sum = torch.tensor(macro_step.micro_loss_total, device=device)
             loss_min = torch.tensor(macro_step.micro_loss_total, device=device)
             loss_max = torch.tensor(macro_step.micro_loss_total, device=device)
             token_tensor = torch.tensor(macro_step.micro_token_total, device=device)
+            counts_tensor = torch.tensor([source_row_counts.get(spec_key, 0) for spec_key in spec_keys], dtype=torch.long, device=device)
+
             dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
             dist.all_reduce(loss_min, op=dist.ReduceOp.MIN)
             dist.all_reduce(loss_max, op=dist.ReduceOp.MAX)
             dist.all_reduce(token_tensor, op=dist.ReduceOp.SUM)
+            dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
+
             logged_loss = loss_sum.item() / ddp_world_size
             loss_delta = loss_max.item() - loss_min.item()
             logged_tokens = int(token_tensor.item())
             next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
+            global_counts = {key: int(value) for key, value in zip(spec_keys, counts_tensor.tolist())}
 
         # Update timing output for plot logs.
         io_wait_max = macro_step.io_wait
@@ -663,6 +672,17 @@ for current_epoch in itertools.count(resume_epoch):
                 macro_step.micro_sample_total,
             ),
         )
+        if plot_printed and is_master:
+            plotter.print_dataset_pos(
+                total_tokens=progress.total_tokens,
+                global_counts=global_counts,
+                resume_base=resume_base,
+                dataset_specs=dataset_specs,
+                total_rows_by_spec=total_rows_by_spec,
+                avg_tokens_by_spec=avg_tokens_by_spec,
+                est_tokens_by_spec=est_tokens_by_spec,
+                target_tokens=target_tokens,
+            )
 
         # Sync input requests across ranks.
         if ddp_enabled:
@@ -670,32 +690,6 @@ for current_epoch in itertools.count(resume_epoch):
             dist.broadcast(input_flag, src=0)
             input_request = bool(input_flag.item())
 
-        if plot_printed:
-            # Summarize dataset positions when plotting.
-            spec_keys = [spec["spec"] for spec in dataset_specs]
-            resume_base = resume_rows if current_epoch == resume_epoch else {}
-            if ddp_enabled:
-                counts_tensor = torch.tensor(
-                    [source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
-                    dtype=torch.long,
-                    device=device,
-                )
-                dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
-                global_counts = {key: int(value) for key, value in zip(spec_keys, counts_tensor.tolist())}
-            else:
-                global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
-            if is_master:
-                plotter.print_dataset_pos(
-                    total_tokens=progress.total_tokens,
-                    global_counts=global_counts,
-                    resume_base=resume_base,
-                    dataset_specs=dataset_specs,
-                    total_rows_by_spec=total_rows_by_spec,
-                    avg_tokens_by_spec=avg_tokens_by_spec,
-                    est_tokens_by_spec=est_tokens_by_spec,
-                    target_tokens=target_tokens,
-                )
-            
         # Emit a per-rank input sample for shard sanity checks.
         should_print_input = debug_level >= 1 or input_request
         if is_master and plot_printed:

@@ -313,10 +313,10 @@ if resume_tokens:
 if is_master and resume_info:
     lr_after = optimizer.param_groups[0]["lr"]
     display_epoch = max(resume_epoch + 1, 1)
-    print(f"Resume {checkpointer.path}:", flush=True)
+    print(f"Resuming {checkpointer.path}:", flush=True)
     print(
-        f"  Position: epoch {display_epoch}, step {resume_step}, "
-        f"sample index {resume_sample_index}.",
+        f"  Checkpoint: loaded epoch={display_epoch} step={resume_step} "
+        f"sample={resume_sample_index}",
         flush=True,
     )
     print(

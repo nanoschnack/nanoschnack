@@ -300,7 +300,7 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 
 # Load the latest checkpoint if available.
-resume_epoch, resume_step, global_step, resume_sample_index, resume_tokens, resume_state = checkpointer.load_latest()
+resume_epoch, resume_step, global_step, resume_sample_index, resume_tokens, resume_state = checkpointer.load_latest(is_master=is_master)
 resume_info = checkpointer.last_resume_info
 
 # Align the scheduler with the resumed token count.
@@ -313,7 +313,6 @@ if resume_tokens:
 if is_master and resume_info:
     lr_after = optimizer.param_groups[0]["lr"]
     display_epoch = max(resume_epoch + 1, 1)
-    print(f"Resuming {checkpointer.path}:", flush=True)
     print(
         f"  Checkpoint: loaded epoch={display_epoch} step={resume_step} "
         f"sample={resume_sample_index}",

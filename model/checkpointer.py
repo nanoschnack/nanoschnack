@@ -305,21 +305,21 @@ class Checkpointer:
         torch.save(ckpt, tmp_path)
         tmp_path.replace(path)
 
-    def load_latest(self):
+    def load_latest(self, is_master=True):
         # Load state from disk if present, otherwise start fresh.
         if not self.path.exists():
             self.last_resume_info = None
             return 0, 0, 0, 0, 0, None
 
         # Read checkpoint data onto the requested device.
-        print(f"Loading checkpoint from {self.path}...")
+        if is_master:
+            print(f"Resuming {self.path}:")
         try:
             ckpt = torch.load(self.path, map_location=self.device)
         except Exception as exc:
             raise RuntimeError(f"Failed to load checkpoint {self.path}: {exc}") from exc
 
         # Restore model and optimizer state for resuming training.
-        print("Checkpoint loaded. Restoring model and optimizer state...")
         model_state = ckpt.get("model")
         if model_state is None:
             raise RuntimeError(f"Checkpoint missing model state at {self.path}.")

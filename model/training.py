@@ -613,7 +613,7 @@ for current_epoch in itertools.count(resume_epoch):
         attn_mask = None
         if attention_mask is not None and not attention_mask.all():
             attn_mask = attention_mask[:, :-1].to(device)
-            
+
         # Build next-token prediction pairs.
         inputs = input_ids[:, :-1].to(device) # everything from the first token except the last
         targets = input_ids[:, 1:].to(device) # everything from the second token onward

@@ -1,10 +1,65 @@
+import time
+from collections import deque
+from dataclasses import dataclass, field
+
 import asciichartpy
 
 from chat import generate_reply_stream
+from text_format import format_completion
 from tokenizer import DATASET_EOS_TOKEN
 
 
-def plot_with_completion(points, model, tokenizer, config, device, progress):
+@dataclass
+class Plotter:
+    """Manage loss plotting for training without progress coupling.
+    Tracks loss history and token counts for charting.
+    Handles plot timing with warmup and steady-state intervals.
+    Supports on-demand plot requests from the training loop.
+    """
+    plot_fn: callable
+    warmup_plot_interval: float
+    plot_interval: float
+    warmup_window_secs: float
+    start_time: float = field(default_factory=time.time)
+    last_plot_time: float = field(default_factory=time.time)
+    total_tokens: int = 0
+    loss_history: deque = field(default_factory=deque)
+    plot_due: bool = False
+
+    def record(self, token_count, loss_value):
+        self.total_tokens += token_count
+        self.loss_history.append((self.total_tokens, loss_value))
+        if len(self.loss_history) > 3600:
+            self.loss_history.popleft()
+
+    def tick(self, token_count, loss_value):
+        self.record(token_count, loss_value)
+        now = time.time()
+        if self.should_plot(now):
+            self.print_plot(now)
+            return True
+        return False
+
+    def request_plot(self):
+        self.plot_due = True
+
+    def should_plot(self, now):
+        if self.plot_due:
+            return True
+        interval = (
+            self.warmup_plot_interval
+            if (now - self.start_time) < self.warmup_window_secs
+            else self.plot_interval
+        )
+        return now - self.last_plot_time >= interval
+
+    def print_plot(self, now):
+        print(self.plot_fn(list(self.loss_history)))
+        self.last_plot_time = now
+        self.plot_due = False
+
+
+def plot_with_completion(points, model, tokenizer, config, device):
     """Render a loss chart with a sample completion appended."""
     # Render the loss plot first so completion failures don't block logs.
     chart = ascii_loss_plot(points)
@@ -33,7 +88,7 @@ def plot_with_completion(points, model, tokenizer, config, device, progress):
     finally:
         if was_training:
             model.train()
-    formatted = progress.format_completion(
+    formatted = format_completion(
         "Validation: ",
         f"{config.PLOT_COMPLETION_PROMPT}|>{completion}",
     )

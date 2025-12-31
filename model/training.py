@@ -280,7 +280,7 @@ if is_master:
 # ## Load the previous Checkpoint
 
 # %%
-from plot import plot_with_completion
+from plot import Plotter, plot_with_completion
 from progress import ProgressLogger
 from ddp_debug import log_ddp_debug
 from input import make_input_poller
@@ -504,14 +504,16 @@ current_sample_index = 0
 
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
-    lambda points: plot_with_completion(points, model, tokenizer, config, device, progress),
     start_global_step=global_step,
     start_total_samples=0,
     start_total_tokens=resume_tokens,
+    estimated_total_tokens=target_tokens,
+)
+plotter = Plotter(
+    lambda points: plot_with_completion(points, model, tokenizer, config, device),
     warmup_plot_interval=config.PLOT_WARMUP_SECS,
     plot_interval=config.PLOT_INTERVAL_SECS,
     warmup_window_secs=config.WARMUP_WINDOW_SECS,
-    estimated_total_tokens=target_tokens,
 )
 
 # Enable debug output with DEBUG levels.
@@ -521,10 +523,7 @@ printed_debug_sample = False
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
 plot_request = make_input_poller(is_master)
-plot_due = False
-last_plot_time = time.time()
 input_request = False
-plot_debug = False
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
     print("Interrupted: saving checkpoint...") if is_master else None
@@ -605,8 +604,7 @@ for current_epoch in itertools.count(resume_epoch):
 
         # Check for on-demand plot requests from stdin.
         if (cmd := plot_request()) == "p":
-            plot_due = True
-            plot_debug = True
+            plotter.request_plot()
         elif cmd == "i":
             input_request = True
 
@@ -653,30 +651,13 @@ for current_epoch in itertools.count(resume_epoch):
                 io_time=io_wait_max,
                 gpu_time=compute_max,
             )
-            now = time.time()
-            if not plot_due:
-                interval = (
-                    progress.warmup_plot_interval
-                    if (now - progress.start_time) < progress.warmup_window_secs
-                    else progress.plot_interval
-                )
-                plot_due = now - last_plot_time >= interval
-            if plot_due:
-                progress.print_plot(now)
-                last_plot_time = now
-                plot_printed = True
-                plot_due = False
+            plot_printed = plotter.tick(logged_tokens, logged_loss)
 
+        # Sync plot printed status across ranks.
         if ddp_enabled:
             plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)
             dist.broadcast(plot_flag, src=0)
             plot_printed = bool(plot_flag.item())
-            debug_flag = torch.tensor(1 if (is_master and plot_debug) else 0, device=device)
-            dist.broadcast(debug_flag, src=0)
-            plot_debug = bool(debug_flag.item())
-            input_flag = torch.tensor(1 if (is_master and input_request) else 0, device=device)
-            dist.broadcast(input_flag, src=0)
-            input_request = bool(input_flag.item())
             if plot_printed:
                 log_ddp_debug(
                     ddp_world_size,
@@ -686,6 +667,12 @@ for current_epoch in itertools.count(resume_epoch):
                     device,
                     is_master,
                 )
+
+        # Sync input requests across ranks.
+        if ddp_enabled:
+            input_flag = torch.tensor(1 if (is_master and input_request) else 0, device=device)
+            dist.broadcast(input_flag, src=0)
+            input_request = bool(input_flag.item())
 
         if plot_printed:
             # Summarize dataset positions when plotting.
@@ -711,8 +698,7 @@ for current_epoch in itertools.count(resume_epoch):
                     est_tokens_by_spec=est_tokens_by_spec,
                     target_tokens=target_tokens,
                 )
-            plot_debug = False
-
+            
         # Emit a per-rank input sample for shard sanity checks.
         should_print_input = debug_level >= 1 or input_request
         if is_master and plot_printed:

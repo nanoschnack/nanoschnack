@@ -1,41 +1,32 @@
 import random
 import shutil
 import time
-import unicodedata
-from collections import deque
+
+from text_format import display_width, truncate_to_width
 
 
 class ProgressLogger:
-    """Track loss history and emit periodic logs/plots for long-running training loops.
+    """Track progress and emit periodic logs for long-running training loops.
 
     Designed for streaming datasets where epoch length is unknown.
-    Uses time-based intervals to control plotting cadence.
-    Stores up to 3600 loss samples for the ASCII chart.
+    Stores running counters for tokens, samples, and steps.
+    Keeps throughput estimates for logging and ETA display.
     """
     def __init__(
         self,
-        plot_fn,
         start_global_step=0,
         start_total_samples=0,
         start_total_tokens=0,
-        warmup_plot_interval=60,
-        plot_interval=600,
-        warmup_window_secs=600,
         estimated_total_tokens=None,
     ):
         # Keep configuration and bookkeeping for periodic logging.
-        self.plot_fn = plot_fn
         self.global_step = start_global_step
-        self.warmup_plot_interval = warmup_plot_interval
-        self.plot_interval = plot_interval
-        self.warmup_window_secs = warmup_window_secs
         self.start_time = time.time()
         self.last_tick_time = self.start_time
         self.total_samples = start_total_samples
         self.total_tokens = start_total_tokens
         self.estimated_total_tokens = estimated_total_tokens
         self.samples_per_sec = 0.0
-        self.loss_history = deque()
 
     def tick(
         self,
@@ -50,14 +41,9 @@ class ProgressLogger:
         io_time=None,
         gpu_time=None,
     ):
-        # Record the latest loss and retain a rolling window for plotting.
+        # Log throughput and loss for every tick (caller controls cadence).
         now = time.time()
         self.total_tokens += token_count
-        self.loss_history.append((self.total_tokens, loss_value))
-        if len(self.loss_history) > 3600:
-            self.loss_history.popleft()
-
-        # Log throughput and loss for every tick (caller controls cadence).
         self.total_samples += batch_size
         elapsed = now - self.last_tick_time
         samples_per_sec = batch_size / elapsed if elapsed > 0 else 0.0
@@ -100,9 +86,6 @@ class ProgressLogger:
 
         # Keep a global step counter for resuming logs across restarts.
         self.global_step += 1
-
-    def print_plot(self, now):
-        print(self.plot_fn(list(self.loss_history)))
 
     def print_dataset_pos(
         self,
@@ -206,23 +189,9 @@ class ProgressLogger:
             if 0 <= source_id < len(dataset_specs):
                 prefix = f"{rank} {dataset_specs[source_id]['spec']}: "
         term_width = shutil.get_terminal_size((width, 20)).columns
-        max_len = max(0, term_width - self._display_width(prefix))
-        snippet = self._truncate_to_width(escaped, max_len)
+        max_len = max(0, term_width - display_width(prefix))
+        snippet = truncate_to_width(escaped, max_len)
         print(f"{prefix}{snippet}")
-
-    def format_completion(self, prompt, completion, width=120):
-        # Format a completion block with escaped, truncated content.
-        escaped = (
-            completion.replace("\\", "\\\\")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-        )
-        prefix = prompt
-        term_width = shutil.get_terminal_size((width, 20)).columns
-        max_len = max(0, term_width - self._display_width(prefix))
-        snippet = self._truncate_to_width(escaped, max_len)
-        return f"{prefix}{snippet}"
 
     def _format_eta(self, remaining_units, units_per_sec):
         # Format an ETA string from remaining samples and throughput.
@@ -284,31 +253,3 @@ class ProgressLogger:
         # Keep a fixed-width LR with six decimals.
         text = f"{value:.6f}"
         return text.rjust(width) if len(text) < width else text
-
-    def _display_width(self, text):
-        # Approximate terminal column width for escaped strings.
-        width = 0
-        for char in text:
-            if unicodedata.combining(char):
-                continue
-            east_asian = unicodedata.east_asian_width(char)
-            width += 2 if east_asian in ("W", "F") else 1
-        return width
-
-    def _truncate_to_width(self, text, max_width):
-        # Truncate text to fit within the requested display width.
-        if max_width <= 0:
-            return ""
-        width = 0
-        out = []
-        for char in text:
-            if unicodedata.combining(char):
-                out.append(char)
-                continue
-            east_asian = unicodedata.east_asian_width(char)
-            char_width = 2 if east_asian in ("W", "F") else 1
-            if width + char_width > max_width:
-                break
-            out.append(char)
-            width += char_width
-        return "".join(out)

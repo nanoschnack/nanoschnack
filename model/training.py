@@ -621,12 +621,16 @@ for current_epoch in itertools.count(resume_epoch):
             loss_max = torch.tensor(macro_step.micro_loss_total, device=device)
             token_tensor = torch.tensor(macro_step.micro_token_total, device=device)
             counts_tensor = torch.tensor([source_row_counts.get(spec_key, 0) for spec_key in spec_keys], dtype=torch.long, device=device)
+            input_flag = torch.tensor(1 if (is_master and input_request) else 0, device=device)
+            stop_flag = torch.tensor(1 if stop_requested else 0, device=device)
 
             dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
             dist.all_reduce(loss_min, op=dist.ReduceOp.MIN)
             dist.all_reduce(loss_max, op=dist.ReduceOp.MAX)
             dist.all_reduce(token_tensor, op=dist.ReduceOp.SUM)
             dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
+            dist.broadcast(input_flag, src=0)
+            dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
 
             logged_loss = loss_sum.item() / ddp_world_size
             loss_delta = loss_max.item() - loss_min.item()
@@ -634,6 +638,8 @@ for current_epoch in itertools.count(resume_epoch):
             next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
             global_counts = {key: int(value) for key, value in zip(spec_keys, counts_tensor.tolist())}
+            input_request = bool(input_flag.item())
+            stop_requested = bool(stop_flag.item())
 
         # Update timing output for plot logs.
         io_wait_max = macro_step.io_wait
@@ -684,17 +690,8 @@ for current_epoch in itertools.count(resume_epoch):
                 target_tokens=target_tokens,
             )
 
-        # Sync input requests across ranks.
-        if ddp_enabled:
-            input_flag = torch.tensor(1 if (is_master and input_request) else 0, device=device)
-            dist.broadcast(input_flag, src=0)
-            input_request = bool(input_flag.item())
-
         # Emit a per-rank input sample for shard sanity checks.
-        should_print_input = debug_level >= 1 or input_request
-        if is_master and plot_printed:
-            should_print_input = True
-        if should_print_input:
+        if debug_level >= 1 or input_request:
             progress.print_input_sample(
                 ddp_rank,
                 inputs,
@@ -703,7 +700,6 @@ for current_epoch in itertools.count(resume_epoch):
                 source_ids=batch.get("source_id"),
                 dataset_specs=dataset_specs,
             )
-        if input_request:
             input_request = False
 
         # Apply gradient clipping.
@@ -718,12 +714,6 @@ for current_epoch in itertools.count(resume_epoch):
 
         macro_step.finish()
         now = time.time()
-
-        # Sync stop requests across ranks.
-        if ddp_enabled:
-            stop_flag = torch.tensor(1 if stop_requested else 0, device=device)
-            dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
-            stop_requested = bool(stop_flag.item())
 
         # Determine if we should checkpoint at this step.
         ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS

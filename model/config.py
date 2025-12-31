@@ -74,7 +74,7 @@ WARMUP_PCT = _env_float("WARMUP_PCT", 0.03)
 MAX_TRAINING_FACTOR = _env_int("MAX_TRAINING_FACTOR", 20)
 
 # Shuffle buffer size for streaming datasets.
-SHUFFLE_BUFFER = _env_int("SHUFFLE_BUFFER", 100_000)
+SHUFFLE_BUFFER = _env_int("SHUFFLE_BUFFER", 10_000 * _env_int("WORLD_SIZE", 1))
 
 # DataLoader workers for streaming prefetch.
 DATA_LOADER_WORKERS = _env_int("DATA_LOADER_WORKERS", 0)

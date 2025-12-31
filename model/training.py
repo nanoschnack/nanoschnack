@@ -521,6 +521,8 @@ printed_debug_sample = False
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
 plot_request = make_input_poller(is_master)
+plot_due = False
+last_plot_time = time.time()
 input_request = False
 plot_debug = False
 def _request_stop(signum, frame):
@@ -603,7 +605,7 @@ for current_epoch in itertools.count(resume_epoch):
 
         # Check for on-demand plot requests from stdin.
         if (cmd := plot_request()) == "p":
-            progress.request_plot()
+            plot_due = True
             plot_debug = True
         elif cmd == "i":
             input_request = True
@@ -635,10 +637,11 @@ for current_epoch in itertools.count(resume_epoch):
             dist.all_reduce(time_max, op=dist.ReduceOp.MAX)
             io_wait_max = time_max[0].item()
             compute_max = time_max[1].item()
+
         # Log macro step counts while keeping micro-step checkpointing intact.
         plot_printed = False
         if is_master:
-            plot_printed = progress.tick(
+            progress.tick(
                 logged_loss,
                 loss_delta=loss_delta,
                 batch_size=macro_step.micro_sample_total,
@@ -650,6 +653,19 @@ for current_epoch in itertools.count(resume_epoch):
                 io_time=io_wait_max,
                 gpu_time=compute_max,
             )
+            now = time.time()
+            if not plot_due:
+                interval = (
+                    progress.warmup_plot_interval
+                    if (now - progress.start_time) < progress.warmup_window_secs
+                    else progress.plot_interval
+                )
+                plot_due = now - last_plot_time >= interval
+            if plot_due:
+                progress.print_plot(now)
+                last_plot_time = now
+                plot_printed = True
+                plot_due = False
 
         if ddp_enabled:
             plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)

@@ -283,6 +283,7 @@ if is_master:
 from plot import Plotter, plot_with_completion
 from progress import ProgressLogger
 from ddp_debug import build_rng_tensor, log_ddp_debug
+from sync import all_gather, all_reduce, broadcast, sync
 from input import make_input_poller
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine_tokens
@@ -438,10 +439,12 @@ class MacroStep:
     micro_loss_total: float = 0.0
     io_wait: float = 0.0
     compute_time: float = 0.0
+    sync_wait: float = 0.0
 
     def begin(self, optimizer):
         self.compute_time = 0.0
         self.io_wait = 0.0
+        self.sync_wait = 0.0
         optimizer.zero_grad()
         self.micro_loss_total = 0.0
         self.micro_token_total = 0
@@ -466,6 +469,14 @@ class MacroStep:
         finally:
             self.compute_time += time.time() - start
 
+    @contextlib.contextmanager
+    def measure_sync(self):
+        start = time.time()
+        try:
+            yield
+        finally:
+            self.sync_wait += time.time() - start
+
     def measure_io(self, loader):
         prev = time.time()
         for batch in loader:
@@ -476,7 +487,38 @@ class MacroStep:
 
     def finish(self):
         self.io_wait = 0.0
+        self.sync_wait = 0.0
         self.current_micro_step = 0
+
+
+@dataclass
+class Synced:
+    """Aggregate synced scalars for per-step logging.
+    Groups reductions by op to keep the sync block small.
+    Uses float fields to match collective expectations.
+    """
+    loss_sum: float = all_reduce("sum")
+    loss_min: float = all_reduce("min")
+    loss_max: float = all_reduce("max")
+    token_count: float = all_reduce("sum")
+    sample_count: float = all_reduce("sum")
+    stop_flag: float = all_reduce("max")
+    io_wait: float = all_reduce("max")
+    compute_time: float = all_reduce("max")
+    sync_wait: float = all_reduce("max")
+    counts: list = all_reduce("sum", dtype="i64")
+    input_flag: int = broadcast(src=0, dtype="u8")
+
+
+@dataclass
+class SyncedDebug:
+    """Gather per-rank debug stats for DDP parity checks.
+    Bundles loss, batch stats, and RNG fingerprints.
+    Only used when debug output is enabled.
+    """
+    gathered_losses: float = all_gather(dtype="f32")
+    stats_gathered: list = all_gather(dtype="i64")
+    rng_gathered: list = all_gather(dtype="u64")
 
 
 # Emit a first-batch timing log while streaming batches.
@@ -616,48 +658,48 @@ for current_epoch in itertools.count(resume_epoch):
         global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
 
         if ddp_enabled:
-            loss_sum = torch.tensor(macro_step.micro_loss_total, device=device)
-            loss_min = torch.tensor(macro_step.micro_loss_total, device=device)
-            loss_max = torch.tensor(macro_step.micro_loss_total, device=device)
-            token_tensor = torch.tensor(macro_step.micro_token_total, device=device)
-            counts_tensor = torch.tensor([source_row_counts.get(spec_key, 0) for spec_key in spec_keys], dtype=torch.long, device=device)
-            input_flag = torch.tensor(1 if (is_master and input_request) else 0, device=device)
-            stop_flag = torch.tensor(1 if stop_requested else 0, device=device)
-            loss_tensor = torch.tensor([macro_step.micro_loss_total], device=device)
-            stats_tensor = torch.tensor([macro_step.micro_token_total, macro_step.micro_sample_total], dtype=torch.long,device=device)
-            rng_tensor = build_rng_tensor(device)
-            rng_gathered = [torch.zeros_like(rng_tensor) for _ in range(ddp_world_size)]
+            synced = Synced(
+                loss_sum=macro_step.micro_loss_total,
+                loss_min=macro_step.micro_loss_total,
+                loss_max=macro_step.micro_loss_total,
+                token_count=macro_step.micro_token_total,
+                sample_count=macro_step.micro_sample_total,
+                stop_flag=float(stop_requested),
+                io_wait=macro_step.io_wait,
+                compute_time=macro_step.compute_time,
+                sync_wait=macro_step.sync_wait,
+                counts=[source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
+                input_flag=int(is_master and input_request),
+            )
+            debug = SyncedDebug(
+                gathered_losses=macro_step.micro_loss_total,
+                stats_gathered=[macro_step.micro_token_total, macro_step.micro_sample_total],
+                rng_gathered=build_rng_tensor(device),
+            )
+            with macro_step.measure_sync():
+                synced = sync(synced, device)
+                debug = sync(debug, device)
 
-            dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
-            dist.all_reduce(loss_min, op=dist.ReduceOp.MIN)
-            dist.all_reduce(loss_max, op=dist.ReduceOp.MAX)
-            dist.all_reduce(token_tensor, op=dist.ReduceOp.SUM)
-            dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
-            dist.broadcast(input_flag, src=0)
-            dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
-            gathered_losses = [torch.zeros_like(loss_tensor) for _ in range(ddp_world_size)]
-            dist.all_gather(gathered_losses, loss_tensor)
-            stats_gathered = [torch.zeros_like(stats_tensor) for _ in range(ddp_world_size)]
-            dist.all_gather(stats_gathered, stats_tensor)
-            dist.all_gather(rng_gathered, rng_tensor)
-
-            logged_loss = loss_sum.item() / ddp_world_size
-            loss_delta = loss_max.item() - loss_min.item()
-            logged_tokens = int(token_tensor.item())
+            logged_loss = synced.loss_sum / ddp_world_size
+            loss_delta = synced.loss_max - synced.loss_min
+            logged_tokens = int(synced.token_count)
             next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
-            global_counts = {key: int(value) for key, value in zip(spec_keys, counts_tensor.tolist())}
-            input_request = bool(input_flag.item())
-            stop_requested = bool(stop_flag.item())
+            global_counts = {key: int(value) for key, value in zip(spec_keys, synced.counts)}
+            input_request = bool(synced.input_flag)
+            stop_requested = bool(round(synced.stop_flag))
+            gathered_losses = debug.gathered_losses
+            stats_gathered = debug.stats_gathered
+            rng_gathered = debug.rng_gathered
 
         # Update timing output for plot logs.
         io_wait_max = macro_step.io_wait
         compute_max = macro_step.compute_time
+        sync_wait_max = macro_step.sync_wait
         if ddp_enabled:
-            time_max = torch.tensor([macro_step.io_wait, macro_step.compute_time], device=device)
-            dist.all_reduce(time_max, op=dist.ReduceOp.MAX)
-            io_wait_max = time_max[0].item()
-            compute_max = time_max[1].item()
+            io_wait_max = synced.io_wait
+            compute_max = synced.compute_time
+            sync_wait_max = synced.sync_wait
 
         # Log macro step counts while keeping micro-step checkpointing intact.
         plot_printed = False
@@ -673,6 +715,7 @@ for current_epoch in itertools.count(resume_epoch):
                 remaining_tokens=remaining_tokens,
                 io_time=io_wait_max,
                 gpu_time=compute_max,
+                sync_time=sync_wait_max,
             )
         plot_printed = plotter.tick(
             logged_tokens,

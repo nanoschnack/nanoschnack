@@ -500,8 +500,8 @@ class Synced:
     loss_sum: float = all_reduce("sum")
     loss_min: float = all_reduce("min")
     loss_max: float = all_reduce("max")
-    token_count: float = all_reduce("sum")
-    sample_count: float = all_reduce("sum")
+    token_count: int = all_reduce("sum", dtype="i64")
+    sample_count: int = all_reduce("sum", dtype="i64")
     stop_flag: bool = flag_reduce("max")
     io_wait: float = all_reduce("max")
     compute_time: float = all_reduce("max")
@@ -682,12 +682,12 @@ for current_epoch in itertools.count(resume_epoch):
 
             logged_loss = synced.loss_sum / ddp_world_size
             loss_delta = synced.loss_max - synced.loss_min
-            logged_tokens = int(synced.token_count)
+            logged_tokens = synced.token_count
             next_total_tokens = progress.total_tokens + logged_tokens
             remaining_tokens = max(target_tokens - next_total_tokens, 0)
             global_counts = {key: int(value) for key, value in zip(spec_keys, synced.counts)}
-            input_request = bool(synced.input_flag)
-            stop_requested = bool(synced.stop_flag)
+            input_request = synced.input_flag
+            stop_requested = synced.stop_flag
             gathered_losses = debug.gathered_losses
             stats_gathered = debug.stats_gathered
             rng_gathered = debug.rng_gathered

@@ -285,6 +285,7 @@ from progress import ProgressLogger
 from ddp_debug import build_rng_tensor, log_ddp_debug
 from sync import all_gather, all_reduce, flag_broadcast, flag_reduce, sync
 from input import make_input_poller
+from loader import time_until_first_batch
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine_tokens
 from torch.utils.data import DataLoader
@@ -424,6 +425,11 @@ if is_master:
 # %% [markdown]
 # ## Run the Training
 
+# %% [markdown]
+# ### MacroStep
+#
+# Tracks macro-step counters, timings, and accumulation state.
+
 # %%
 @dataclass
 class MacroStep:
@@ -491,6 +497,12 @@ class MacroStep:
         self.current_micro_step = 0
 
 
+# %% [markdown]
+# ### Synced Payloads
+#
+# Declarative sync payloads for reductions, gathers, and broadcasts.
+
+# %%
 @dataclass
 class Synced:
     """Aggregate synced scalars for per-step logging.
@@ -522,20 +534,11 @@ class SyncedDebug:
     rng_gathered: list = all_gather(dtype="u64")
 
 
+# %% [markdown]
+# ### The actual training loop
 
+# %%
 # Emit a first-batch timing log while streaming batches.
-def time_until_first_batch(loader, is_master):
-    start = time.time()
-    if is_master:
-        print("Waiting for first batch...", flush=True)
-    first = True
-    for batch in loader:
-        if first:
-            if is_master:
-                print(f"First batch after {time.time() - start:.1f}s", flush=True)
-            first = False
-        yield batch
-
 last_ckpt_time = time.time()
 macro_step = MacroStep(
     micro_steps=(config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE,

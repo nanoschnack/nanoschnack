@@ -9,6 +9,8 @@ import re
 
 from datasets import interleave_datasets, load_dataset
 
+import time
+
 from tokenizer import DATASET_EOS_TOKEN
 
 class TokenEstimator:
@@ -549,3 +551,17 @@ def build_interleaved_dataset(datasets, seed=42):
         probabilities=[1 / len(datasets)] * len(datasets),
         stopping_strategy="all_exhausted",
     )
+
+
+# Emit a first-batch timing log while streaming batches.
+def time_until_first_batch(loader, is_master):
+    start = time.time()
+    if is_master:
+        print("Waiting for first batch...", flush=True)
+    first = True
+    for batch in loader:
+        if first:
+            if is_master:
+                print(f"First batch after {time.time() - start:.1f}s", flush=True)
+            first = False
+        yield batch

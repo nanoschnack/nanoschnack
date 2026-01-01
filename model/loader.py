@@ -1,5 +1,6 @@
 """Helpers for building streaming datasets with packing."""
 
+import hashlib
 import json
 import math
 import random
@@ -47,6 +48,25 @@ class TokenEstimator:
         sample = self._sample_streaming_texts(dataset, sample_size=sample_size)
         avg_tokens = self._average_tokens(sample)
         return avg_tokens, int(math.ceil(avg_tokens * total_rows))
+
+    def estimate_streaming_cached(self, dataset, total_rows, spec, cache_dir=None, sample_size=None):
+        # Cache streaming estimates to avoid repeated sampling work.
+        size = sample_size or self.sample_size
+        cache_key = estimate_cache_key(spec, self.tokenizer, size)
+        cached = read_estimate_cache(cache_dir, cache_key)
+        if cached and cached.get("total_rows") == total_rows:
+            return float(cached["avg_tokens"]), int(cached["est_total_tokens"])
+        avg_tokens, est_total_tokens = self.estimate_streaming(dataset, total_rows, sample_size=size)
+        write_estimate_cache(
+            cache_dir,
+            cache_key,
+            {
+                "avg_tokens": avg_tokens,
+                "est_total_tokens": est_total_tokens,
+                "total_rows": total_rows,
+            },
+        )
+        return avg_tokens, est_total_tokens
 
     def _sample_texts(self, dataset):
         # Return a deterministic random sample of texts.
@@ -116,6 +136,30 @@ def cap_streaming_rows(dataset, remaining_rows):
     return dataset.take(remaining_rows)
 
 
+def with_initial_log(message, iterable, start_time=None):
+    # Log once when the iterable yields its first element.
+    logged = {"done": False}
+    started = start_time or time.time()
+
+    def _emit():
+        if not logged["done"]:
+            duration_s = time.time() - started
+            print(message.format(duration_s=duration_s))
+            logged["done"] = True
+
+    if hasattr(iterable, "map"):
+        def _log_once(example):
+            _emit()
+            return example
+        return iterable.map(_log_once)
+
+    def _wrapped():
+        for item in iterable:
+            _emit()
+            yield item
+    return _wrapped()
+
+
 def parse_dataset_specs(specs_str):
     # Parse a comma-separated list of dataset specs into dictionaries.
     if specs_str is None:
@@ -183,6 +227,44 @@ def _resume_cache_path(cache_dir, name):
     cache_root = Path(cache_dir) / "resume"
     cache_root.mkdir(parents=True, exist_ok=True)
     return cache_root / name
+
+def _estimate_cache_path(cache_dir, name):
+    # Resolve a cache path for token estimate metadata.
+    if cache_dir is None:
+        return None
+    cache_root = Path(cache_dir) / "estimates"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return cache_root / name
+
+def estimate_cache_key(spec, tokenizer, sample_size):
+    # Build a stable cache key for token estimates.
+    vocab_size = tokenizer.get_vocab_size() if hasattr(tokenizer, "get_vocab_size") else None
+    payload = {
+        "sample_size": sample_size,
+        "spec": spec.get("spec"),
+        "text_key": spec.get("text_key"),
+        "vocab_size": vocab_size,
+    }
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+def read_estimate_cache(cache_dir, cache_key):
+    # Load cached token estimates if available.
+    cache_path = _estimate_cache_path(cache_dir, f"{cache_key}.json")
+    if cache_path is None or not cache_path.exists():
+        return None
+    with cache_path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+def write_estimate_cache(cache_dir, cache_key, payload):
+    # Persist cached token estimates for later runs.
+    cache_path = _estimate_cache_path(cache_dir, f"{cache_key}.json")
+    if cache_path is None:
+        return
+    tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    tmp_path.replace(cache_path)
 
 def _read_resume_cache(cache_path):
     # Load cached resume metadata if available.
@@ -595,8 +677,8 @@ def build_interleaved_dataset(datasets, seed=42):
 def time_until_first_batch(loader, is_master):
     start = time.time()
     if is_master:
-        print("Waiting for first batch...", flush=True)
-    first = True
+        print("Waiting for first batch...")
+        loader = with_initial_log("First batch after {duration_s:.1f}s", loader, start_time=start)
     iterator = iter(loader)
     while True:
         try:
@@ -606,15 +688,11 @@ def time_until_first_batch(loader, is_master):
         except Exception:
             if is_master:
                 dataset = getattr(loader, "dataset", None)
-                print("Failed while fetching a batch from the data loader.", flush=True)
+                print("Failed while fetching a batch from the data loader.")
                 if dataset is not None:
-                    print(f"Dataset type: {type(dataset)}", flush=True)
+                    print(f"Dataset type: {type(dataset)}")
                     column_names = getattr(dataset, "column_names", None)
                     if column_names:
-                        print(f"Dataset columns: {column_names}", flush=True)
+                        print(f"Dataset columns: {column_names}")
             raise
-        if first:
-            if is_master:
-                print(f"First batch after {time.time() - start:.1f}s", flush=True)
-            first = False
         yield batch

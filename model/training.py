@@ -218,6 +218,7 @@ from loader import (
     resolve_resume_plan,
     resolve_total_rows,
     dataset_label,
+    with_initial_log,
 )
 from resume import build_resume_state, cap_resume_rows, is_resume_exhausted, normalize_resume_rows
 import math
@@ -251,7 +252,12 @@ for dataset_index, spec in enumerate(dataset_specs):
         tokenizer,
         text_key=spec["text_key"],
     )
-    avg_tokens, est_total_tokens = token_estimator.estimate_streaming(raw_dataset, total_rows)
+    avg_tokens, est_total_tokens = token_estimator.estimate_streaming_cached(
+        raw_dataset,
+        total_rows,
+        spec,
+        cache_dir=data_dir,
+    )
     avg_tokens_by_spec[spec["spec"]] = avg_tokens
     est_tokens_by_spec[spec["spec"]] = est_total_tokens
     estimated_total_tokens += est_total_tokens
@@ -394,13 +400,26 @@ for dataset_index, spec in enumerate(dataset_specs):
 
     # Apply shard-local resume offset before splitting.
     if data_files is not None and in_shard_offset > 0:
+        if is_master:
+            print(f"  {spec_key}: skipping rows={in_shard_offset} shard={shard_label}")
+
+        skip_start = time.time()
         raw_streaming = raw_streaming.skip(in_shard_offset)
+        if is_master:
+            raw_streaming = with_initial_log(f"  {spec_key}: skip=done duration={{duration_s:.0f}}s", raw_streaming, start_time=skip_start)
     if row_offset > 0:
         if data_files is None:
-            print(f"  {spec_key}: row={row_offset}", flush=True) if is_master else None
+            print(f"  {spec_key}: row={row_offset}") if is_master else None
+            if is_master:
+                print(f"  {spec_key}: skipping rows={row_offset}")
+
+            skip_start = time.time()
             raw_streaming = raw_streaming.skip(row_offset)
+            if is_master:
+                raw_streaming = with_initial_log(f"  {spec_key}: skip=done duration={{duration_s:.0f}}s", raw_streaming, start_time=skip_start)
         else:
-            print(f"  {spec_key}: shard={shard_label} row={in_shard_offset}", flush=True) if is_master else None
+            if is_master and in_shard_offset == 0:
+                print(f"  {spec_key}: shard={shard_label} row={in_shard_offset}")
 
     # Cap each dataset to its remaining rows so exhausted specs stop contributing.
     remaining_rows = None
@@ -579,12 +598,14 @@ printed_debug_sample = False
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
 plot_requested = make_input_poller(is_master)
+sigint_installed = False
+# Default to immediate exit before the first batch.
+signal.signal(signal.SIGINT, signal.default_int_handler)
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
     print("Interrupted: saving checkpoint...") if is_master else None
     global stop_requested
     stop_requested = True
-signal.signal(signal.SIGINT, _request_stop)
 
 print("Starting training loop...", flush=True) if is_master else None
 for current_epoch in itertools.count(resume_epoch):
@@ -603,6 +624,11 @@ for current_epoch in itertools.count(resume_epoch):
 
     # Announce first-batch wait to avoid silent startup stalls.
     for current_step, batch in enumerate(macro_step.measure_io(time_until_first_batch(loader, is_master))):
+        # Install the SIGINT handler after the first batch to allow early aborts.
+        if not sigint_installed:
+            signal.signal(signal.SIGINT, _request_stop)
+            sigint_installed = True
+
         # Reset macro-step accumulators and track data wait time.
         if macro_step.current_micro_step == 0:
             macro_step.begin(optimizer)

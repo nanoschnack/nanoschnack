@@ -74,7 +74,6 @@ if is_master:
 torch.set_float32_matmul_precision("high")
 
 
-
 # %% [markdown]
 # ## Loading a tokenizer with Hugging Face's tokenizer library
 #
@@ -86,6 +85,7 @@ from tokenizer import PAD_TOKEN, load_tokenizer, print_vocab_alignment
 tokenizer = load_tokenizer()
 if is_master:
     print_vocab_alignment(tokenizer)
+
 
 
 # %%
@@ -172,7 +172,6 @@ if is_master:
     )
 
 
-
 # %% [markdown]
 # ## Create vizualization of the model
 
@@ -202,6 +201,7 @@ if is_notebook:
     make_dot(y, params=dict(model.named_parameters()))
 
 
+
 # %% [markdown]
 # ## Load the Training Data
 
@@ -217,7 +217,7 @@ from loader import (
     resolve_total_rows,
     with_initial_log,
 )
-from resume import build_resume_state, cap_resume_rows, is_resume_exhausted, normalize_resume_rows, normalize_resume_tokens
+from resume import build_resume_state, cap_resume_rows, is_resume_exhausted, normalize_resume_rows, normalize_resume_tokens, seed_missing_token_offsets
 
 # Download shards on demand and shuffle within each dataset.
 set_verbosity_error()
@@ -247,6 +247,7 @@ max_tokens = int(param_count * config.MAX_TRAINING_FACTOR) if config.MAX_TRAININ
 target_tokens = max_tokens
 if is_master:
     print(f"  Target: epochs=1 target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
+
 
 
 # %% [markdown]
@@ -308,6 +309,9 @@ if is_master and resume_info:
 resume_rows = normalize_resume_rows(resume_state, dataset_specs)
 resume_rows = cap_resume_rows(resume_rows, total_rows_by_spec)
 resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
+
+# Seed new specs to the current token baseline for fair interleaving.
+resume_tokens = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
 
 global_row_counts = dict(resume_rows)
 global_token_counts = dict(resume_tokens)
@@ -830,6 +834,5 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
-
 
 

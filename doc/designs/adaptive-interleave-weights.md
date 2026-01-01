@@ -49,7 +49,8 @@ Resume behavior:
 
 - Row and token offsets are loaded for all specs.
 - Unknown specs in a checkpoint are preserved.
-- Missing token offsets default to 0 for current specs.
+- Missing token offsets default to the baseline (minimum) token count
+  from the resume state so new specs start at the current competition level.
 
 ## Implementation Notes
 
@@ -61,8 +62,8 @@ Resume behavior:
 
 ## Risks and Mitigations
 
-- **New spec dominance on resume:** new specs start at token count 0 and
-  can temporarily dominate. (Planned: seed new specs at a baseline.)
+- **New spec dominance on resume:** new specs are seeded to the current
+  baseline token count from the resume state to avoid dominating the pool.
 - **Token-count drift across ranks:** counts are synchronized via
   per-rank reductions at logging/checkpoint boundaries.
 

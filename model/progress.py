@@ -61,11 +61,11 @@ class ProgressLogger:
             eta = "?"
 
         parts = [
+            f"{step+1}/{self.global_step+1}",
             f"Tokens {self._format_count(self.total_tokens)}",
             f"Total {pct:.1f}%",
             f"Samples {self._format_count(self.total_samples)}",
             f"Epoch {epoch+1}",
-            f"Steps {step+1}/{self.global_step+1}",
             f"Loss {self._format_loss(loss_value)}",
         ]
         if loss_delta is not None:

@@ -50,6 +50,7 @@ class CheckpointerLegacyTests(unittest.TestCase):
             num_heads=2,
             hidden_size=16,
             context_len=4,
+            pos_embed_type="learned",
         )
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
@@ -75,6 +76,7 @@ class CheckpointerLegacyTests(unittest.TestCase):
                 num_heads=2,
                 hidden_size=16,
                 context_len=4,
+                pos_embed_type="learned",
             )
             new_optimizer = torch.optim.AdamW(new_model.parameters(), lr=1e-3)
             new_scheduler = torch.optim.lr_scheduler.LambdaLR(new_optimizer, lr_lambda=lambda _: 1.0)

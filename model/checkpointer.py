@@ -20,9 +20,21 @@ def apply_checkpoint_config(ckpt_config):
     # Apply checkpoint hyperparameters to global config.
     if not ckpt_config:
         return
-    for name in ("CONTEXT_LEN", "VOCAB_SIZE", "EMBED_SIZE", "NUM_LAYERS", "NUM_HEADS", "HIDDEN_SIZE"):
+    for name in (
+        "CONTEXT_LEN",
+        "VOCAB_SIZE",
+        "EMBED_SIZE",
+        "NUM_LAYERS",
+        "NUM_HEADS",
+        "HIDDEN_SIZE",
+        "ROPE_BASE",
+    ):
         if name in ckpt_config:
             setattr(config, name, ckpt_config[name])
+    if "POS_EMBED_TYPE" in ckpt_config:
+        config.POS_EMBED_TYPE = ckpt_config["POS_EMBED_TYPE"]
+    else:
+        config.POS_EMBED_TYPE = "learned"
 
 
 def strip_state_dict_prefix(state_dict, prefix):
@@ -46,7 +58,10 @@ def select_state_dict(ckpt):
     # Extract the model weights from known checkpoint layouts.
     if isinstance(ckpt, dict):
         if "model" in ckpt:
-            apply_checkpoint_config(ckpt.get("config"))
+            if "config" in ckpt:
+                apply_checkpoint_config(ckpt.get("config"))
+            else:
+                config.POS_EMBED_TYPE = "learned"
             return ckpt["model"]
         for key in ("model_state_dict", "state_dict"):
             if key in ckpt:

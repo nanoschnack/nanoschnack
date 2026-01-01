@@ -91,6 +91,7 @@ if is_master:
 # %%
 from gpt import GPT
 from autotune import find_max_batch_size
+from checkpointer import apply_checkpoint_config
 import config
 
 # Resolve model paths so relative data/checkpoint locations are stable.
@@ -106,18 +107,9 @@ checkpoint_path = checkpoint_dir / "latest.pt"
 if checkpoint_path.exists():
     checkpoint_state = torch.load(checkpoint_path, map_location="cpu")
     if isinstance(checkpoint_state, dict) and "config" in checkpoint_state:
-        ckpt_config = checkpoint_state["config"]
-        config.CONTEXT_LEN = ckpt_config.get("CONTEXT_LEN", config.CONTEXT_LEN)
-        config.EMBED_SIZE = ckpt_config.get("EMBED_SIZE", config.EMBED_SIZE)
-        config.NUM_LAYERS = ckpt_config.get("NUM_LAYERS", config.NUM_LAYERS)
-        config.NUM_HEADS = ckpt_config.get("NUM_HEADS", config.NUM_HEADS)
-        config.HIDDEN_SIZE = ckpt_config.get("HIDDEN_SIZE", config.HIDDEN_SIZE)
-
-context_len = config.CONTEXT_LEN
-embed_size = config.EMBED_SIZE
-num_layers = config.NUM_LAYERS
-num_heads = config.NUM_HEADS
-hidden_size = config.HIDDEN_SIZE
+        apply_checkpoint_config(checkpoint_state["config"])
+    elif isinstance(checkpoint_state, dict):
+        config.POS_EMBED_TYPE = "learned"
 
 # add special tokens
 tokenizer.add_special_tokens([PAD_TOKEN])
@@ -125,11 +117,13 @@ pad_id = tokenizer.token_to_id(PAD_TOKEN)
 
 model = GPT(
     vocab_size=tokenizer.get_vocab_size(),
-    embed_size=embed_size,
-    num_layers=num_layers,
-    num_heads=num_heads,
-    hidden_size=hidden_size,
-    context_len=context_len,
+    embed_size=config.EMBED_SIZE,
+    num_layers=config.NUM_LAYERS,
+    num_heads=config.NUM_HEADS,
+    hidden_size=config.HIDDEN_SIZE,
+    context_len=config.CONTEXT_LEN,
+    pos_embed_type=config.POS_EMBED_TYPE,
+    rope_base=config.ROPE_BASE,
 ).to(device).train()
 # Tune batch size on the master rank only.
 tuned_batch_size = None
@@ -137,7 +131,7 @@ if is_master:
     tuned_batch_size = find_max_batch_size(
         model,
         vocab_size=tokenizer.get_vocab_size(),
-        seq_len=context_len,
+        seq_len=config.CONTEXT_LEN,
         device=device,
         start=config.BATCH_SIZE,
     )
@@ -176,6 +170,7 @@ if is_master:
         ddp_enabled=ddp_enabled,
         ddp_world_size=ddp_world_size,
     )
+
 
 
 

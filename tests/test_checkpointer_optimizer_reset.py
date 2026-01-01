@@ -21,6 +21,7 @@ class CheckpointerOptimizerResetTests(unittest.TestCase):
             num_heads=1,
             hidden_size=16,
             context_len=4,
+            pos_embed_type="learned",
         )
         optimizer_a = torch.optim.AdamW(model_a.parameters(), lr=1e-3)
         scheduler_a = torch.optim.lr_scheduler.LambdaLR(optimizer_a, lr_lambda=lambda _: 1.0)
@@ -36,6 +37,7 @@ class CheckpointerOptimizerResetTests(unittest.TestCase):
             num_heads=1,
             hidden_size=24,
             context_len=4,
+            pos_embed_type="learned",
         )
         optimizer_b = torch.optim.AdamW(model_b.parameters(), lr=1e-3)
         scheduler_b = torch.optim.lr_scheduler.LambdaLR(optimizer_b, lr_lambda=lambda _: 1.0)
@@ -66,6 +68,7 @@ class CheckpointerOptimizerResetTests(unittest.TestCase):
             num_heads=1,
             hidden_size=16,
             context_len=4,
+            pos_embed_type="learned",
         )
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
         loss = sum(param.sum() for param in model.parameters())
@@ -90,6 +93,7 @@ class CheckpointerOptimizerResetTests(unittest.TestCase):
             num_heads=1,
             hidden_size=16,
             context_len=4,
+            pos_embed_type="learned",
         )
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
         loss = sum(param.sum() for param in model.parameters())

@@ -180,6 +180,8 @@ class NanoSchnackTransparentLlm(TransparentLlm):
             num_heads=config.NUM_HEADS,
             hidden_size=config.HIDDEN_SIZE,
             context_len=config.CONTEXT_LEN,
+            pos_embed_type=config.POS_EMBED_TYPE,
+            rope_base=config.ROPE_BASE,
         ).to(resolved_device)
         self._model.eval()
         self._device = resolved_device

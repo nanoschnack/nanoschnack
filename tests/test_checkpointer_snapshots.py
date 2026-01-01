@@ -21,6 +21,7 @@ class CheckpointerSnapshotTests(unittest.TestCase):
             num_heads=1,
             hidden_size=16,
             context_len=4,
+            pos_embed_type="learned",
         )
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)

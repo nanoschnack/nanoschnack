@@ -30,6 +30,7 @@ class GPTInitializationTests(unittest.TestCase):
             num_heads=4,
             hidden_size=256,
             context_len=32,
+            pos_embed_type="learned",
         )
 
         # Check base GPT-2 std on embeddings and non-residual projections.

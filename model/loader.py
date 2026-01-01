@@ -172,6 +172,7 @@ def _ensure_local_shard(repo_id, rel_path, cache_dir, split, local_files_only=Fa
         filename=rel_path,
         cache_dir=cache_dir,
         local_files_only=local_files_only,
+        repo_type="dataset",
     )
     tmp_path = local_path.with_suffix(local_path.suffix + ".tmp")
     shutil.copy2(downloaded, tmp_path)

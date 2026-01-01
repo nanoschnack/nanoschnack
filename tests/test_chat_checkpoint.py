@@ -22,6 +22,8 @@ class ChatCheckpointTests(unittest.TestCase):
         self._orig_config = {
             "CONTEXT_LEN": config.CONTEXT_LEN,
             "EMBED_SIZE": config.EMBED_SIZE,
+            "POS_EMBED_TYPE": config.POS_EMBED_TYPE,
+            "ROPE_BASE": config.ROPE_BASE,
             "NUM_LAYERS": config.NUM_LAYERS,
             "NUM_HEADS": config.NUM_HEADS,
             "HIDDEN_SIZE": config.HIDDEN_SIZE,
@@ -45,6 +47,8 @@ class ChatCheckpointTests(unittest.TestCase):
             num_heads=config.NUM_HEADS,
             hidden_size=config.HIDDEN_SIZE,
             context_len=config.CONTEXT_LEN,
+            pos_embed_type=config.POS_EMBED_TYPE,
+            rope_base=config.ROPE_BASE,
         )
         state_dict = {f"module.{k}": v for k, v in model.state_dict().items()}
         ckpt = {
@@ -78,6 +82,8 @@ class ChatCheckpointTests(unittest.TestCase):
             num_heads=config.NUM_HEADS,
             hidden_size=config.HIDDEN_SIZE,
             context_len=config.CONTEXT_LEN,
+            pos_embed_type=config.POS_EMBED_TYPE,
+            rope_base=config.ROPE_BASE,
         )
         ckpt = {
             "model_state_dict": model.state_dict(),
@@ -101,6 +107,7 @@ class ChatCheckpointTests(unittest.TestCase):
         config.NUM_LAYERS = 1
         config.NUM_HEADS = 2
         config.HIDDEN_SIZE = 20
+        config.POS_EMBED_TYPE = "learned"
 
         model = GPT(
             vocab_size=7,
@@ -109,6 +116,8 @@ class ChatCheckpointTests(unittest.TestCase):
             num_heads=config.NUM_HEADS,
             hidden_size=config.HIDDEN_SIZE,
             context_len=config.CONTEXT_LEN,
+            pos_embed_type=config.POS_EMBED_TYPE,
+            rope_base=config.ROPE_BASE,
         )
         state_dict = {f"_orig_mod.{k}": v for k, v in model.state_dict().items()}
         ckpt = {
@@ -143,6 +152,8 @@ class ChatCheckpointTests(unittest.TestCase):
             num_heads=config.NUM_HEADS,
             hidden_size=config.HIDDEN_SIZE,
             context_len=config.CONTEXT_LEN,
+            pos_embed_type=config.POS_EMBED_TYPE,
+            rope_base=config.ROPE_BASE,
         )
         ckpt = {
             "model": model_small.state_dict(),
@@ -158,6 +169,8 @@ class ChatCheckpointTests(unittest.TestCase):
             num_heads=config.NUM_HEADS,
             hidden_size=config.HIDDEN_SIZE,
             context_len=config.CONTEXT_LEN,
+            pos_embed_type=config.POS_EMBED_TYPE,
+            rope_base=config.ROPE_BASE,
         )
         expected_tail = expected_large.tok.weight.detach().clone()[8:]
 

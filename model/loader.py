@@ -1,13 +1,20 @@
 """Helpers for building streaming datasets with packing."""
 
+import hashlib
 import json
 import math
 import random
+import shutil
 from bisect import bisect_right
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import re
 
-from datasets import interleave_datasets, load_dataset
+from datasets import IterableDataset, interleave_datasets, load_dataset
+
+import time
+
+import config
 
 from tokenizer import DATASET_EOS_TOKEN
 
@@ -45,6 +52,25 @@ class TokenEstimator:
         sample = self._sample_streaming_texts(dataset, sample_size=sample_size)
         avg_tokens = self._average_tokens(sample)
         return avg_tokens, int(math.ceil(avg_tokens * total_rows))
+
+    def estimate_streaming_cached(self, dataset, total_rows, spec, cache_dir=None, sample_size=None):
+        # Cache streaming estimates to avoid repeated sampling work.
+        size = sample_size or self.sample_size
+        cache_key = estimate_cache_key(spec, self.tokenizer, size)
+        cached = read_estimate_cache(cache_dir, cache_key)
+        if cached and cached.get("total_rows") == total_rows:
+            return float(cached["avg_tokens"]), int(cached["est_total_tokens"])
+        avg_tokens, est_total_tokens = self.estimate_streaming(dataset, total_rows, sample_size=size)
+        write_estimate_cache(
+            cache_dir,
+            cache_key,
+            {
+                "avg_tokens": avg_tokens,
+                "est_total_tokens": est_total_tokens,
+                "total_rows": total_rows,
+            },
+        )
+        return avg_tokens, est_total_tokens
 
     def _sample_texts(self, dataset):
         # Return a deterministic random sample of texts.
@@ -105,6 +131,131 @@ def load_dataset_source(repo_id, split="train", data_files=None, cache_dir=None,
     )
 
 
+def _hf_shard_cache_root(cache_dir, repo_id, split):
+    # Resolve the local cache root for HF parquet shards.
+    root = Path(cache_dir) if cache_dir is not None else Path.cwd() / "data"
+    return root / "hf_shards" / repo_id / split
+
+def _hf_local_shard_path(cache_dir, repo_id, split, rel_path):
+    # Map a repo-relative shard path to a local cached filename.
+    filename = Path(rel_path).name
+    return _hf_shard_cache_root(cache_dir, repo_id, split) / filename
+
+def _cleanup_shard_cache(cache_root, keep_paths):
+    # Remove cached shard files not in the keep list.
+    keep = {Path(path).resolve() for path in keep_paths if path is not None}
+    if not cache_root.exists():
+        return
+    for path in cache_root.rglob("*"):
+        if path.is_file() and path.resolve() not in keep:
+            path.unlink()
+    for path in sorted(cache_root.rglob("*"), reverse=True):
+        if path.is_dir():
+            try:
+                path.rmdir()
+            except OSError:
+                continue
+
+def _ensure_local_shard(repo_id, rel_path, cache_dir, split, local_files_only=False):
+    # Download a shard to the local cache if missing.
+    from huggingface_hub import hf_hub_download
+
+    cache_root = _hf_shard_cache_root(cache_dir, repo_id, split)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    local_path = _hf_local_shard_path(cache_dir, repo_id, split, rel_path)
+    if local_path.exists():
+        return local_path
+
+    # Use the HF cache as the source, then copy into the local shard cache.
+    downloaded = hf_hub_download(
+        repo_id,
+        filename=rel_path,
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
+        repo_type="dataset",
+    )
+    tmp_path = local_path.with_suffix(local_path.suffix + ".tmp")
+    shutil.copy2(downloaded, tmp_path)
+    tmp_path.replace(local_path)
+    return local_path
+
+
+class ShardPrefetcher:
+    """Prefetch HF shards into the local cache.
+
+    Downloads the next shard in a background worker to hide network latency.
+    Tracks the current and next shard for optional cache cleanup.
+    """
+    def __init__(self, repo_id, split, cache_dir, rel_files, cleanup_mode):
+        self._repo_id = repo_id
+        self._split = split
+        self._cache_dir = cache_dir
+        self._rel_files = rel_files
+        self._cleanup_mode = cleanup_mode
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._future = None
+        self._future_index = None
+        self._cache_root = _hf_shard_cache_root(cache_dir, repo_id, split)
+
+    def _download(self, index):
+        rel_path = self._rel_files[index]
+        return _ensure_local_shard(self._repo_id, rel_path, self._cache_dir, self._split)
+
+    def prefetch(self, index):
+        if index is None or index >= len(self._rel_files):
+            return
+        if self._future is not None and not self._future.done():
+            return
+        self._future_index = index
+        self._future = self._executor.submit(self._download, index)
+
+    def get(self, index):
+        if self._future_index == index and self._future is not None:
+            path = self._future.result()
+            self._future = None
+            self._future_index = None
+            return path
+        return self._download(index)
+
+    def cleanup(self, keep_indices):
+        if self._cleanup_mode != "auto":
+            return
+        keep_paths = [
+            _hf_local_shard_path(self._cache_dir, self._repo_id, self._split, self._rel_files[idx])
+            for idx in keep_indices
+            if idx is not None and idx < len(self._rel_files)
+        ]
+        _cleanup_shard_cache(self._cache_root, keep_paths)
+
+    def close(self):
+        self._executor.shutdown(wait=False)
+
+
+def hf_load_dataset_sharded(repo_id, split="train", name=None, cache_dir=None, data_files=None, prefetch=1):
+    # Load an HF dataset shard-by-shard with local caching.
+    rel_files = data_files or _hf_parquet_files(repo_id, split, name=name)
+    if not rel_files:
+        return None
+    cleanup_mode = config.HF_SHARD_CACHE_CLEANUP
+
+    def _iter_shards():
+        prefetcher = ShardPrefetcher(repo_id, split, cache_dir, rel_files, cleanup_mode)
+        try:
+            for index, _ in enumerate(rel_files):
+                local_path = prefetcher.get(index)
+                if prefetch:
+                    prefetcher.prefetch(index + 1)
+                dataset = load_dataset("parquet", data_files=str(local_path), split="train", streaming=False)
+                for row in dataset:
+                    yield row
+                keep_indices = [index, index + 1] if prefetch else [index]
+                prefetcher.cleanup(keep_indices)
+        finally:
+            prefetcher.close()
+
+    return IterableDataset.from_generator(_iter_shards)
+
+
 def cap_streaming_rows(dataset, remaining_rows):
     # Limit a streaming dataset to a fixed number of rows.
     if remaining_rows is None:
@@ -112,6 +263,30 @@ def cap_streaming_rows(dataset, remaining_rows):
     if remaining_rows <= 0:
         return dataset.take(0)
     return dataset.take(remaining_rows)
+
+
+def with_initial_log(message, iterable, start_time=None):
+    # Log once when the iterable yields its first element.
+    logged = {"done": False}
+    started = start_time or time.time()
+
+    def _emit():
+        if not logged["done"]:
+            duration_s = time.time() - started
+            print(message.format(duration_s=duration_s))
+            logged["done"] = True
+
+    if hasattr(iterable, "map"):
+        def _log_once(example):
+            _emit()
+            return example
+        return iterable.map(_log_once)
+
+    def _wrapped():
+        for item in iterable:
+            _emit()
+            yield item
+    return _wrapped()
 
 
 def parse_dataset_specs(specs_str):
@@ -181,6 +356,44 @@ def _resume_cache_path(cache_dir, name):
     cache_root = Path(cache_dir) / "resume"
     cache_root.mkdir(parents=True, exist_ok=True)
     return cache_root / name
+
+def _estimate_cache_path(cache_dir, name):
+    # Resolve a cache path for token estimate metadata.
+    if cache_dir is None:
+        return None
+    cache_root = Path(cache_dir) / "estimates"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return cache_root / name
+
+def estimate_cache_key(spec, tokenizer, sample_size):
+    # Build a stable cache key for token estimates.
+    vocab_size = tokenizer.get_vocab_size() if hasattr(tokenizer, "get_vocab_size") else None
+    payload = {
+        "sample_size": sample_size,
+        "spec": spec.get("spec"),
+        "text_key": spec.get("text_key"),
+        "vocab_size": vocab_size,
+    }
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+def read_estimate_cache(cache_dir, cache_key):
+    # Load cached token estimates if available.
+    cache_path = _estimate_cache_path(cache_dir, f"{cache_key}.json")
+    if cache_path is None or not cache_path.exists():
+        return None
+    with cache_path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+def write_estimate_cache(cache_dir, cache_key, payload):
+    # Persist cached token estimates for later runs.
+    cache_path = _estimate_cache_path(cache_dir, f"{cache_key}.json")
+    if cache_path is None:
+        return
+    tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    tmp_path.replace(cache_path)
 
 def _read_resume_cache(cache_path):
     # Load cached resume metadata if available.
@@ -387,24 +600,50 @@ def _rename_text_column(dataset, text_key):
         return dataset
     return dataset.rename_column("text", text_key)
 
+def _resolve_column_names(dataset, fallback=None):
+    # Resolve dataset column names from schema or a single sample fallback.
+    column_names = dataset.column_names
+    if column_names:
+        return list(column_names)
+    features = getattr(dataset, "features", None)
+    if features:
+        return list(features.keys())
+    take = getattr(dataset, "take", None)
+    if take is None:
+        return list(fallback) if fallback is not None else []
+    try:
+        sample = next(iter(take(1)))
+    except Exception:
+        return list(fallback) if fallback is not None else []
+    if isinstance(sample, dict):
+        return list(sample.keys())
+    return list(fallback) if fallback is not None else []
+
 def load_dataset_from_spec(spec, cache_dir=None, streaming=True, data_files=None):
     # Load a dataset based on a parsed spec dictionary.
     if spec["kind"] == "hf":
         # HF datasets are loaded directly from the hub.
         split = spec.get("split", "train")
-        if data_files is None:
-            data_files = _select_hf_data_files(spec, cache_dir)
-        if data_files is not None:
-            split = "train"
-        dataset = load_dataset_source(
+        rel_files = data_files or _select_hf_data_files(spec, cache_dir)
+        sharded = hf_load_dataset_sharded(
             spec["repo_id"],
             split=split,
-            data_files=data_files,
+            name=spec.get("name"),
+            cache_dir=cache_dir,
+            data_files=rel_files,
+        )
+        if sharded is not None:
+            return sharded
+        if rel_files is not None:
+            split = "train"
+        return load_dataset_source(
+            spec["repo_id"],
+            split=split,
+            data_files=rel_files,
             cache_dir=cache_dir,
             streaming=streaming,
             name=spec.get("name"),
         )
-        return dataset
     if spec["kind"] == "txt":
         # TXT datasets load line-delimited text from local files.
         dataset = load_dataset(
@@ -463,6 +702,14 @@ def build_tokenizer(tokenizer, text_key="text"):
             if eos_token_id is not None:
                 ids.append(eos_token_id)
             input_ids.append(ids)
+        row_count = batch.get("row_count")
+        if row_count is not None and len(row_count) != len(input_ids):
+            raise RuntimeError(
+                "Tokenizer row_count mismatch: "
+                f"text_rows={len(input_ids)} row_count_rows={len(row_count)}."
+            )
+        if row_count is not None:
+            return {"input_ids": input_ids, "row_count": row_count}
         return {"input_ids": input_ids}
 
     return tokenizer_batch
@@ -478,6 +725,13 @@ def pack_tokens(batch, block_size, source_id=None):
     if total_length == 0:
         return {"input_ids": [], "attention_mask": [], "row_count": [], "source_id": []}
 
+    batch_row_counts = batch.get("row_count")
+    if batch_row_counts is not None and len(batch_row_counts) != len(batch["input_ids"]):
+        raise RuntimeError(
+            "Pack row_count mismatch: "
+            f"input_rows={len(batch['input_ids'])} "
+            f"row_count_rows={len(batch_row_counts)}."
+        )
     input_ids = [
         concatenated[i:i + block_size]
         for i in range(0, total_length, block_size)
@@ -486,7 +740,10 @@ def pack_tokens(batch, block_size, source_id=None):
 
     # Record raw row consumption on the first packed block only.
     row_counts = [0] * len(input_ids)
-    row_counts[0] = len(batch["input_ids"])
+    if batch_row_counts is None:
+        row_counts[0] = len(batch["input_ids"])
+    else:
+        row_counts[0] = int(sum(batch_row_counts))
 
     # Tag each packed sample with its source id.
     source_ids = [
@@ -510,21 +767,35 @@ def build_packed_dataset(
     source_id=None,
 ):
     # Tokenize and pack a dataset into fixed-length blocks.
+
+    # Track raw rows so resume counts stay aligned with source rows.
+    def _add_row_count(batch):
+        return {"row_count": [1] * len(batch[text_key])}
+
+    dataset = dataset.map(_add_row_count, batched=True)
     tokenizer_batch = build_tokenizer(
         tokenizer,
         text_key=text_key,
     )
-    column_names = dataset.column_names or [text_key]
+    column_names = _resolve_column_names(dataset, fallback=[text_key])
     tokenized = dataset.map(
         tokenizer_batch,
         batched=True,
         remove_columns=column_names,
     )
+    packed_drop_columns = _resolve_column_names(tokenized)
     packed = tokenized.map(
         lambda batch: pack_tokens(batch, block_size, source_id=source_id),
         batched=True,
         batch_size=pack_batch_size,
+        remove_columns=packed_drop_columns,
     )
+    packed_column_names = _resolve_column_names(packed)
+    if packed_column_names:
+        keep_columns = {"input_ids", "attention_mask", "row_count", "source_id"}
+        drop_columns = [col for col in packed_column_names if col not in keep_columns]
+        if drop_columns:
+            packed = packed.remove_columns(drop_columns)
     return packed.with_format("torch")
 
 
@@ -536,3 +807,28 @@ def build_interleaved_dataset(datasets, seed=42):
         probabilities=[1 / len(datasets)] * len(datasets),
         stopping_strategy="all_exhausted",
     )
+
+
+# Emit a first-batch timing log while streaming batches.
+def time_until_first_batch(loader, is_master):
+    start = time.time()
+    if is_master:
+        print("Waiting for first batch...")
+        loader = with_initial_log("First batch after {duration_s:.1f}s", loader, start_time=start)
+    iterator = iter(loader)
+    while True:
+        try:
+            batch = next(iterator)
+        except StopIteration:
+            return
+        except Exception:
+            if is_master:
+                dataset = getattr(loader, "dataset", None)
+                print("Failed while fetching a batch from the data loader.")
+                if dataset is not None:
+                    print(f"Dataset type: {type(dataset)}")
+                    column_names = getattr(dataset, "column_names", None)
+                    if column_names:
+                        print(f"Dataset columns: {column_names}")
+            raise
+        yield batch

@@ -1,43 +1,32 @@
 import random
 import shutil
 import time
-import unicodedata
-from collections import deque
+
+from text_format import display_width, truncate_to_width
 
 
 class ProgressLogger:
-    """Track loss history and emit periodic logs/plots for long-running training loops.
+    """Track progress and emit periodic logs for long-running training loops.
 
     Designed for streaming datasets where epoch length is unknown.
-    Uses time-based intervals to control plotting cadence.
-    Stores up to 3600 loss samples for the ASCII chart.
+    Stores running counters for tokens, samples, and steps.
+    Keeps throughput estimates for logging and ETA display.
     """
     def __init__(
         self,
-        plot_fn,
         start_global_step=0,
         start_total_samples=0,
         start_total_tokens=0,
-        warmup_plot_interval=60,
-        plot_interval=600,
-        warmup_window_secs=600,
         estimated_total_tokens=None,
     ):
         # Keep configuration and bookkeeping for periodic logging.
-        self.plot_fn = plot_fn
         self.global_step = start_global_step
-        self.warmup_plot_interval = warmup_plot_interval
-        self.plot_interval = plot_interval
-        self.warmup_window_secs = warmup_window_secs
         self.start_time = time.time()
         self.last_tick_time = self.start_time
-        self.last_plot_time = self.start_time
         self.total_samples = start_total_samples
         self.total_tokens = start_total_tokens
         self.estimated_total_tokens = estimated_total_tokens
         self.samples_per_sec = 0.0
-        self.loss_history = deque()
-        self.force_plot = False
 
     def tick(
         self,
@@ -49,17 +38,13 @@ class ProgressLogger:
         step,
         loss_delta=None,
         remaining_tokens=None,
-        io_time=None,
-        gpu_time=None,
+        io_time=0.0,
+        gpu_time=0.0,
+        sync_time=0.0,
     ):
-        # Record the latest loss and retain a rolling window for plotting.
+        # Log throughput and loss for every tick (caller controls cadence).
         now = time.time()
         self.total_tokens += token_count
-        self.loss_history.append((self.total_tokens, loss_value))
-        if len(self.loss_history) > 3600:
-            self.loss_history.popleft()
-
-        # Log throughput and loss for every tick (caller controls cadence).
         self.total_samples += batch_size
         elapsed = now - self.last_tick_time
         samples_per_sec = batch_size / elapsed if elapsed > 0 else 0.0
@@ -75,19 +60,25 @@ class ProgressLogger:
             pct = 0.0
             eta = "?"
 
+        step_label = f"{step+1}"
+        if step != self.global_step:
+            step_label = f"{step+1}/{self.global_step+1}"
         parts = [
+            step_label,
             f"Tokens {self._format_count(self.total_tokens)}",
             f"Total {pct:.1f}%",
             f"Samples {self._format_count(self.total_samples)}",
             f"Epoch {epoch+1}",
-            f"Steps {step+1}/{self.global_step+1}",
             f"Loss {self._format_loss(loss_value)}",
         ]
         if loss_delta is not None:
             parts[-1] = f"Loss {self._format_loss(loss_value)} (Δ{loss_delta:.2f})"
-        if io_time is not None and gpu_time is not None:
-            parts.append(f"IO {self._format_duration(io_time)}")
-            parts.append(f"GPU {self._format_duration(gpu_time)}")
+        parts.append(
+            "Wait IO/GPU/Sync "
+            f"{self._format_duration(io_time)}/"
+            f"{self._format_duration(gpu_time)}/"
+            f"{self._format_duration(sync_time)}"
+        )
         parts.extend(
             [
                 f"LR {self._format_lr(lr)}",
@@ -100,101 +91,8 @@ class ProgressLogger:
         print(message, flush=True)
         self.last_tick_time = now
 
-        # Plot loss every minute for the first 10 minutes, then every 10 minutes.
-        plot_printed = False
-
-        # Honor explicit plot requests before checking time-based intervals.
-        if self.force_plot:
-            print(self.plot_fn(list(self.loss_history)))
-            self.last_plot_time = now
-            self.force_plot = False
-            plot_printed = True
-        else:
-            interval = (
-                self.warmup_plot_interval
-                if (now - self.start_time) < self.warmup_window_secs
-                else self.plot_interval
-            )
-            if now - self.last_plot_time >= interval:
-                print(self.plot_fn(list(self.loss_history)))
-                self.last_plot_time = now
-                plot_printed = True
-
         # Keep a global step counter for resuming logs across restarts.
         self.global_step += 1
-        return plot_printed
-
-    def request_plot(self):
-        # Allow callers to force a plot on the next tick.
-        self.force_plot = True
-
-    def print_dataset_pos(
-        self,
-        global_counts,
-        resume_base,
-        dataset_specs,
-        total_rows_by_spec,
-        target_tokens,
-        avg_tokens_by_spec=None,
-        est_tokens_by_spec=None,
-    ):
-        # Emit dataset position summaries for each spec.
-        if avg_tokens_by_spec is None:
-            avg_tokens_by_spec = {}
-        if est_tokens_by_spec is None:
-            est_tokens_by_spec = {}
-        def _format_row_count(value):
-            if value < 10000:
-                return str(int(value))
-            return self._format_compact(value)
-
-        def _format_token_count(value):
-            if value is None:
-                return "?"
-            return self._format_compact(int(value))
-
-        print(
-            f"Dataset Position: tokens={self.total_tokens} target={target_tokens}",
-            flush=True,
-        )
-        for spec in dataset_specs:
-            spec_key = spec["spec"]
-            current_rows = global_counts.get(spec_key, 0) + resume_base.get(spec_key, 0)
-            resume_rows_count = resume_base.get(spec_key, 0)
-            total_rows = total_rows_by_spec.get(spec_key)
-            avg_tokens = avg_tokens_by_spec.get(spec_key)
-            est_tokens = est_tokens_by_spec.get(spec_key)
-            current_tokens = None
-            if avg_tokens is not None:
-                current_tokens = int(current_rows * avg_tokens)
-            tokens_pct = None
-            if est_tokens:
-                tokens_pct = (current_tokens or 0) / est_tokens * 100
-            pct = None
-            if total_rows:
-                pct = (current_rows / total_rows) * 100
-            if pct is None and tokens_pct is not None:
-                pct = tokens_pct
-            pct_label = f" ({pct:.1f}%)" if pct is not None else ""
-            token_detail = (
-                f" tokens={_format_token_count(current_tokens)}"
-                f"/{_format_token_count(est_tokens)}"
-            )
-            if total_rows:
-                print(
-                    f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
-                    f"rows={_format_row_count(current_rows)}"
-                    f"/{_format_row_count(total_rows)}"
-                    f"{token_detail}{pct_label}",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "
-                    f"rows={_format_row_count(current_rows)}"
-                    f"{token_detail}{pct_label}",
-                    flush=True,
-                )
 
     def print_input_sample(
         self,
@@ -230,23 +128,9 @@ class ProgressLogger:
             if 0 <= source_id < len(dataset_specs):
                 prefix = f"{rank} {dataset_specs[source_id]['spec']}: "
         term_width = shutil.get_terminal_size((width, 20)).columns
-        max_len = max(0, term_width - self._display_width(prefix))
-        snippet = self._truncate_to_width(escaped, max_len)
+        max_len = max(0, term_width - display_width(prefix))
+        snippet = truncate_to_width(escaped, max_len)
         print(f"{prefix}{snippet}")
-
-    def format_completion(self, prompt, completion, width=120):
-        # Format a completion block with escaped, truncated content.
-        escaped = (
-            completion.replace("\\", "\\\\")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-        )
-        prefix = prompt
-        term_width = shutil.get_terminal_size((width, 20)).columns
-        max_len = max(0, term_width - self._display_width(prefix))
-        snippet = self._truncate_to_width(escaped, max_len)
-        return f"{prefix}{snippet}"
 
     def _format_eta(self, remaining_units, units_per_sec):
         # Format an ETA string from remaining samples and throughput.
@@ -298,41 +182,15 @@ class ProgressLogger:
         return text.rjust(width) if len(text) < width else text
 
     def _format_duration(self, seconds):
+        # Keep a fixed-width duration for log alignment (5 chars).
         if seconds < 1.0:
-            return f"{seconds * 1000:3.0f}ms"
-        if seconds < 10.0:
-            return f"{seconds:.2f}s"
-        return f"{seconds:.1f}s"
+            ms = int(seconds * 1000)
+            return f"{ms:>3d}ms"
+        if seconds < 100.0:
+            return f"{seconds:>4.1f}s"
+        return f"{int(seconds):>4d}s"
 
     def _format_lr(self, value, width=8):
         # Keep a fixed-width LR with six decimals.
         text = f"{value:.6f}"
         return text.rjust(width) if len(text) < width else text
-
-    def _display_width(self, text):
-        # Approximate terminal column width for escaped strings.
-        width = 0
-        for char in text:
-            if unicodedata.combining(char):
-                continue
-            east_asian = unicodedata.east_asian_width(char)
-            width += 2 if east_asian in ("W", "F") else 1
-        return width
-
-    def _truncate_to_width(self, text, max_width):
-        # Truncate text to fit within the requested display width.
-        if max_width <= 0:
-            return ""
-        width = 0
-        out = []
-        for char in text:
-            if unicodedata.combining(char):
-                out.append(char)
-                continue
-            east_asian = unicodedata.east_asian_width(char)
-            char_width = 2 if east_asian in ("W", "F") else 1
-            if width + char_width > max_width:
-                break
-            out.append(char)
-            width += char_width
-        return "".join(out)

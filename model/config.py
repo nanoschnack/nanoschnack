@@ -37,6 +37,12 @@ VOCAB_SIZE = _env_int("VOCAB_SIZE", 0)
 # Larger values increase model capacity and compute cost.
 EMBED_SIZE = _env_int("EMBED_SIZE", 768)
 
+# Positional embedding type: learned or rope.
+POS_EMBED_TYPE = _env_str("POS_EMBED_TYPE", "rope")
+
+# RoPE base for rotary frequencies.
+ROPE_BASE = _env_float("ROPE_BASE", 10000.0)
+
 # Number of Transformer encoder layers in the model.
 # Higher values deepen the network and increase training time.
 NUM_LAYERS = _env_int("NUM_LAYERS", 12)
@@ -74,7 +80,7 @@ WARMUP_PCT = _env_float("WARMUP_PCT", 0.03)
 MAX_TRAINING_FACTOR = _env_int("MAX_TRAINING_FACTOR", 20)
 
 # Shuffle buffer size for streaming datasets.
-SHUFFLE_BUFFER = _env_int("SHUFFLE_BUFFER", 100_000)
+SHUFFLE_BUFFER = _env_int("SHUFFLE_BUFFER", 10_000 * _env_int("WORLD_SIZE", 1))
 
 # DataLoader workers for streaming prefetch.
 DATA_LOADER_WORKERS = _env_int("DATA_LOADER_WORKERS", 0)
@@ -82,7 +88,10 @@ DATA_LOADER_WORKERS = _env_int("DATA_LOADER_WORKERS", 0)
 os.environ.setdefault("DATA_LOADER_WORKERS", str(DATA_LOADER_WORKERS))
 
 # Batch size for dataset packing during tokenization.
-PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 200)
+PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 20 * _env_int("WORLD_SIZE", 1))
+
+# HF shard cache cleanup mode: auto or keep.
+HF_SHARD_CACHE_CLEANUP = _env_str("HF_SHARD_CACHE_CLEANUP", "auto")
 
 ###
 ### Dataset defaults
@@ -152,6 +161,8 @@ def snapshot():
         "CONTEXT_LEN": CONTEXT_LEN,
         "VOCAB_SIZE": VOCAB_SIZE,
         "EMBED_SIZE": EMBED_SIZE,
+        "POS_EMBED_TYPE": POS_EMBED_TYPE,
+        "ROPE_BASE": ROPE_BASE,
         "NUM_LAYERS": NUM_LAYERS,
         "NUM_HEADS": NUM_HEADS,
         "HIDDEN_SIZE": HIDDEN_SIZE,
@@ -180,6 +191,8 @@ def _architecture_lines():
         f"  context_len={CONTEXT_LEN}",
         f"  vocab_size={VOCAB_SIZE}",
         f"  embed_size={EMBED_SIZE}",
+        f"  pos_embed_type={POS_EMBED_TYPE}",
+        f"  rope_base={ROPE_BASE}",
         f"  num_layers={NUM_LAYERS}",
         f"  num_heads={NUM_HEADS}",
         f"  hidden_size={HIDDEN_SIZE}",
@@ -214,6 +227,7 @@ def print_training_hyperparams(
         f"  data_loader_workers={DATA_LOADER_WORKERS}",
         f"  shuffle_buffer={SHUFFLE_BUFFER}",
         f"  dataset_specs={DATASET_SPECS}",
+        f"  hf_shard_cache_cleanup={HF_SHARD_CACHE_CLEANUP}",
     ]
     if ddp_enabled:
         ddp_local_macro_batch = MACRO_BATCH_SIZE // ddp_world_size

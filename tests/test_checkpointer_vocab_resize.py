@@ -22,6 +22,7 @@ class CheckpointerVocabResizeTests(unittest.TestCase):
             num_heads=1,
             hidden_size=16,
             context_len=4,
+            pos_embed_type="learned",
         )
         optimizer_small = torch.optim.AdamW(model_small.parameters(), lr=1e-3)
         scheduler_small = torch.optim.lr_scheduler.LambdaLR(optimizer_small, lr_lambda=lambda _: 1.0)
@@ -47,6 +48,7 @@ class CheckpointerVocabResizeTests(unittest.TestCase):
                 num_heads=1,
                 hidden_size=16,
                 context_len=4,
+                pos_embed_type="learned",
             )
             initial_weights = model_large.tok.weight.detach().clone()
             optimizer_large = torch.optim.AdamW(model_large.parameters(), lr=1e-3)

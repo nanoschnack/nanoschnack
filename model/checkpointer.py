@@ -20,9 +20,21 @@ def apply_checkpoint_config(ckpt_config):
     # Apply checkpoint hyperparameters to global config.
     if not ckpt_config:
         return
-    for name in ("CONTEXT_LEN", "VOCAB_SIZE", "EMBED_SIZE", "NUM_LAYERS", "NUM_HEADS", "HIDDEN_SIZE"):
+    for name in (
+        "CONTEXT_LEN",
+        "VOCAB_SIZE",
+        "EMBED_SIZE",
+        "NUM_LAYERS",
+        "NUM_HEADS",
+        "HIDDEN_SIZE",
+        "ROPE_BASE",
+    ):
         if name in ckpt_config:
             setattr(config, name, ckpt_config[name])
+    if "POS_EMBED_TYPE" in ckpt_config:
+        config.POS_EMBED_TYPE = ckpt_config["POS_EMBED_TYPE"]
+    else:
+        config.POS_EMBED_TYPE = "learned"
 
 
 def strip_state_dict_prefix(state_dict, prefix):
@@ -46,7 +58,10 @@ def select_state_dict(ckpt):
     # Extract the model weights from known checkpoint layouts.
     if isinstance(ckpt, dict):
         if "model" in ckpt:
-            apply_checkpoint_config(ckpt.get("config"))
+            if "config" in ckpt:
+                apply_checkpoint_config(ckpt.get("config"))
+            else:
+                config.POS_EMBED_TYPE = "learned"
             return ckpt["model"]
         for key in ("model_state_dict", "state_dict"):
             if key in ckpt:
@@ -214,21 +229,66 @@ def _remap_legacy_state_dict(state_dict):
 def _load_optimizer_state(optimizer, state_dict):
     # Load optimizer state and validate tensor shapes against parameters.
     if not state_dict:
-        return False
+        return False, {"reason": "missing_state"}
     original_param_groups = copy.deepcopy(optimizer.param_groups)
     try:
         optimizer.load_state_dict(state_dict)
-    except Exception:
+    except Exception as exc:
         optimizer.state.clear()
         optimizer.param_groups = original_param_groups
-        return False
+        return False, {"reason": "load_exception", "error": str(exc)}
+
+    mismatches = []
     for param, state in optimizer.state.items():
-        for value in state.values():
-            if torch.is_tensor(value) and value.shape != param.shape:
-                optimizer.state.clear()
-                optimizer.param_groups = original_param_groups
-                return False
-    return True
+        for key, value in state.items():
+            if torch.is_tensor(value) and value.ndim > 0 and value.shape != param.shape:
+                mismatches.append(
+                    {
+                        "state_key": key,
+                        "param_shape": tuple(param.shape),
+                        "state_shape": tuple(value.shape),
+                    }
+                )
+                if len(mismatches) >= 3:
+                    break
+        if len(mismatches) >= 3:
+            break
+    if mismatches:
+        optimizer.state.clear()
+        optimizer.param_groups = original_param_groups
+        return False, {
+            "reason": "shape_mismatch",
+            "mismatches": mismatches,
+            "optimizer_param_groups": len(optimizer.param_groups),
+            "state_param_groups": len(state_dict.get("param_groups", [])),
+            "state_entries": len(state_dict.get("state", {})),
+        }
+    return True, {}
+
+
+def _print_optimizer_mismatch(info):
+    # Emit extra debug lines to help trace optimizer resume failures.
+    if not info:
+        return
+    reason = info.get("reason")
+    if reason:
+        print(f"Optimizer resume detail: reason={reason}.")
+    error = info.get("error")
+    if error:
+        print(f"Optimizer resume detail: error={error}")
+    if "optimizer_param_groups" in info:
+        print(
+            "Optimizer resume detail: param_groups="
+            f"{info['optimizer_param_groups']} "
+            f"checkpoint_param_groups={info.get('state_param_groups', 0)} "
+            f"checkpoint_state_entries={info.get('state_entries', 0)}."
+        )
+    for mismatch in info.get("mismatches", []):
+        print(
+            "Optimizer resume detail: state tensor "
+            f"{mismatch.get('state_key')} shape {mismatch.get('state_shape')} "
+            f"!= param shape {mismatch.get('param_shape')}."
+        )
 
 
 class Checkpointer:
@@ -260,21 +320,21 @@ class Checkpointer:
         torch.save(ckpt, tmp_path)
         tmp_path.replace(path)
 
-    def load_latest(self):
+    def load_latest(self, is_master=True):
         # Load state from disk if present, otherwise start fresh.
         if not self.path.exists():
             self.last_resume_info = None
             return 0, 0, 0, 0, 0, None
 
         # Read checkpoint data onto the requested device.
-        print(f"Loading checkpoint from {self.path}...")
+        if is_master:
+            print(f"Resuming {self.path}:")
         try:
             ckpt = torch.load(self.path, map_location=self.device)
         except Exception as exc:
             raise RuntimeError(f"Failed to load checkpoint {self.path}: {exc}") from exc
 
         # Restore model and optimizer state for resuming training.
-        print("Checkpoint loaded. Restoring model and optimizer state...")
         model_state = ckpt.get("model")
         if model_state is None:
             raise RuntimeError(f"Checkpoint missing model state at {self.path}.")
@@ -291,10 +351,13 @@ class Checkpointer:
             print(f"Loaded legacy checkpoint weights from {self.path}.")
 
         # Restore optimizer and scheduler state, falling back to fresh state on failure.
-        optimizer_loaded = _load_optimizer_state(self.optimizer, ckpt.get("optimizer", {}))
+        optimizer_loaded, optimizer_info = _load_optimizer_state(
+            self.optimizer, ckpt.get("optimizer", {})
+        )
         scheduler_loaded = False
         if not optimizer_loaded:
             print("Optimizer state mismatch; continuing with fresh optimizer state.")
+            _print_optimizer_mismatch(optimizer_info)
         else:
             # Attempt to restore scheduler state but keep training if it mismatches.
             try:
@@ -319,12 +382,6 @@ class Checkpointer:
         total_tokens = ckpt.get("total_tokens", 0)
         resume_state = ckpt.get("resume_state")
 
-        # Announce resume location for visibility.
-        display_epoch = saved_epoch if saved_epoch > 0 else 1
-        print(
-            f"Resuming from {self.path} at epoch {display_epoch}, step {resume_step}, "
-            f"sample index {sample_index}."
-        )
         resume_epoch = max(saved_epoch - 1, 0)
         return resume_epoch, resume_step, global_step, sample_index, total_tokens, resume_state
 

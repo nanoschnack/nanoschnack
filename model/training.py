@@ -18,11 +18,17 @@
 
 # %%
 import contextlib
+import faulthandler
 import os
+import signal
 import torch
+from dataclasses import dataclass
 
 # Avoid tokenizers fork warnings in worker processes.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+# Enable on-demand stack traces to debug stalls.
+faulthandler.register(signal.SIGUSR1, all_threads=True)
 
 from device import device_info, pick_device, print_ddp_info, print_device_info, print_sdpa_info
 
@@ -85,6 +91,7 @@ if is_master:
 # %%
 from gpt import GPT
 from autotune import find_max_batch_size
+from checkpointer import apply_checkpoint_config
 import config
 
 # Resolve model paths so relative data/checkpoint locations are stable.
@@ -100,18 +107,9 @@ checkpoint_path = checkpoint_dir / "latest.pt"
 if checkpoint_path.exists():
     checkpoint_state = torch.load(checkpoint_path, map_location="cpu")
     if isinstance(checkpoint_state, dict) and "config" in checkpoint_state:
-        ckpt_config = checkpoint_state["config"]
-        config.CONTEXT_LEN = ckpt_config.get("CONTEXT_LEN", config.CONTEXT_LEN)
-        config.EMBED_SIZE = ckpt_config.get("EMBED_SIZE", config.EMBED_SIZE)
-        config.NUM_LAYERS = ckpt_config.get("NUM_LAYERS", config.NUM_LAYERS)
-        config.NUM_HEADS = ckpt_config.get("NUM_HEADS", config.NUM_HEADS)
-        config.HIDDEN_SIZE = ckpt_config.get("HIDDEN_SIZE", config.HIDDEN_SIZE)
-
-context_len = config.CONTEXT_LEN
-embed_size = config.EMBED_SIZE
-num_layers = config.NUM_LAYERS
-num_heads = config.NUM_HEADS
-hidden_size = config.HIDDEN_SIZE
+        apply_checkpoint_config(checkpoint_state["config"])
+    elif isinstance(checkpoint_state, dict):
+        config.POS_EMBED_TYPE = "learned"
 
 # add special tokens
 tokenizer.add_special_tokens([PAD_TOKEN])
@@ -119,11 +117,13 @@ pad_id = tokenizer.token_to_id(PAD_TOKEN)
 
 model = GPT(
     vocab_size=tokenizer.get_vocab_size(),
-    embed_size=embed_size,
-    num_layers=num_layers,
-    num_heads=num_heads,
-    hidden_size=hidden_size,
-    context_len=context_len,
+    embed_size=config.EMBED_SIZE,
+    num_layers=config.NUM_LAYERS,
+    num_heads=config.NUM_HEADS,
+    hidden_size=config.HIDDEN_SIZE,
+    context_len=config.CONTEXT_LEN,
+    pos_embed_type=config.POS_EMBED_TYPE,
+    rope_base=config.ROPE_BASE,
 ).to(device).train()
 # Tune batch size on the master rank only.
 tuned_batch_size = None
@@ -131,7 +131,7 @@ if is_master:
     tuned_batch_size = find_max_batch_size(
         model,
         vocab_size=tokenizer.get_vocab_size(),
-        seq_len=context_len,
+        seq_len=config.CONTEXT_LEN,
         device=device,
         start=config.BATCH_SIZE,
     )
@@ -170,6 +170,7 @@ if is_master:
         ddp_enabled=ddp_enabled,
         ddp_world_size=ddp_world_size,
     )
+
 
 
 
@@ -217,6 +218,7 @@ from loader import (
     resolve_resume_plan,
     resolve_total_rows,
     dataset_label,
+    with_initial_log,
 )
 from resume import build_resume_state, cap_resume_rows, is_resume_exhausted, normalize_resume_rows
 import math
@@ -250,11 +252,16 @@ for dataset_index, spec in enumerate(dataset_specs):
         tokenizer,
         text_key=spec["text_key"],
     )
-    avg_tokens, est_total_tokens = token_estimator.estimate_streaming(raw_dataset, total_rows)
+    avg_tokens, est_total_tokens = token_estimator.estimate_streaming_cached(
+        raw_dataset,
+        total_rows,
+        spec,
+        cache_dir=data_dir,
+    )
     avg_tokens_by_spec[spec["spec"]] = avg_tokens
     est_tokens_by_spec[spec["spec"]] = est_total_tokens
     estimated_total_tokens += est_total_tokens
-    print(f"    {dataset_label(spec)}: avg_tokens={avg_tokens:.1f}, est_tokens={est_total_tokens}") if is_master else None
+    print(f"  {dataset_label(spec)}: avg_tokens={avg_tokens:.1f} est_tokens={est_total_tokens}") if is_master else None
 
 # Resolve model size for token budgeting.
 param_count, _ = config.model_info(model)
@@ -268,8 +275,8 @@ if max_tokens and estimated_total_tokens > 0:
 tokens_per_step = config.MACRO_BATCH_SIZE * (config.CONTEXT_LEN - 1)
 dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
 if is_master:
-    print(f"    Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}")
-    print(f"    Target: epochs={target_epochs:,} target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
+    print(f"  Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}")
+    print(f"  Target: epochs={target_epochs:,} target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
 
 
 # %% [markdown]
@@ -279,10 +286,12 @@ if is_master:
 # ## Load the previous Checkpoint
 
 # %%
-from plot import plot_with_completion
+from plot import Plotter, plot_with_completion
 from progress import ProgressLogger
-from ddp_debug import log_ddp_debug
+from ddp_debug import build_rng_tensor, log_ddp_debug
+from sync import all_gather, all_reduce, flag_broadcast, flag_reduce, sync
 from input import make_input_poller
+from loader import time_until_first_batch
 from checkpointer import Checkpointer
 from scheduler import build_warmup_cosine_tokens
 from torch.utils.data import DataLoader
@@ -297,7 +306,7 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 
 # Load the latest checkpoint if available.
-resume_epoch, resume_step, global_step, resume_sample_index, resume_tokens, resume_state = checkpointer.load_latest()
+resume_epoch, resume_step, global_step, resume_sample_index, resume_tokens, resume_state = checkpointer.load_latest(is_master=is_master)
 resume_info = checkpointer.last_resume_info
 
 # Align the scheduler with the resumed token count.
@@ -309,9 +318,18 @@ if resume_tokens:
 # Report resume state after aligning scheduler tokens.
 if is_master and resume_info:
     lr_after = optimizer.param_groups[0]["lr"]
+    display_epoch = max(resume_epoch + 1, 1)
     print(
-        f"Resume state: optimizer={resume_info['optimizer']} "
-        f"scheduler={resume_info['scheduler']} lr={lr_after:.8f}",
+        f"  Checkpoint: loaded epoch={display_epoch} step={resume_step} "
+        f"sample={resume_sample_index}",
+        flush=True,
+    )
+    print(
+        f"  Optimizer: {resume_info['optimizer']}",
+        flush=True,
+    )
+    print(
+        f"  Scheduler: {resume_info['scheduler']} lr={lr_after:.8f}",
         flush=True,
     )
 
@@ -382,13 +400,26 @@ for dataset_index, spec in enumerate(dataset_specs):
 
     # Apply shard-local resume offset before splitting.
     if data_files is not None and in_shard_offset > 0:
+        if is_master:
+            print(f"  {spec_key}: skipping rows={in_shard_offset} shard={shard_label}")
+
+        skip_start = time.time()
         raw_streaming = raw_streaming.skip(in_shard_offset)
+        if is_master:
+            raw_streaming = with_initial_log(f"  {spec_key}: skip=done duration={{duration_s:.0f}}s", raw_streaming, start_time=skip_start)
     if row_offset > 0:
         if data_files is None:
-            print(f"Resume rows (linear): {spec_key} -> {row_offset}") if is_master else None
+            print(f"  {spec_key}: row={row_offset}") if is_master else None
+            if is_master:
+                print(f"  {spec_key}: skipping rows={row_offset}")
+
+            skip_start = time.time()
             raw_streaming = raw_streaming.skip(row_offset)
+            if is_master:
+                raw_streaming = with_initial_log(f"  {spec_key}: skip=done duration={{duration_s:.0f}}s", raw_streaming, start_time=skip_start)
         else:
-            print(f"Resume rows: {spec_key} -> {shard_label} +{in_shard_offset}") if is_master else None
+            if is_master and in_shard_offset == 0:
+                print(f"  {spec_key}: shard={shard_label} row={in_shard_offset}")
 
     # Cap each dataset to its remaining rows so exhausted specs stop contributing.
     remaining_rows = None
@@ -422,90 +453,185 @@ if is_master:
 # %% [markdown]
 # ## Run the Training
 
+# %% [markdown]
+# ### MacroStep
+#
+# Tracks macro-step counters, timings, and accumulation state.
+
 # %%
+@dataclass
+class MacroStep:
+    """Track macro-step state across gradient accumulation.
+    Owns micro-step counters and timing totals.
+    Resets accumulators at macro boundaries.
+    Tracks accumulated IO/compute time per macro step.
+    """
+    micro_steps: int
+    current_micro_step: int = 0
+    micro_token_total: int = 0
+    micro_sample_total: int = 0
+    micro_loss_total: float = 0.0
+    io_wait: float = 0.0
+    compute_time: float = 0.0
+    sync_wait: float = 0.0
+
+    def begin(self, optimizer):
+        self.compute_time = 0.0
+        self.io_wait = 0.0
+        self.sync_wait = 0.0
+        optimizer.zero_grad()
+        self.micro_loss_total = 0.0
+        self.micro_token_total = 0
+        self.micro_sample_total = 0
+
+
+    # Return True only for the final micro step in the macro batch.
+    def micro_step(self, token_count, sample_count, loss_value):
+        self.micro_token_total += token_count
+        self.micro_sample_total += sample_count
+        self.micro_loss_total += loss_value
+        if self.current_micro_step != self.micro_steps - 1:
+            self.current_micro_step += 1
+            return False
+        return True
+
+    @contextlib.contextmanager
+    def measure_compute(self):
+        start = time.time()
+        try:
+            yield
+        finally:
+            self.compute_time += time.time() - start
+
+    @contextlib.contextmanager
+    def measure_sync(self):
+        start = time.time()
+        try:
+            yield
+        finally:
+            self.sync_wait += time.time() - start
+
+    def measure_io(self, loader):
+        prev = time.time()
+        for batch in loader:
+            now = time.time()
+            self.io_wait += now - prev
+            yield batch
+            prev = time.time()
+
+    def finish(self):
+        self.io_wait = 0.0
+        self.sync_wait = 0.0
+        self.current_micro_step = 0
+
+
+# %% [markdown]
+# ### Synced Payloads
+#
+# Declarative sync payloads for reductions, gathers, and broadcasts.
+
+# %%
+@dataclass
+class Synced:
+    """Aggregate synced scalars for per-step logging.
+    Groups reductions by op to keep the sync block small.
+    Uses float fields to match collective expectations.
+    """
+    average_loss: float = all_reduce("sum")
+    loss_min: float = all_reduce("min")
+    loss_max: float = all_reduce("max")
+    token_count: int = all_reduce("sum", dtype="i64")
+    sample_count: int = all_reduce("sum", dtype="i64")
+    stop_flag: bool = flag_reduce("max")
+    io_wait: float = all_reduce("max")
+    compute_time: float = all_reduce("max")
+    sync_wait: float = all_reduce("max")
+    counts: list = all_reduce("sum", dtype="i64")
+    print_input: bool = flag_broadcast(src=0)
+    should_checkpoint: bool = flag_broadcast(src=0)
+
+
+@dataclass
+class SyncedDebug:
+    """Gather per-rank debug stats for DDP parity checks.
+    Bundles loss, batch stats, and RNG fingerprints.
+    Only used when debug output is enabled.
+    """
+    gathered_losses: float = all_gather(dtype="f32")
+    stats_gathered: list = all_gather(dtype="i64")
+    rng_gathered: list = all_gather(dtype="u64")
+
+
+# %% [markdown]
+# ### The actual training loop
+
+# %%
+# Emit a first-batch timing log while streaming batches.
 last_ckpt_time = time.time()
-last_step_end = time.time()
-macro_data_wait = 0.0
-macro_compute_time = 0.0
+macro_step = MacroStep(
+    micro_steps=(config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE,
+)
+
 # Track current counters for checkpointing and interrupts.
 current_epoch = resume_epoch
 current_step = resume_step
 current_sample_index = 0
-current_micro_step = 0
-micro_steps = (config.MACRO_BATCH_SIZE // ddp_world_size) // config.BATCH_SIZE
-micro_token_total = 0
-micro_sample_total = 0
-micro_loss_total = 0
+
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
-    lambda points: plot_with_completion(points, model, tokenizer, config, device, progress),
     start_global_step=global_step,
     start_total_samples=0,
     start_total_tokens=resume_tokens,
+    estimated_total_tokens=target_tokens,
+)
+plotter = Plotter(
+    lambda points: plot_with_completion(points, model, tokenizer, config, device),
     warmup_plot_interval=config.PLOT_WARMUP_SECS,
     plot_interval=config.PLOT_INTERVAL_SECS,
     warmup_window_secs=config.WARMUP_WINDOW_SECS,
-    estimated_total_tokens=target_tokens,
 )
-if is_master:
-    progress.print_dataset_pos(
-        global_counts={spec["spec"]: 0 for spec in dataset_specs},
-        resume_base=resume_rows,
-        dataset_specs=dataset_specs,
-        total_rows_by_spec=total_rows_by_spec,
-        avg_tokens_by_spec=avg_tokens_by_spec,
-        est_tokens_by_spec=est_tokens_by_spec,
-        target_tokens=target_tokens,
-    )
+
 # Enable debug output with DEBUG levels.
 debug_level = int(os.getenv("DEBUG", "0"))
 printed_debug_sample = False
 
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
-plot_request = make_input_poller(is_master)
-input_request = False
-plot_debug = False
+plot_requested = make_input_poller(is_master)
+sigint_installed = False
+# Default to immediate exit before the first batch.
+signal.signal(signal.SIGINT, signal.default_int_handler)
 def _request_stop(signum, frame):
     # Record interrupt without raising inside the signal handler.
     print("Interrupted: saving checkpoint...") if is_master else None
     global stop_requested
     stop_requested = True
-signal.signal(signal.SIGINT, _request_stop)
+
 print("Starting training loop...", flush=True) if is_master else None
 for current_epoch in itertools.count(resume_epoch):
+    is_resume_epoch = current_epoch == resume_epoch
     # Reset row counters at epoch boundaries beyond the resume epoch.
     if current_epoch != resume_epoch:
         for spec in dataset_specs:
             source_row_counts[spec["spec"]] = 0
-    dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch)
-    dataset_epoch = dataset_epoch.with_format("torch")
-
-    # Configure DataLoader workers for background prefetch.
-    loader_workers = config.DATA_LOADER_WORKERS
+    dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch).with_format("torch")
     loader = DataLoader(
         dataset_epoch,
         batch_size=config.BATCH_SIZE,
         shuffle=False,
-        num_workers=loader_workers,
+        num_workers=config.DATA_LOADER_WORKERS,
     )
 
     # Announce first-batch wait to avoid silent startup stalls.
-    first_batch_start = time.time()
-    if is_master:
-        print("Waiting for first batch...", flush=True)
-    for current_step, batch in enumerate(loader):
-        # Note time-to-first-batch for this epoch.
-        if current_step == 0 and is_master:
-            print(f"First batch after {time.time() - first_batch_start:.1f}s", flush=True)
+    for current_step, batch in enumerate(macro_step.measure_io(time_until_first_batch(loader, is_master))):
+        # Install the SIGINT handler after the first batch to allow early aborts.
+        if not sigint_installed:
+            signal.signal(signal.SIGINT, _request_stop)
+            sigint_installed = True
 
-        # Track macro step timing across micro steps.
-        if current_micro_step == 0:
-            macro_data_wait = 0.0
-            macro_compute_time = 0.0
-
-        step_start = time.time()
-        macro_data_wait += step_start - last_step_end
+        # Reset macro-step accumulators and track data wait time.
+        if macro_step.current_micro_step == 0:
+            macro_step.begin(optimizer)
 
         # Move batch tensors to the device and prepare an optional attention mask.
         input_ids = batch["input_ids"]
@@ -528,152 +654,117 @@ for current_epoch in itertools.count(resume_epoch):
             print(f"Target text: {tokenizer.decode(target_preview)}")
             printed_debug_sample = True
 
-        # Clear accumulated gradients before the first micro step in the macro batch.
-        if current_micro_step == 0:
-            optimizer.zero_grad()
-            micro_loss_total = 0.0
-            micro_token_total = 0
-            micro_sample_total = 0
-
         # Run the forward pass with autocast and compute loss.
-        micro_compute_start = time.time()
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
-            logits = model(inputs, attention_mask=attn_mask)
-            loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
-            loss /= micro_steps # to make micro_loss_total equal average loss over the macro batch
-            # Avoid all-reduce on accumulation steps.
-        with model.no_sync() if ddp_enabled and current_micro_step != micro_steps - 1 else contextlib.nullcontext():
-            loss.backward()
+        with macro_step.measure_compute():
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
+                logits = model(inputs, attention_mask=attn_mask)
+                loss = lossFn(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+                loss /= macro_step.micro_steps # to make macro_step.micro_loss_total equal average loss over the macro batch
+                # Avoid all-reduce on accumulation steps.
+            with model.no_sync() if ddp_enabled and macro_step.current_micro_step != macro_step.micro_steps - 1 else contextlib.nullcontext():
+                loss.backward()
 
-        # Micro step bookkeeping.
-        token_count = attention_mask[:, 1:].sum().item()
-        micro_token_total += token_count
-        micro_sample_total += input_ids.size(0)
-        micro_loss_total += loss.item()
+            # Micro step bookkeeping.
+            token_count = attention_mask[:, 1:].sum().item()
 
-        # Advance per-source row counters for resume safety.
-        row_counts = batch["row_count"].tolist()
-        source_ids = batch["source_id"].tolist()
-        for source_id, row_count in zip(source_ids, row_counts):
-            if row_count:
-                spec_key = dataset_specs[int(source_id)]["spec"]
-                source_row_counts[spec_key] += int(row_count)
+            # Advance per-source row counters for resume safety.
+            row_counts = batch["row_count"].tolist()
+            source_ids = batch["source_id"].tolist()
+            for source_id, row_count in zip(source_ids, row_counts):
+                if row_count:
+                    spec_key = dataset_specs[int(source_id)]["spec"]
+                    source_row_counts[spec_key] += int(row_count)
 
-        # Update checkpoint counters and save when needed.
-        current_sample_index += input_ids.size(0)
-        if current_micro_step != micro_steps - 1:
-            macro_compute_time += time.time() - micro_compute_start
-            last_step_end = time.time()
-            current_micro_step += 1
-            continue
-
-        # Log progress and plot loss history.
-        next_total_tokens = progress.total_tokens + micro_token_total
-        remaining_tokens = max(target_tokens - next_total_tokens, 0)
+            # Update checkpoint counters and save when needed.
+            current_sample_index += input_ids.size(0)
+            if not macro_step.micro_step(token_count, input_ids.size(0), loss.item()):
+                continue
 
         # Check for on-demand plot requests from stdin.
-        cmd = plot_request()
-        if cmd == "p":
-            progress.request_plot()
-            plot_debug = True
+        input_requested = False
+        if (cmd := plot_requested()) == "p":
+            plotter.request_plot()
         elif cmd == "i":
-            input_request = True
+            input_requested = True
 
         # Average the micro loss across ranks for consistent logging.
-        logged_loss = micro_loss_total
-        loss_delta = None
-        logged_tokens = micro_token_total
-        if ddp_enabled:
-            loss_sum = torch.tensor(micro_loss_total, device=device)
-            loss_min = torch.tensor(micro_loss_total, device=device)
-            loss_max = torch.tensor(micro_loss_total, device=device)
-            token_tensor = torch.tensor(micro_token_total, device=device)
-            dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
-            dist.all_reduce(loss_min, op=dist.ReduceOp.MIN)
-            dist.all_reduce(loss_max, op=dist.ReduceOp.MAX)
-            dist.all_reduce(token_tensor, op=dist.ReduceOp.SUM)
-            logged_loss = loss_sum.item() / ddp_world_size
-            loss_delta = loss_max.item() - loss_min.item()
-            logged_tokens = int(token_tensor.item())
-            next_total_tokens = progress.total_tokens + logged_tokens
-            remaining_tokens = max(target_tokens - next_total_tokens, 0)
+        # Sync per-spec row counts across ranks for plotting and resume logs.
+        spec_keys = [spec["spec"] for spec in dataset_specs]
+        now = time.time()
+        ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
+        synced = Synced(
+            average_loss=macro_step.micro_loss_total / (ddp_world_size if ddp_enabled else 1),
+            loss_min=macro_step.micro_loss_total,
+            loss_max=macro_step.micro_loss_total,
+            token_count=macro_step.micro_token_total,
+            sample_count=macro_step.micro_sample_total,
+            stop_flag=stop_requested,
+            io_wait=macro_step.io_wait,
+            compute_time=macro_step.compute_time,
+            sync_wait=macro_step.sync_wait,
+            counts=[source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
+            print_input=(is_master and input_requested),
+            should_checkpoint=(now - last_ckpt_time >= ckpt_interval) if is_master else False,
+        )
+        debug = SyncedDebug(
+            gathered_losses=macro_step.micro_loss_total,
+            stats_gathered=[macro_step.micro_token_total, macro_step.micro_sample_total],
+            rng_gathered=build_rng_tensor(device),
+        )
+        with macro_step.measure_sync() if ddp_enabled else contextlib.nullcontext():
+            synced = sync(synced, device, ddp_enabled=ddp_enabled)
+            debug = sync(debug, device, ddp_enabled=ddp_enabled)
+
+        next_total_tokens = progress.total_tokens + synced.token_count
+        global_counts = {key: int(value) for key, value in zip(spec_keys, synced.counts)}
 
         # Update timing output for plot logs.
-        macro_compute_elapsed = macro_compute_time + (time.time() - micro_compute_start)
-        io_max = macro_data_wait
-        compute_max = macro_compute_elapsed
+        io_wait_max = macro_step.io_wait
+        compute_max = macro_step.compute_time
+        sync_wait_max = macro_step.sync_wait
         if ddp_enabled:
-            time_max = torch.tensor([macro_data_wait, macro_compute_elapsed], device=device)
-            dist.all_reduce(time_max, op=dist.ReduceOp.MAX)
-            io_max = time_max[0].item()
-            compute_max = time_max[1].item()
+            io_wait_max = synced.io_wait
+            compute_max = synced.compute_time
+            sync_wait_max = synced.sync_wait
+
         # Log macro step counts while keeping micro-step checkpointing intact.
         plot_printed = False
         if is_master:
-            plot_printed = progress.tick(
-                logged_loss,
-                loss_delta=loss_delta,
-                batch_size=micro_sample_total,
-                token_count=logged_tokens,
+            progress.tick(
+                synced.average_loss,
+                loss_delta=(synced.loss_max - synced.loss_min if ddp_enabled else None),
+                batch_size=macro_step.micro_sample_total,
+                token_count=synced.token_count,
                 lr=optimizer.param_groups[0]["lr"],
                 epoch=current_epoch,
-                step=current_step // micro_steps,
-                remaining_tokens=remaining_tokens,
-                io_time=io_max,
+                step=current_step // macro_step.micro_steps,
+                remaining_tokens=max(target_tokens - next_total_tokens, 0),
+                io_time=io_wait_max,
                 gpu_time=compute_max,
+                sync_time=sync_wait_max,
+            )
+        plot_printed = plotter.tick(
+            synced.token_count,
+            synced.average_loss,
+            is_master=is_master,
+        )
+        if ddp_enabled and plot_printed and is_master:
+            log_ddp_debug(debug.gathered_losses, debug.stats_gathered, debug.rng_gathered, is_master)
+
+        if plot_printed and is_master:
+            plotter.print_dataset_pos(
+                total_tokens=progress.total_tokens,
+                global_counts=global_counts,
+                resume_base=resume_rows if is_resume_epoch else {},
+                dataset_specs=dataset_specs,
+                total_rows_by_spec=total_rows_by_spec,
+                avg_tokens_by_spec=avg_tokens_by_spec,
+                est_tokens_by_spec=est_tokens_by_spec,
+                target_tokens=target_tokens,
             )
 
-        if ddp_enabled:
-            plot_flag = torch.tensor(1 if (is_master and plot_printed) else 0, device=device)
-            dist.broadcast(plot_flag, src=0)
-            plot_printed = bool(plot_flag.item())
-            debug_flag = torch.tensor(1 if (is_master and plot_debug) else 0, device=device)
-            dist.broadcast(debug_flag, src=0)
-            plot_debug = bool(debug_flag.item())
-            input_flag = torch.tensor(1 if (is_master and input_request) else 0, device=device)
-            dist.broadcast(input_flag, src=0)
-            input_request = bool(input_flag.item())
-            if plot_printed:
-                log_ddp_debug(
-                    ddp_world_size,
-                    micro_loss_total,
-                    micro_token_total,
-                    micro_sample_total,
-                    device,
-                    is_master,
-                )
-
-        if plot_printed:
-            # Summarize dataset positions when plotting.
-            spec_keys = [spec["spec"] for spec in dataset_specs]
-            resume_base = resume_rows if current_epoch == resume_epoch else {}
-            if ddp_enabled:
-                counts_tensor = torch.tensor(
-                    [source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
-                    dtype=torch.long,
-                    device=device,
-                )
-                dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
-                global_counts = {key: int(value) for key, value in zip(spec_keys, counts_tensor.tolist())}
-            else:
-                global_counts = {key: int(source_row_counts.get(key, 0)) for key in spec_keys}
-            if is_master:
-                progress.print_dataset_pos(
-                    global_counts=global_counts,
-                    resume_base=resume_base,
-                    dataset_specs=dataset_specs,
-                    total_rows_by_spec=total_rows_by_spec,
-                    avg_tokens_by_spec=avg_tokens_by_spec,
-                    est_tokens_by_spec=est_tokens_by_spec,
-                    target_tokens=target_tokens,
-                )
-            plot_debug = False
-
         # Emit a per-rank input sample for shard sanity checks.
-        should_print_input = debug_level >= 1 or input_request
-        if is_master and plot_printed:
-            should_print_input = True
-        if should_print_input:
+        if debug_level >= 1 or synced.print_input:
             progress.print_input_sample(
                 ddp_rank,
                 inputs,
@@ -682,8 +773,6 @@ for current_epoch in itertools.count(resume_epoch):
                 source_ids=batch.get("source_id"),
                 dataset_specs=dataset_specs,
             )
-        if input_request:
-            input_request = False
 
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -694,26 +783,14 @@ for current_epoch in itertools.count(resume_epoch):
         # Apply the optimizer step and advance the token scheduler.
         scheduler.last_epoch = next_total_tokens - 1
         scheduler.step()
-        macro_compute_time += time.time() - micro_compute_start
-        last_step_end = time.time()
-        now = time.time()
-        ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
-        should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
-        if ddp_enabled:
-            # Sync stop requests across ranks.
-            stop_flag = torch.tensor(1 if stop_requested else 0, device=device)
-            dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
-            stop_requested = bool(stop_flag.item())
-            should_checkpoint = (now - last_ckpt_time >= ckpt_interval) or stop_requested
 
-            # Sync checkpoint decision across ranks.
-            ckpt_flag = torch.tensor(1 if (is_master and should_checkpoint) else 0, device=device)
-            dist.broadcast(ckpt_flag, src=0)
-            should_checkpoint = bool(ckpt_flag.item())
-        if should_checkpoint:
+        macro_step.finish()
+        now = time.time()
+
+        # Determine if we should checkpoint at this step.
+        if synced.should_checkpoint or synced.stop_flag:
             # Build the resume state for the checkpoint.
-            resume_base = resume_rows if current_epoch == resume_epoch else {}
-            combined_counts = dict(resume_base)
+            combined_counts = dict(resume_rows if is_resume_epoch else {})
             for spec in dataset_specs:
                 spec_key = spec["spec"]
                 combined_counts[spec_key] = combined_counts.get(spec_key, 0) + source_row_counts.get(spec_key, 0)
@@ -729,7 +806,7 @@ for current_epoch in itertools.count(resume_epoch):
                 )
                 dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
                 if is_master:
-                    global_counts = dict(resume_base)
+                    global_counts = dict(resume_rows if is_resume_epoch else {})
                     for spec_key, value in zip(spec_keys, counts_tensor.tolist()):
                         global_counts[spec_key] = global_counts.get(spec_key, 0) + int(value)
                     resume_state = build_resume_state(global_counts, dataset_specs)
@@ -749,14 +826,19 @@ for current_epoch in itertools.count(resume_epoch):
             last_ckpt_time = now
 
         # Exit after the current step if SIGINT was requested.
-        if stop_requested:
+        if synced.stop_flag:
             break
-        current_micro_step = 0
 
-    current_sample_index = 0
-    if stop_requested:
-        break
+    else:
+        # Reset the sample index after a full epoch without interruption.
+        current_sample_index = 0
+        continue
+
+    # Stop training after an interrupted epoch.
+    break
 
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
+
+

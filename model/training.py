@@ -173,7 +173,6 @@ if is_master:
 
 
 
-
 # %% [markdown]
 # ## Create vizualization of the model
 
@@ -209,7 +208,6 @@ if is_notebook:
 # %%
 from datasets.utils.logging import enable_progress_bar, set_verbosity_error
 from loader import (
-    TokenEstimator,
     build_interleaved_dataset,
     build_packed_dataset,
     cap_streaming_rows,
@@ -217,11 +215,9 @@ from loader import (
     parse_dataset_specs,
     resolve_resume_plan,
     resolve_total_rows,
-    dataset_label,
     with_initial_log,
 )
-from resume import build_resume_state, cap_resume_rows, is_resume_exhausted, normalize_resume_rows
-import math
+from resume import build_resume_state, cap_resume_rows, is_resume_exhausted, normalize_resume_rows, normalize_resume_tokens
 
 # Download shards on demand and shuffle within each dataset.
 set_verbosity_error()
@@ -229,16 +225,12 @@ enable_progress_bar()
 
 # Cache dataset specs for reuse across steps.
 dataset_specs = parse_dataset_specs(config.DATASET_SPECS)
-
+dataset_specs_keys = [spec["spec"] for spec in dataset_specs]
 
 # Track total rows per dataset for resume validation.
 total_rows_by_spec = {}
-avg_tokens_by_spec = {}
-est_tokens_by_spec = {}
-estimated_total_tokens = 0
 
-print("Datasets:") if is_master else None
-for dataset_index, spec in enumerate(dataset_specs):
+for spec in dataset_specs:
     raw_dataset = load_dataset_from_spec(
         spec,
         cache_dir=data_dir,
@@ -246,37 +238,15 @@ for dataset_index, spec in enumerate(dataset_specs):
     )
     total_rows = resolve_total_rows(raw_dataset, spec, cache_dir=data_dir)
     total_rows_by_spec[spec["spec"]] = total_rows
-    if total_rows is None:
-        raise ValueError("Dataset split metadata missing num_examples for token estimate.")
-    token_estimator = TokenEstimator(
-        tokenizer,
-        text_key=spec["text_key"],
-    )
-    avg_tokens, est_total_tokens = token_estimator.estimate_streaming_cached(
-        raw_dataset,
-        total_rows,
-        spec,
-        cache_dir=data_dir,
-    )
-    avg_tokens_by_spec[spec["spec"]] = avg_tokens
-    est_tokens_by_spec[spec["spec"]] = est_total_tokens
-    estimated_total_tokens += est_total_tokens
-    print(f"  {dataset_label(spec)}: avg_tokens={avg_tokens:.1f} est_tokens={est_total_tokens}") if is_master else None
 
 # Resolve model size for token budgeting.
 param_count, _ = config.model_info(model)
 
 # Derive the token cap and epoch count from the configured max-training factor.
 max_tokens = int(param_count * config.MAX_TRAINING_FACTOR) if config.MAX_TRAINING_FACTOR > 0 else 0
-target_tokens = max_tokens or estimated_total_tokens
-target_epochs = 1
-if max_tokens and estimated_total_tokens > 0:
-    target_epochs = max(1, math.ceil(target_tokens / estimated_total_tokens))
-tokens_per_step = config.MACRO_BATCH_SIZE * (config.CONTEXT_LEN - 1)
-dataset_steps = math.ceil(estimated_total_tokens / tokens_per_step)
+target_tokens = max_tokens
 if is_master:
-    print(f"  Dataset estimate: steps={dataset_steps:,} tokens={estimated_total_tokens:,} tokens_per_step={tokens_per_step:,}")
-    print(f"  Target: epochs={target_epochs:,} target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
+    print(f"  Target: epochs=1 target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
 
 
 # %% [markdown]
@@ -299,6 +269,7 @@ import itertools
 import os
 import signal
 import time
+
 # Set up optimizer, learning-rate scheduler, and loss function
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
 scheduler = build_warmup_cosine_tokens(optimizer, target_tokens, config.WARMUP_PCT)
@@ -306,14 +277,14 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 
 # Load the latest checkpoint if available.
-resume_epoch, resume_step, global_step, resume_sample_index, resume_tokens, resume_state = checkpointer.load_latest(is_master=is_master)
+resume_epoch, resume_step, global_step, resume_sample_index, resume_total_tokens, resume_state = checkpointer.load_latest(is_master=is_master)
 resume_info = checkpointer.last_resume_info
 
 # Align the scheduler with the resumed token count.
-if resume_tokens:
-    scheduler.last_epoch = resume_tokens # we misuse token's epoch count for tokens
+if resume_total_tokens:
+    scheduler.last_epoch = resume_total_tokens # we misuse token's epoch count for tokens
     for group, base_lr, lr_lambda in zip(optimizer.param_groups, scheduler.base_lrs, scheduler.lr_lambdas):
-        group["lr"] = base_lr * lr_lambda(resume_tokens)
+        group["lr"] = base_lr * lr_lambda(resume_total_tokens)
 
 # Report resume state after aligning scheduler tokens.
 if is_master and resume_info:
@@ -333,15 +304,16 @@ if is_master and resume_info:
         flush=True,
     )
 
-# Normalize resume state into per-spec row offsets.
-# Keep offsets from the checkpoint, even for specs not active in this run.
-# Ensure current specs always have a default offset for safe lookups.
-# This drives shard/row skipping during resume and checkpointing.
+# Normalize resume offsets for row/token counts.
 resume_rows = normalize_resume_rows(resume_state, dataset_specs)
 resume_rows = cap_resume_rows(resume_rows, total_rows_by_spec)
+resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
+
+global_row_counts = dict(resume_rows)
+global_token_counts = dict(resume_tokens)
 
 # Cap resume offsets to the known total rows to avoid invalid states.
-for spec in dataset_specs:
+for dataset_index, spec in enumerate(dataset_specs):
     spec_key = spec["spec"]
     row_offset = resume_rows.get(spec_key, 0)
     total_rows = total_rows_by_spec.get(spec_key)
@@ -355,12 +327,13 @@ for spec in dataset_specs:
 
 # Track per-rank row counts for shard-aware resume.
 source_row_counts = {spec["spec"]: 0 for spec in dataset_specs}
+source_token_counts = {spec["spec"]: 0 for spec in dataset_specs}
 
 # Pre-warm dataset shards on the master to avoid DDP startup stalls.
 if ddp_enabled:
     if is_master:
         print("Warming dataset cache...", flush=True)
-        for spec in dataset_specs:
+        for dataset_index, spec in enumerate(dataset_specs):
             warm_dataset = load_dataset_from_spec(
                 spec,
                 cache_dir=data_dir,
@@ -371,12 +344,10 @@ if ddp_enabled:
             except StopIteration:
                 pass
     dist.barrier()
-# Build packed datasets per source with row-offset resumes.
-# Resolve shard-aware resume plans, then stream from the right shard/offset.
-# Pack each source into fixed-length token blocks with source IDs.
-# Interleave happens later, so each dataset is prepared independently.
-# Row offsets are tracked for checkpoint-safe restarts.
+
+# Build packed datasets with shard-aware resume offsets.
 packed_datasets = []
+packed_dataset_specs_keys = []
 for dataset_index, spec in enumerate(dataset_specs):
     spec_key = spec["spec"]
     row_offset = resume_rows.get(spec_key, 0)
@@ -386,6 +357,7 @@ for dataset_index, spec in enumerate(dataset_specs):
     if is_resume_exhausted(row_offset, total_rows):
         print(f"Skipping exhausted dataset {spec_key}: row_offset {row_offset} >= total_rows {total_rows}") if is_master else None
         continue
+    packed_dataset_specs_keys.append(spec_key)
     data_files, in_shard_offset, shard_label = resolve_resume_plan(
         spec,
         row_offset,
@@ -444,10 +416,10 @@ for dataset_index, spec in enumerate(dataset_specs):
 if not packed_datasets:
     raise ValueError("All datasets exhausted after resume; check DATASET_SPECS.")
 
-base_dataset = build_interleaved_dataset(packed_datasets, seed=42)
+token_counts_by_spec = [resume_tokens.get(spec_key, 0) for spec_key in packed_dataset_specs_keys]
+base_dataset = build_interleaved_dataset(packed_datasets, seed=42, token_counts=token_counts_by_spec)
 if is_master:
     print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
-
 
 
 # %% [markdown]
@@ -483,7 +455,6 @@ class MacroStep:
         self.micro_loss_total = 0.0
         self.micro_token_total = 0
         self.micro_sample_total = 0
-
 
     # Return True only for the final micro step in the macro batch.
     def micro_step(self, token_count, sample_count, loss_value):
@@ -525,6 +496,7 @@ class MacroStep:
         self.current_micro_step = 0
 
 
+
 # %% [markdown]
 # ### Synced Payloads
 #
@@ -546,10 +518,10 @@ class Synced:
     io_wait: float = all_reduce("max")
     compute_time: float = all_reduce("max")
     sync_wait: float = all_reduce("max")
-    counts: list = all_reduce("sum", dtype="i64")
+    row_counts: list = all_reduce("sum", dtype="i64")
+    token_counts: list = all_reduce("sum", dtype="i64")
     print_input: bool = flag_broadcast(src=0)
     should_checkpoint: bool = flag_broadcast(src=0)
-
 
 @dataclass
 class SyncedDebug:
@@ -560,6 +532,7 @@ class SyncedDebug:
     gathered_losses: float = all_gather(dtype="f32")
     stats_gathered: list = all_gather(dtype="i64")
     rng_gathered: list = all_gather(dtype="u64")
+
 
 
 # %% [markdown]
@@ -581,7 +554,7 @@ current_sample_index = 0
 progress = ProgressLogger(
     start_global_step=global_step,
     start_total_samples=0,
-    start_total_tokens=resume_tokens,
+    start_total_tokens=resume_total_tokens,
     estimated_total_tokens=target_tokens,
 )
 plotter = Plotter(
@@ -614,6 +587,7 @@ for current_epoch in itertools.count(resume_epoch):
     if current_epoch != resume_epoch:
         for spec in dataset_specs:
             source_row_counts[spec["spec"]] = 0
+            source_token_counts[spec["spec"]] = 0
     dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch).with_format("torch")
     loader = DataLoader(
         dataset_epoch,
@@ -674,6 +648,11 @@ for current_epoch in itertools.count(resume_epoch):
                 if row_count:
                     spec_key = dataset_specs[int(source_id)]["spec"]
                     source_row_counts[spec_key] += int(row_count)
+            token_counts = attention_mask[:, 1:].sum(dim=1).tolist()
+            for source_id, sample_tokens in zip(source_ids, token_counts):
+                if sample_tokens:
+                    spec_key = dataset_specs[int(source_id)]["spec"]
+                    source_token_counts[spec_key] += int(sample_tokens)
 
             # Update checkpoint counters and save when needed.
             current_sample_index += input_ids.size(0)
@@ -689,7 +668,6 @@ for current_epoch in itertools.count(resume_epoch):
 
         # Average the micro loss across ranks for consistent logging.
         # Sync per-spec row counts across ranks for plotting and resume logs.
-        spec_keys = [spec["spec"] for spec in dataset_specs]
         now = time.time()
         ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
         synced = Synced(
@@ -702,7 +680,8 @@ for current_epoch in itertools.count(resume_epoch):
             io_wait=macro_step.io_wait,
             compute_time=macro_step.compute_time,
             sync_wait=macro_step.sync_wait,
-            counts=[source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
+            row_counts=[source_row_counts.get(spec_key, 0) for spec_key in dataset_specs_keys],
+            token_counts=[source_token_counts.get(spec_key, 0) for spec_key in dataset_specs_keys],
             print_input=(is_master and input_requested),
             should_checkpoint=(now - last_ckpt_time >= ckpt_interval) if is_master else False,
         )
@@ -716,8 +695,10 @@ for current_epoch in itertools.count(resume_epoch):
             debug = sync(debug, device, ddp_enabled=ddp_enabled)
 
         next_total_tokens = progress.total_tokens + synced.token_count
-        global_counts = {key: int(value) for key, value in zip(spec_keys, synced.counts)}
-
+        for spec_key, value in zip(dataset_specs_keys, synced.row_counts):
+            global_row_counts[spec_key] = global_row_counts.get(spec_key, 0) + int(value)
+        for spec_key, value in zip(dataset_specs_keys, synced.token_counts):
+            global_token_counts[spec_key] = global_token_counts.get(spec_key, 0) + int(value)
         # Update timing output for plot logs.
         io_wait_max = macro_step.io_wait
         compute_max = macro_step.compute_time
@@ -754,12 +735,11 @@ for current_epoch in itertools.count(resume_epoch):
         if plot_printed and is_master:
             plotter.print_dataset_pos(
                 total_tokens=progress.total_tokens,
-                global_counts=global_counts,
+                global_row_counts=global_row_counts,
                 resume_base=resume_rows if is_resume_epoch else {},
+                token_counts_by_spec=global_token_counts,
                 dataset_specs=dataset_specs,
                 total_rows_by_spec=total_rows_by_spec,
-                avg_tokens_by_spec=avg_tokens_by_spec,
-                est_tokens_by_spec=est_tokens_by_spec,
                 target_tokens=target_tokens,
             )
 
@@ -790,26 +770,36 @@ for current_epoch in itertools.count(resume_epoch):
         # Determine if we should checkpoint at this step.
         if synced.should_checkpoint or synced.stop_flag:
             # Build the resume state for the checkpoint.
-            combined_counts = dict(resume_rows if is_resume_epoch else {})
+            combined_row_counts = dict(resume_rows if is_resume_epoch else {})
+            combined_token_counts = dict(resume_tokens if is_resume_epoch else {})
             for spec in dataset_specs:
                 spec_key = spec["spec"]
-                combined_counts[spec_key] = combined_counts.get(spec_key, 0) + source_row_counts.get(spec_key, 0)
-            resume_state = build_resume_state(combined_counts, dataset_specs)
+                combined_row_counts[spec_key] = combined_row_counts.get(spec_key, 0) + source_row_counts.get(spec_key, 0)
+                combined_token_counts[spec_key] = combined_token_counts.get(spec_key, 0) + source_token_counts.get(spec_key, 0)
+            resume_state = build_resume_state(combined_row_counts, dataset_specs, source_token_counts=combined_token_counts)
 
             # Aggregate per-rank row counts for global resume offsets.
             if ddp_enabled:
-                spec_keys = [spec["spec"] for spec in dataset_specs]
                 counts_tensor = torch.tensor(
-                    [source_row_counts.get(spec_key, 0) for spec_key in spec_keys],
+                    [source_row_counts.get(spec_key, 0) for spec_key in dataset_specs_keys],
+                    dtype=torch.long,
+                    device=device,
+                )
+                token_counts_tensor = torch.tensor(
+                    [source_token_counts.get(spec_key, 0) for spec_key in dataset_specs_keys],
                     dtype=torch.long,
                     device=device,
                 )
                 dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)
+                dist.all_reduce(token_counts_tensor, op=dist.ReduceOp.SUM)
                 if is_master:
-                    global_counts = dict(resume_rows if is_resume_epoch else {})
-                    for spec_key, value in zip(spec_keys, counts_tensor.tolist()):
-                        global_counts[spec_key] = global_counts.get(spec_key, 0) + int(value)
-                    resume_state = build_resume_state(global_counts, dataset_specs)
+                    global_row_counts = dict(global_row_counts)
+                    global_token_counts = dict(global_token_counts)
+                    for spec_key, value in zip(dataset_specs_keys, counts_tensor.tolist()):
+                        global_row_counts[spec_key] = global_row_counts.get(spec_key, 0) + int(value)
+                    for spec_key, value in zip(dataset_specs_keys, token_counts_tensor.tolist()):
+                        global_token_counts[spec_key] = global_token_counts.get(spec_key, 0) + int(value)
+                    resume_state = build_resume_state(global_row_counts, dataset_specs, source_token_counts=global_token_counts)
 
             # Persist checkpoints only from the master process.
             if is_master:
@@ -840,5 +830,6 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
+
 
 

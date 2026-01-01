@@ -16,6 +16,21 @@ def normalize_resume_rows(resume_state, dataset_specs):
     return resume_rows
 
 
+def normalize_resume_tokens(resume_state, dataset_specs):
+    # Collect per-spec token offsets from a checkpoint and keep any unknown specs.
+    resume_tokens = {}
+    if isinstance(resume_state, dict):
+        for entry in resume_state.get("datasets", []):
+            spec_key = entry.get("spec")
+            if spec_key and "token_offset" in entry:
+                resume_tokens[spec_key] = int(entry.get("token_offset", 0) or 0)
+
+    # Ensure current dataset specs are present with default offsets.
+    for spec in dataset_specs:
+        resume_tokens.setdefault(spec["spec"], 0)
+    return resume_tokens
+
+
 def cap_resume_rows(resume_rows, total_rows_by_spec):
     # Clamp resume offsets to known totals and align full passes across specs.
     if not total_rows_by_spec:
@@ -45,28 +60,33 @@ def cap_resume_rows(resume_rows, total_rows_by_spec):
     return adjusted
 
 
-def build_resume_state(source_row_counts, dataset_specs):
+def build_resume_state(source_row_counts, dataset_specs, source_token_counts=None):
     # Emit current specs first so checkpoints remain easy to read.
     datasets = []
     seen = set()
     for spec in dataset_specs:
         spec_key = spec["spec"]
-        datasets.append(
-            {
-                "spec": spec_key,
-                "row_offset": source_row_counts.get(spec_key, 0),
-            }
-        )
+        entry = {
+            "spec": spec_key,
+            "row_offset": source_row_counts.get(spec_key, 0),
+        }
+        if source_token_counts is not None:
+            entry["token_offset"] = source_token_counts.get(spec_key, 0)
+        datasets.append(entry)
         seen.add(spec_key)
 
     # Preserve offsets for specs not in the current run.
-    for spec_key in sorted(key for key in source_row_counts.keys() if key not in seen):
-        datasets.append(
-            {
-                "spec": spec_key,
-                "row_offset": source_row_counts.get(spec_key, 0),
-            }
-        )
+    extra_keys = set(source_row_counts.keys())
+    if source_token_counts is not None:
+        extra_keys |= set(source_token_counts.keys())
+    for spec_key in sorted(key for key in extra_keys if key not in seen):
+        entry = {
+            "spec": spec_key,
+            "row_offset": source_row_counts.get(spec_key, 0),
+        }
+        if source_token_counts is not None:
+            entry["token_offset"] = source_token_counts.get(spec_key, 0)
+        datasets.append(entry)
     return {"datasets": datasets}
 
 

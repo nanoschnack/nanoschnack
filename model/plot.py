@@ -69,19 +69,16 @@ class Plotter:
     def print_dataset_pos(
         self,
         total_tokens,
-        global_counts,
+        global_row_counts,
         resume_base,
         dataset_specs,
         total_rows_by_spec,
         target_tokens,
-        avg_tokens_by_spec=None,
-        est_tokens_by_spec=None,
+        token_counts_by_spec=None,
     ):
         # Emit dataset position summaries for each spec.
-        if avg_tokens_by_spec is None:
-            avg_tokens_by_spec = {}
-        if est_tokens_by_spec is None:
-            est_tokens_by_spec = {}
+        if token_counts_by_spec is None:
+            token_counts_by_spec = {}
         def _format_row_count(value):
             if value < 10000:
                 return str(int(value))
@@ -98,27 +95,17 @@ class Plotter:
         )
         for spec in dataset_specs:
             spec_key = spec["spec"]
-            current_rows = global_counts.get(spec_key, 0) + resume_base.get(spec_key, 0)
+            current_rows = global_row_counts.get(spec_key, 0)
             resume_rows_count = resume_base.get(spec_key, 0)
             total_rows = total_rows_by_spec.get(spec_key)
-            avg_tokens = avg_tokens_by_spec.get(spec_key)
-            est_tokens = est_tokens_by_spec.get(spec_key)
-            current_tokens = None
-            if avg_tokens is not None:
-                current_tokens = int(current_rows * avg_tokens)
-            tokens_pct = None
-            if est_tokens:
-                tokens_pct = (current_tokens or 0) / est_tokens * 100
+            current_tokens = token_counts_by_spec.get(spec_key)
             pct = None
             if total_rows:
                 pct = (current_rows / total_rows) * 100
-            if pct is None and tokens_pct is not None:
-                pct = tokens_pct
             pct_label = f" ({pct:.1f}%)" if pct is not None else ""
-            token_detail = (
-                f" tokens={_format_token_count(current_tokens)}"
-                f"/{_format_token_count(est_tokens)}"
-            )
+            token_detail = ""
+            if current_tokens is not None:
+                token_detail = f" tokens={_format_token_count(current_tokens)}"
             if total_rows:
                 print(
                     f"  {spec_key}: resume={_format_row_count(resume_rows_count)} "

@@ -84,6 +84,9 @@ os.environ.setdefault("DATA_LOADER_WORKERS", str(DATA_LOADER_WORKERS))
 # Batch size for dataset packing during tokenization.
 PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 20 * _env_int("WORLD_SIZE", 1))
 
+# HF shard cache cleanup mode: auto or keep.
+HF_SHARD_CACHE_CLEANUP = _env_str("HF_SHARD_CACHE_CLEANUP", "auto")
+
 ###
 ### Dataset defaults
 ###
@@ -214,6 +217,7 @@ def print_training_hyperparams(
         f"  data_loader_workers={DATA_LOADER_WORKERS}",
         f"  shuffle_buffer={SHUFFLE_BUFFER}",
         f"  dataset_specs={DATASET_SPECS}",
+        f"  hf_shard_cache_cleanup={HF_SHARD_CACHE_CLEANUP}",
     ]
     if ddp_enabled:
         ddp_local_macro_batch = MACRO_BATCH_SIZE // ddp_world_size

@@ -1,11 +1,25 @@
 import tempfile
 import time
+from pathlib import Path
 import unittest
 from unittest import mock
 
 from datasets import IterableDataset
 
 from model import loader
+
+_FAKE_SHARD_PATHS = {}
+_FAKE_ROWS_BY_PATH = {}
+_FAKE_ENSURE_CALLS = []
+
+
+def _fake_ensure_local_shard(repo_id, rel_path, cache_dir, split, local_files_only=False):
+    _FAKE_ENSURE_CALLS.append(rel_path)
+    return _FAKE_SHARD_PATHS[rel_path]
+
+
+def _fake_load_dataset(kind, data_files=None, split=None, streaming=None):
+    return _FAKE_ROWS_BY_PATH[str(data_files)]
 
 
 class LoaderHelperTests(unittest.TestCase):
@@ -131,6 +145,77 @@ class LoaderHelperTests(unittest.TestCase):
 
         self.assertEqual(avg_tokens, cached_avg)
         self.assertEqual(est_total, cached_total)
+
+    def test_hf_local_shard_path_uses_basename(self):
+        cache_dir = Path("/tmp/cache-root")
+        path = loader._hf_local_shard_path(
+            cache_dir,
+            "org/repo",
+            "train",
+            "data/train-00001-of-00010.parquet",
+        )
+        self.assertEqual(
+            path.as_posix(),
+            "/tmp/cache-root/hf_shards/org/repo/train/train-00001-of-00010.parquet",
+        )
+
+    def test_cleanup_shard_cache_removes_untracked_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            keep = root / "keep.parquet"
+            drop = root / "drop.parquet"
+            keep.write_text("keep")
+            drop.write_text("drop")
+
+            loader._cleanup_shard_cache(root, [keep])
+
+            self.assertTrue(keep.exists())
+            self.assertFalse(drop.exists())
+
+    def test_hf_load_dataset_sharded_prefetches_next_shard(self):
+        rel_files = [
+            "data/train-00000.parquet",
+            "data/train-00001.parquet",
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir)
+            local_paths = {
+                rel_path: cache_dir / "hf_shards" / "org/repo" / "train" / Path(rel_path).name
+                for rel_path in rel_files
+            }
+            _FAKE_SHARD_PATHS.clear()
+            _FAKE_ROWS_BY_PATH.clear()
+            _FAKE_ENSURE_CALLS.clear()
+            _FAKE_SHARD_PATHS.update(local_paths)
+            _FAKE_ROWS_BY_PATH[str(local_paths[rel_files[0]])] = [{"id": 0}, {"id": 1}]
+            _FAKE_ROWS_BY_PATH[str(local_paths[rel_files[1]])] = [{"id": 2}]
+
+            original_ensure = loader._ensure_local_shard
+            original_load_dataset = loader.load_dataset
+            loader._ensure_local_shard = _fake_ensure_local_shard
+            loader.load_dataset = _fake_load_dataset
+            try:
+                dataset = loader.hf_load_dataset_sharded(
+                    "org/repo",
+                    split="train",
+                    cache_dir=cache_dir,
+                    data_files=rel_files,
+                    prefetch=1,
+                )
+                rows = list(dataset)
+            finally:
+                loader._ensure_local_shard = original_ensure
+                loader.load_dataset = original_load_dataset
+
+        self.assertEqual(rows, [{"id": 0}, {"id": 1}, {"id": 2}])
+        self.assertIn(rel_files[0], _FAKE_ENSURE_CALLS)
+        self.assertIn(rel_files[1], _FAKE_ENSURE_CALLS)
+
+    def test_hf_load_dataset_sharded_returns_none_without_files(self):
+        with mock.patch.object(loader, "_hf_parquet_files", return_value=[]):
+            dataset = loader.hf_load_dataset_sharded("org/repo", split="train", cache_dir="cache")
+
+        self.assertIsNone(dataset)
 
     def test_pack_tokens_uses_row_count(self):
         batch = {

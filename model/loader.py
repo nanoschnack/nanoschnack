@@ -4,13 +4,17 @@ import hashlib
 import json
 import math
 import random
+import shutil
 from bisect import bisect_right
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import re
 
-from datasets import interleave_datasets, load_dataset
+from datasets import IterableDataset, interleave_datasets, load_dataset
 
 import time
+
+import config
 
 from tokenizer import DATASET_EOS_TOKEN
 
@@ -125,6 +129,130 @@ def load_dataset_source(repo_id, split="train", data_files=None, cache_dir=None,
         repo_id,
         **kwargs,
     )
+
+
+def _hf_shard_cache_root(cache_dir, repo_id, split):
+    # Resolve the local cache root for HF parquet shards.
+    root = Path(cache_dir) if cache_dir is not None else Path.cwd() / "data"
+    return root / "hf_shards" / repo_id / split
+
+def _hf_local_shard_path(cache_dir, repo_id, split, rel_path):
+    # Map a repo-relative shard path to a local cached filename.
+    filename = Path(rel_path).name
+    return _hf_shard_cache_root(cache_dir, repo_id, split) / filename
+
+def _cleanup_shard_cache(cache_root, keep_paths):
+    # Remove cached shard files not in the keep list.
+    keep = {Path(path).resolve() for path in keep_paths if path is not None}
+    if not cache_root.exists():
+        return
+    for path in cache_root.rglob("*"):
+        if path.is_file() and path.resolve() not in keep:
+            path.unlink()
+    for path in sorted(cache_root.rglob("*"), reverse=True):
+        if path.is_dir():
+            try:
+                path.rmdir()
+            except OSError:
+                continue
+
+def _ensure_local_shard(repo_id, rel_path, cache_dir, split, local_files_only=False):
+    # Download a shard to the local cache if missing.
+    from huggingface_hub import hf_hub_download
+
+    cache_root = _hf_shard_cache_root(cache_dir, repo_id, split)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    local_path = _hf_local_shard_path(cache_dir, repo_id, split, rel_path)
+    if local_path.exists():
+        return local_path
+
+    # Use the HF cache as the source, then copy into the local shard cache.
+    downloaded = hf_hub_download(
+        repo_id,
+        filename=rel_path,
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
+    )
+    tmp_path = local_path.with_suffix(local_path.suffix + ".tmp")
+    shutil.copy2(downloaded, tmp_path)
+    tmp_path.replace(local_path)
+    return local_path
+
+
+class ShardPrefetcher:
+    """Prefetch HF shards into the local cache.
+
+    Downloads the next shard in a background worker to hide network latency.
+    Tracks the current and next shard for optional cache cleanup.
+    """
+    def __init__(self, repo_id, split, cache_dir, rel_files, cleanup_mode):
+        self._repo_id = repo_id
+        self._split = split
+        self._cache_dir = cache_dir
+        self._rel_files = rel_files
+        self._cleanup_mode = cleanup_mode
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._future = None
+        self._future_index = None
+        self._cache_root = _hf_shard_cache_root(cache_dir, repo_id, split)
+
+    def _download(self, index):
+        rel_path = self._rel_files[index]
+        return _ensure_local_shard(self._repo_id, rel_path, self._cache_dir, self._split)
+
+    def prefetch(self, index):
+        if index is None or index >= len(self._rel_files):
+            return
+        if self._future is not None and not self._future.done():
+            return
+        self._future_index = index
+        self._future = self._executor.submit(self._download, index)
+
+    def get(self, index):
+        if self._future_index == index and self._future is not None:
+            path = self._future.result()
+            self._future = None
+            self._future_index = None
+            return path
+        return self._download(index)
+
+    def cleanup(self, keep_indices):
+        if self._cleanup_mode != "auto":
+            return
+        keep_paths = [
+            _hf_local_shard_path(self._cache_dir, self._repo_id, self._split, self._rel_files[idx])
+            for idx in keep_indices
+            if idx is not None and idx < len(self._rel_files)
+        ]
+        _cleanup_shard_cache(self._cache_root, keep_paths)
+
+    def close(self):
+        self._executor.shutdown(wait=False)
+
+
+def hf_load_dataset_sharded(repo_id, split="train", name=None, cache_dir=None, data_files=None, prefetch=1):
+    # Load an HF dataset shard-by-shard with local caching.
+    rel_files = data_files or _hf_parquet_files(repo_id, split, name=name)
+    if not rel_files:
+        return None
+    cleanup_mode = config.HF_SHARD_CACHE_CLEANUP
+
+    def _iter_shards():
+        prefetcher = ShardPrefetcher(repo_id, split, cache_dir, rel_files, cleanup_mode)
+        try:
+            for index, _ in enumerate(rel_files):
+                local_path = prefetcher.get(index)
+                if prefetch:
+                    prefetcher.prefetch(index + 1)
+                dataset = load_dataset("parquet", data_files=str(local_path), split="train", streaming=False)
+                for row in dataset:
+                    yield row
+                keep_indices = [index, index + 1] if prefetch else [index]
+                prefetcher.cleanup(keep_indices)
+        finally:
+            prefetcher.close()
+
+    return IterableDataset.from_generator(_iter_shards)
 
 
 def cap_streaming_rows(dataset, remaining_rows):
@@ -495,19 +623,26 @@ def load_dataset_from_spec(spec, cache_dir=None, streaming=True, data_files=None
     if spec["kind"] == "hf":
         # HF datasets are loaded directly from the hub.
         split = spec.get("split", "train")
-        if data_files is None:
-            data_files = _select_hf_data_files(spec, cache_dir)
-        if data_files is not None:
-            split = "train"
-        dataset = load_dataset_source(
+        rel_files = data_files or _select_hf_data_files(spec, cache_dir)
+        sharded = hf_load_dataset_sharded(
             spec["repo_id"],
             split=split,
-            data_files=data_files,
+            name=spec.get("name"),
+            cache_dir=cache_dir,
+            data_files=rel_files,
+        )
+        if sharded is not None:
+            return sharded
+        if rel_files is not None:
+            split = "train"
+        return load_dataset_source(
+            spec["repo_id"],
+            split=split,
+            data_files=rel_files,
             cache_dir=cache_dir,
             streaming=streaming,
             name=spec.get("name"),
         )
-        return dataset
     if spec["kind"] == "txt":
         # TXT datasets load line-delimited text from local files.
         dataset = load_dataset(

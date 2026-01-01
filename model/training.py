@@ -18,12 +18,17 @@
 
 # %%
 import contextlib
+import faulthandler
 import os
+import signal
 import torch
 from dataclasses import dataclass
 
 # Avoid tokenizers fork warnings in worker processes.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+# Enable on-demand stack traces to debug stalls.
+faulthandler.register(signal.SIGUSR1, all_threads=True)
 
 from device import device_info, pick_device, print_ddp_info, print_device_info, print_sdpa_info
 

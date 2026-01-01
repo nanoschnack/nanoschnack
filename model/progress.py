@@ -60,8 +60,11 @@ class ProgressLogger:
             pct = 0.0
             eta = "?"
 
+        step_label = f"{step+1}"
+        if step != self.global_step:
+            step_label = f"{step+1}/{self.global_step+1}"
         parts = [
-            f"{step+1}/{self.global_step+1}",
+            step_label,
             f"Tokens {self._format_count(self.total_tokens)}",
             f"Total {pct:.1f}%",
             f"Samples {self._format_count(self.total_samples)}",

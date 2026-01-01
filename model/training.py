@@ -261,7 +261,7 @@ for dataset_index, spec in enumerate(dataset_specs):
     avg_tokens_by_spec[spec["spec"]] = avg_tokens
     est_tokens_by_spec[spec["spec"]] = est_total_tokens
     estimated_total_tokens += est_total_tokens
-    print(f"  {dataset_label(spec)}: avg_tokens={avg_tokens:.1f}, est_tokens={est_total_tokens}") if is_master else None
+    print(f"  {dataset_label(spec)}: avg_tokens={avg_tokens:.1f} est_tokens={est_total_tokens}") if is_master else None
 
 # Resolve model size for token budgeting.
 param_count, _ = config.model_info(model)

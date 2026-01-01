@@ -169,7 +169,9 @@ def plot_with_completion(points, model, tokenizer, config, device):
         "Validation: ",
         f"{config.PLOT_COMPLETION_PROMPT}|>{completion}",
     )
-    return f"{chart}\n{formatted}\n"
+    if chart:
+        return f"{chart}\n{formatted}\n"
+    return f"{formatted}\n"
 
 
 def ascii_loss_plot(points, width=60, height=10):
@@ -180,10 +182,10 @@ def ascii_loss_plot(points, width=60, height=10):
     """
     # Ensure we have enough data to produce a meaningful chart.
     if len(points) < 2:
-        return "loss (tokens): not enough data"
+        return ""
     t0, t1 = points[0][0], points[-1][0]
     if t1 == t0:
-        return "loss (tokens): not enough data"
+        return ""
 
     # Bucket losses into a fixed-width series for plotting.
     bins = [[] for _ in range(width)]
@@ -206,7 +208,7 @@ def ascii_loss_plot(points, width=60, height=10):
     # Normalize the series bounds for the header and chart.
     vals = [v for v in series if v is not None]
     if not vals:
-        return "loss (tokens): not enough data"
+        return ""
     vmin, vmax = min(vals), max(vals)
     if vmax == vmin:
         vmax = vmin + 1e-6
@@ -222,7 +224,7 @@ def ascii_loss_plot(points, width=60, height=10):
     t_start = format_tokens(t0)
     t_end = format_tokens(t1)
     t_mid = format_tokens((t0 + t1) / 2)
-    header = f"loss (tokens, min {vmin:.4f} max {vmax:.4f})"
+    header = f"Loss: tokens min={vmin:.4f} max={vmax:.4f}"
     series = [vmin if v is None else v for v in series]
     chart = asciichartpy.plot(series, {"height": height})
     chart_lines = chart.splitlines()

@@ -170,8 +170,8 @@ def plot_with_completion(points, model, tokenizer, config, device):
         f"{config.PLOT_COMPLETION_PROMPT}|>{completion}",
     )
     if chart:
-        return f"{chart}\n{formatted}\n"
-    return f"{formatted}\n"
+        return f"{chart}\n{formatted}"
+    return formatted
 
 
 def ascii_loss_plot(points, width=60, height=10):

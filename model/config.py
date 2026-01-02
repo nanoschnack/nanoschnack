@@ -107,6 +107,9 @@ DATASET_SPECS = _env_str(
     "hf:PatrickHaller/fineweb-2-de-1B:train:text",
 )
 
+# Tokenizer JSON path for training and chat.
+TOKENIZER_JSON_PATH = _env_str("TOKENIZER_JSON_PATH", "tokenizer/tokenizer.json")
+
 ###
 ### Inference defaults
 ###

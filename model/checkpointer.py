@@ -324,7 +324,7 @@ class Checkpointer:
         # Load state from disk if present, otherwise start fresh.
         if not self.path.exists():
             self.last_resume_info = None
-            return 0, 0, 0, 0, 0, None
+            return 0, 0, 0, None
 
         # Read checkpoint data onto the requested device.
         if is_master:
@@ -375,17 +375,14 @@ class Checkpointer:
 
         # Recover counters with safe defaults (epoch stored as 1-based).
         saved_epoch = ckpt.get("epoch", 0)
-        resume_step = ckpt.get("step", 0)
-        global_step = ckpt.get("global_step", resume_step)
-
-        sample_index = ckpt.get("sample_index", 0)
-        total_tokens = ckpt.get("total_tokens", 0)
+        global_step = ckpt.get("global_step", 0)
+        samples = ckpt.get("samples", ckpt.get("total_samples", 0))
         resume_state = ckpt.get("resume_state")
 
         resume_epoch = max(saved_epoch - 1, 0)
-        return resume_epoch, resume_step, global_step, sample_index, total_tokens, resume_state
+        return resume_epoch, global_step, samples, resume_state
 
-    def save_latest(self, epoch, step, global_step, sample_index, total_tokens, resume_state=None):
+    def save_latest(self, epoch, global_step, samples, resume_state=None):
         # Persist the latest training state in the current checkpoint format.
         start_time = time.time()
         vocab_size = getattr(getattr(self.model, "tok", None), "num_embeddings", None)
@@ -395,10 +392,8 @@ class Checkpointer:
             "scheduler": self.scheduler.state_dict(),
             "config": config.snapshot(),
             "epoch": epoch + 1,
-            "step": step,
             "global_step": global_step,
-            "sample_index": sample_index,
-            "total_tokens": total_tokens,
+            "samples": samples,
             "resume_state": resume_state,
         }
         if vocab_size is not None:
@@ -416,7 +411,12 @@ class Checkpointer:
                     continue
             self._write_checkpoint(snapshot_path, ckpt)
         elapsed = time.time() - start_time
+        total_tokens = 0
+        if isinstance(resume_state, dict):
+            for entry in resume_state.get("datasets", []):
+                total_tokens += int(entry.get("token_offset", 0) or 0)
         print(
-            f"Saved checkpoint to {self.path} at epoch {epoch + 1}, step {step} "
+            f"Saved checkpoint to {self.path} at epoch {epoch + 1} "
+            f"global_step={global_step} tokens={total_tokens} samples={samples} "
             f"({elapsed:.2f}s)."
         )

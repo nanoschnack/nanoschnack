@@ -92,60 +92,6 @@ class LoaderHelperTests(unittest.TestCase):
         printed = mocked_print.call_args[0][0]
         self.assertIn("skip done rows=5", printed)
 
-    def test_estimate_cache_round_trip(self):
-        spec = {"spec": "hf:repo:train:text", "text_key": "text"}
-
-        class _Tokenizer:
-            def get_vocab_size(self):
-                return 7
-
-        cache_key = loader.estimate_cache_key(spec, _Tokenizer(), sample_size=5)
-        payload = {"avg_tokens": 1.5, "est_total_tokens": 42, "total_rows": 10}
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            loader.write_estimate_cache(tmpdir, cache_key, payload)
-            cached = loader.read_estimate_cache(tmpdir, cache_key)
-
-        self.assertEqual(cached, payload)
-
-    def test_estimate_streaming_cached_reuses_value(self):
-        spec = {"spec": "hf:repo:train:text", "text_key": "text"}
-
-        class _Tokenizer:
-            def encode(self, text):
-                return mock.Mock(ids=[0] * len(text))
-
-            def token_to_id(self, token):
-                return None
-
-            def get_vocab_size(self):
-                return 11
-
-        first_dataset = IterableDataset.from_generator(
-            lambda: iter([{"text": "a"}, {"text": "bb"}])
-        )
-        second_dataset = IterableDataset.from_generator(
-            lambda: iter([{"text": "cccc"}])
-        )
-        estimator = loader.TokenEstimator(_Tokenizer(), sample_size=1, text_key="text")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            avg_tokens, est_total = estimator.estimate_streaming_cached(
-                first_dataset,
-                total_rows=2,
-                spec=spec,
-                cache_dir=tmpdir,
-            )
-            cached_avg, cached_total = estimator.estimate_streaming_cached(
-                second_dataset,
-                total_rows=2,
-                spec=spec,
-                cache_dir=tmpdir,
-            )
-
-        self.assertEqual(avg_tokens, cached_avg)
-        self.assertEqual(est_total, cached_total)
-
     def test_hf_local_shard_path_uses_basename(self):
         cache_dir = Path("/tmp/cache-root")
         path = loader._hf_local_shard_path(

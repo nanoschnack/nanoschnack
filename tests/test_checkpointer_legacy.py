@@ -81,13 +81,16 @@ class CheckpointerLegacyTests(unittest.TestCase):
             new_optimizer = torch.optim.AdamW(new_model.parameters(), lr=1e-3)
             new_scheduler = torch.optim.lr_scheduler.LambdaLR(new_optimizer, lr_lambda=lambda _: 1.0)
             checkpointer = Checkpointer(tmpdir, new_model, new_optimizer, new_scheduler, device="cpu")
-            resume_epoch, resume_step, global_step, sample_index, total_tokens, resume_state = checkpointer.load_latest()
+            (
+                resume_epoch,
+                global_step,
+                samples,
+                resume_state,
+            ) = checkpointer.load_latest()
 
         self.assertEqual(resume_epoch, 0)
-        self.assertEqual(resume_step, 2)
         self.assertEqual(global_step, 2)
-        self.assertEqual(sample_index, 3)
-        self.assertEqual(total_tokens, 4)
+        self.assertEqual(samples, 0)
         self.assertIsNone(resume_state)
         self.assertTrue(torch.equal(new_model.tok.weight, model.tok.weight))
         self.assertTrue(torch.equal(new_model.blocks[0].attn.qkv.weight, model.blocks[0].attn.qkv.weight))

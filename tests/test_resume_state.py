@@ -1,6 +1,13 @@
 import unittest
 
-from model.resume import build_resume_state, cap_resume_rows, is_resume_exhausted, normalize_resume_rows
+from model.resume import (
+    build_resume_state,
+    cap_resume_rows,
+    is_resume_exhausted,
+    normalize_resume_rows,
+    normalize_resume_tokens,
+    seed_missing_token_offsets,
+)
 
 
 class ResumeStateTests(unittest.TestCase):
@@ -29,19 +36,107 @@ class ResumeStateTests(unittest.TestCase):
             "old:spec": 5,
             "new:spec": 1,
         }
+        source_token_counts = {
+            "old:spec": 50,
+            "new:spec": 10,
+        }
         dataset_specs = [
             {"spec": "new:spec"},
         ]
 
-        resume_state = build_resume_state(source_row_counts, dataset_specs)
+        resume_state = build_resume_state(
+            source_row_counts,
+            dataset_specs,
+            source_token_counts=source_token_counts,
+        )
 
         self.assertEqual(
             resume_state["datasets"],
             [
-                {"spec": "new:spec", "row_offset": 1},
-                {"spec": "old:spec", "row_offset": 5},
+                {"spec": "new:spec", "row_offset": 1, "token_offset": 10},
+                {"spec": "old:spec", "row_offset": 5, "token_offset": 10},
             ],
         )
+        self.assertEqual(resume_state["seeded_specs"], ["old:spec"])
+
+    def test_build_resume_state_keeps_token_only_specs(self):
+        source_row_counts = {
+            "new:spec": 2,
+        }
+        source_token_counts = {
+            "new:spec": 20,
+            "old:spec": 50,
+        }
+        dataset_specs = [
+            {"spec": "new:spec"},
+        ]
+
+        resume_state = build_resume_state(
+            source_row_counts,
+            dataset_specs,
+            source_token_counts=source_token_counts,
+        )
+
+        self.assertEqual(
+            resume_state["datasets"],
+            [
+                {"spec": "new:spec", "row_offset": 2, "token_offset": 20},
+                {"spec": "old:spec", "row_offset": 0, "token_offset": 20},
+            ],
+        )
+        self.assertEqual(resume_state["seeded_specs"], ["old:spec"])
+
+    def test_normalize_resume_tokens_keeps_unknown_specs(self):
+        resume_state = {
+            "datasets": [
+                {"spec": "old:spec", "row_offset": 12, "token_offset": 120},
+            ]
+        }
+        dataset_specs = [
+            {"spec": "new:spec"},
+        ]
+
+        resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
+
+        self.assertEqual(resume_tokens["old:spec"], 120)
+        self.assertEqual(resume_tokens["new:spec"], 0)
+
+    def test_seed_missing_token_offsets_uses_baseline(self):
+        resume_state = {
+            "datasets": [
+                {"spec": "old:spec", "row_offset": 12, "token_offset": 120},
+            ]
+        }
+        dataset_specs = [
+            {"spec": "old:spec"},
+            {"spec": "new:spec"},
+        ]
+
+        resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
+        seeded, seeded_specs = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
+
+        self.assertEqual(seeded["old:spec"], 120)
+        self.assertEqual(seeded["new:spec"], 120)
+        self.assertEqual(seeded_specs, {"new:spec"})
+
+    def test_seed_missing_token_offsets_backfills_missing_tokens(self):
+        resume_state = {
+            "datasets": [
+                {"spec": "old:spec", "row_offset": 12, "token_offset": 120},
+                {"spec": "missing:tokens", "row_offset": 8},
+            ]
+        }
+        dataset_specs = [
+            {"spec": "old:spec"},
+            {"spec": "missing:tokens"},
+        ]
+
+        resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
+        seeded, seeded_specs = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
+
+        self.assertEqual(seeded["old:spec"], 120)
+        self.assertEqual(seeded["missing:tokens"], 120)
+        self.assertEqual(seeded_specs, {"missing:tokens"})
 
     def test_is_resume_exhausted(self):
         self.assertFalse(is_resume_exhausted(3, None))

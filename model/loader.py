@@ -1,8 +1,7 @@
 """Helpers for building streaming datasets with packing."""
 
-import hashlib
 import json
-import math
+import os
 import random
 import shutil
 from bisect import bisect_right
@@ -17,95 +16,6 @@ import time
 import config
 
 from tokenizer import DATASET_EOS_TOKEN
-
-class TokenEstimator:
-    """Estimate token counts per document without materializing datasets.
-
-    Uses a deterministic sample of each dataset to approximate the average
-    number of tokens per document. The estimator scales the sample average
-    to the full dataset size to approximate total tokens.
-    """
-
-    def __init__(
-        self,
-        tokenizer,
-        sample_size=1000,
-        seed=42,
-        text_key="text",
-    ):
-        self.tokenizer = tokenizer
-        self.sample_size = sample_size
-        self.seed = seed
-        self.text_key = text_key
-
-    def estimate_dataset(self, dataset):
-        # Sample texts and estimate tokens per document.
-        sample = self._sample_texts(dataset)
-        avg_tokens = self._average_tokens(sample)
-        return avg_tokens, int(math.ceil(avg_tokens * len(dataset)))
-
-    def estimate_streaming(self, dataset, total_rows, sample_size=None):
-        # Estimate tokens from a streaming dataset using a fixed sample window.
-        if total_rows is None or total_rows <= 0:
-            raise ValueError("total_rows must be provided for streaming estimates")
-
-        sample = self._sample_streaming_texts(dataset, sample_size=sample_size)
-        avg_tokens = self._average_tokens(sample)
-        return avg_tokens, int(math.ceil(avg_tokens * total_rows))
-
-    def estimate_streaming_cached(self, dataset, total_rows, spec, cache_dir=None, sample_size=None):
-        # Cache streaming estimates to avoid repeated sampling work.
-        size = sample_size or self.sample_size
-        cache_key = estimate_cache_key(spec, self.tokenizer, size)
-        cached = read_estimate_cache(cache_dir, cache_key)
-        if cached and cached.get("total_rows") == total_rows:
-            return float(cached["avg_tokens"]), int(cached["est_total_tokens"])
-        avg_tokens, est_total_tokens = self.estimate_streaming(dataset, total_rows, sample_size=size)
-        write_estimate_cache(
-            cache_dir,
-            cache_key,
-            {
-                "avg_tokens": avg_tokens,
-                "est_total_tokens": est_total_tokens,
-                "total_rows": total_rows,
-            },
-        )
-        return avg_tokens, est_total_tokens
-
-    def _sample_texts(self, dataset):
-        # Return a deterministic random sample of texts.
-        if len(dataset) == 0:
-            return []
-
-        # Clamp to dataset size to avoid index errors.
-        sample_size = min(self.sample_size, len(dataset))
-        rng = random.Random(self.seed)
-        indices = [rng.randrange(len(dataset)) for _ in range(sample_size)]
-        return [dataset[idx][self.text_key] for idx in indices]
-
-    def _sample_streaming_texts(self, dataset, sample_size=None):
-        # Take the first N texts from a streaming dataset.
-        size = sample_size or self.sample_size
-        texts = []
-        for idx, sample in enumerate(dataset):
-            if idx >= size:
-                break
-            texts.append(sample[self.text_key])
-        return texts
-
-    def _average_tokens(self, texts):
-        # Average token counts across sampled texts.
-        if not texts:
-            return 0.0
-
-        # Estimate tokens from tokenized lengths.
-        total = 0
-        for text in texts:
-            count = len(self.tokenizer.encode(text).ids)
-            if self.tokenizer.token_to_id(DATASET_EOS_TOKEN) is not None:
-                count += 1
-            total += count
-        return total / len(texts)
 
 
 def load_dataset_source(repo_id, split="train", data_files=None, cache_dir=None, streaming=True, name=None):
@@ -356,44 +266,6 @@ def _resume_cache_path(cache_dir, name):
     cache_root = Path(cache_dir) / "resume"
     cache_root.mkdir(parents=True, exist_ok=True)
     return cache_root / name
-
-def _estimate_cache_path(cache_dir, name):
-    # Resolve a cache path for token estimate metadata.
-    if cache_dir is None:
-        return None
-    cache_root = Path(cache_dir) / "estimates"
-    cache_root.mkdir(parents=True, exist_ok=True)
-    return cache_root / name
-
-def estimate_cache_key(spec, tokenizer, sample_size):
-    # Build a stable cache key for token estimates.
-    vocab_size = tokenizer.get_vocab_size() if hasattr(tokenizer, "get_vocab_size") else None
-    payload = {
-        "sample_size": sample_size,
-        "spec": spec.get("spec"),
-        "text_key": spec.get("text_key"),
-        "vocab_size": vocab_size,
-    }
-    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
-
-def read_estimate_cache(cache_dir, cache_key):
-    # Load cached token estimates if available.
-    cache_path = _estimate_cache_path(cache_dir, f"{cache_key}.json")
-    if cache_path is None or not cache_path.exists():
-        return None
-    with cache_path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-def write_estimate_cache(cache_dir, cache_key, payload):
-    # Persist cached token estimates for later runs.
-    cache_path = _estimate_cache_path(cache_dir, f"{cache_key}.json")
-    if cache_path is None:
-        return
-    tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle)
-    tmp_path.replace(cache_path)
 
 def _read_resume_cache(cache_path):
     # Load cached resume metadata if available.
@@ -657,7 +529,7 @@ def load_dataset_from_spec(spec, cache_dir=None, streaming=True, data_files=None
     raise ValueError(f"Unsupported dataset spec kind: {spec['kind']}")
 
 def resolve_total_rows(dataset, spec, cache_dir=None):
-    # Resolve total rows for streaming token estimates.
+    # Resolve total rows for resume offsets and progress logging.
     if spec["kind"] == "hf":
         # Prefer parquet metadata for accurate row counts on streaming datasets.
         files, row_counts = _load_hf_parquet_index(
@@ -796,17 +668,82 @@ def build_packed_dataset(
         drop_columns = [col for col in packed_column_names if col not in keep_columns]
         if drop_columns:
             packed = packed.remove_columns(drop_columns)
-    return packed.with_format("torch")
+    return packed
 
 
-def build_interleaved_dataset(datasets, seed=42):
-    # Interleave datasets with equal sampling across sources.
+def normalize_interleave_probabilities(weights):
+    # Normalize interleave weights into a probability vector.
+    if weights is None:
+        return None
+    if not weights:
+        raise ValueError("Interleave weights must not be empty.")
+    total = float(sum(weights))
+    if total <= 0:
+        raise ValueError("Interleave weights must sum to a positive value.")
+    return [float(weight) / total for weight in weights]
+
+
+def _least_tokens_interleave_generator(datasets, seed, token_counts):
+    # Interleave datasets by always sampling from the least-consumed source.
+    rng = random.Random(seed)
+    token_counts = list(token_counts)
+    iterators = [iter(dataset) for dataset in datasets]
+    active_indices = list(range(len(iterators)))
+    debug_every = int(os.getenv("DEBUG_INTERLEAVE_EVERY", "0"))
+    debug_step = 0
+    while active_indices:
+        min_count = min(token_counts[idx] for idx in active_indices)
+        candidates = [idx for idx in active_indices if token_counts[idx] == min_count]
+        choice = rng.choice(candidates) if len(candidates) > 1 else candidates[0]
+        # Emit periodic interleave picks for debugging local token counts.
+        if debug_every > 0 and debug_step % debug_every == 0:
+            print(
+                "Interleave pick "
+                f"step={debug_step} choice={choice} "
+                f"min_tokens={min_count} counts={token_counts}",
+                flush=True,
+            )
+        debug_step += 1
+        try:
+            sample = next(iterators[choice])
+        except StopIteration:
+            active_indices.remove(choice)
+            continue
+        token_count = _sample_token_count(sample)
+        token_counts[choice] += token_count
+        yield sample
+
+
+def build_interleaved_dataset(datasets, seed=42, probabilities=None, weights_provider=None, token_counts=None):
+    # Interleave datasets with normalized sampling probabilities.
+    if token_counts is not None:
+        return IterableDataset.from_generator(
+            _least_tokens_interleave_generator,
+            gen_kwargs={
+                "datasets": tuple(datasets),
+                "seed": seed,
+                "token_counts": tuple(token_counts),
+            },
+        )
+    if probabilities is None:
+        probabilities = [1 / len(datasets)] * len(datasets)
+    probabilities = normalize_interleave_probabilities(probabilities)
     return interleave_datasets(
         datasets,
         seed=seed,
-        probabilities=[1 / len(datasets)] * len(datasets),
+        probabilities=probabilities,
         stopping_strategy="all_exhausted",
     )
+
+
+def _sample_token_count(sample):
+    # Count tokens from a packed sample using the attention mask.
+    attention_mask = sample.get("attention_mask")
+    if attention_mask is None:
+        return 0
+    if hasattr(attention_mask, "sum"):
+        return int(attention_mask.sum())
+    return int(sum(attention_mask))
 
 
 # Emit a first-batch timing log while streaming batches.

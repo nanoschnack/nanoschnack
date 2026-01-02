@@ -54,9 +54,10 @@ class ResumeStateTests(unittest.TestCase):
             resume_state["datasets"],
             [
                 {"spec": "new:spec", "row_offset": 1, "token_offset": 10},
-                {"spec": "old:spec", "row_offset": 5, "token_offset": 50},
+                {"spec": "old:spec", "row_offset": 5, "token_offset": 10},
             ],
         )
+        self.assertEqual(resume_state["seeded_specs"], ["old:spec"])
 
     def test_build_resume_state_keeps_token_only_specs(self):
         source_row_counts = {
@@ -80,9 +81,10 @@ class ResumeStateTests(unittest.TestCase):
             resume_state["datasets"],
             [
                 {"spec": "new:spec", "row_offset": 2, "token_offset": 20},
-                {"spec": "old:spec", "row_offset": 0, "token_offset": 50},
+                {"spec": "old:spec", "row_offset": 0, "token_offset": 20},
             ],
         )
+        self.assertEqual(resume_state["seeded_specs"], ["old:spec"])
 
     def test_normalize_resume_tokens_keeps_unknown_specs(self):
         resume_state = {
@@ -111,10 +113,11 @@ class ResumeStateTests(unittest.TestCase):
         ]
 
         resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
-        seeded = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
+        seeded, seeded_specs = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
 
         self.assertEqual(seeded["old:spec"], 120)
         self.assertEqual(seeded["new:spec"], 120)
+        self.assertEqual(seeded_specs, {"new:spec"})
 
     def test_seed_missing_token_offsets_backfills_missing_tokens(self):
         resume_state = {
@@ -129,10 +132,11 @@ class ResumeStateTests(unittest.TestCase):
         ]
 
         resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
-        seeded = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
+        seeded, seeded_specs = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
 
         self.assertEqual(seeded["old:spec"], 120)
         self.assertEqual(seeded["missing:tokens"], 120)
+        self.assertEqual(seeded_specs, {"missing:tokens"})
 
     def test_is_resume_exhausted(self):
         self.assertFalse(is_resume_exhausted(3, None))

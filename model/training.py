@@ -74,6 +74,7 @@ if is_master:
 torch.set_float32_matmul_precision("high")
 
 
+
 # %% [markdown]
 # ## Loading a tokenizer with Hugging Face's tokenizer library
 #
@@ -85,7 +86,6 @@ from tokenizer import PAD_TOKEN, load_tokenizer, print_vocab_alignment
 tokenizer = load_tokenizer()
 if is_master:
     print_vocab_alignment(tokenizer)
-
 
 
 # %%
@@ -172,6 +172,7 @@ if is_master:
     )
 
 
+
 # %% [markdown]
 # ## Create vizualization of the model
 
@@ -199,7 +200,6 @@ if is_notebook:
     y = model(x)
 
     make_dot(y, params=dict(model.named_parameters()))
-
 
 
 # %% [markdown]
@@ -249,7 +249,6 @@ if is_master:
     print(f"  Target: epochs=1 target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
 
 
-
 # %% [markdown]
 # ## Progress and Plotting
 
@@ -291,7 +290,7 @@ resume_rows = cap_resume_rows(resume_rows, total_rows_by_spec)
 resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
 
 # Seed new specs to the current token baseline for fair interleaving.
-resume_tokens = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
+resume_tokens, seeded_specs = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
 
 # Sum token offsets for scheduler alignment and logging.
 resume_total_tokens = sum(resume_tokens.values())
@@ -321,7 +320,7 @@ if is_master and resume_info:
     )
 
 # Cap resume offsets to the known total rows to avoid invalid states.
-for dataset_index, spec in enumerate(dataset_specs):
+for spec in dataset_specs:
     spec_key = spec["spec"]
     row_offset = resume_rows.get(spec_key, 0)
     total_rows = total_rows_by_spec.get(spec_key)
@@ -341,7 +340,7 @@ source_token_counts = {spec["spec"]: 0 for spec in dataset_specs}
 if ddp_enabled:
     if is_master:
         print("Warming dataset cache...", flush=True)
-        for dataset_index, spec in enumerate(dataset_specs):
+        for spec in dataset_specs:
             warm_dataset = load_dataset_from_spec(
                 spec,
                 cache_dir=data_dir,
@@ -834,5 +833,6 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
+
 
 

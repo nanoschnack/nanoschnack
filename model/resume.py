@@ -32,27 +32,26 @@ def normalize_resume_tokens(resume_state, dataset_specs):
 
 
 def seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs):
-    # Seed new specs with a baseline token offset from the resume state.
-    resume_specs = set()
+    # Seed missing specs with a baseline token offset from the resume state.
     token_specs = set()
+    seeded_specs = set()
     if isinstance(resume_state, dict):
         for entry in resume_state.get("datasets", []):
             spec_key = entry.get("spec")
-            if spec_key:
-                resume_specs.add(spec_key)
             if spec_key and "token_offset" in entry:
                 token_specs.add(spec_key)
-    if not resume_specs:
-        return dict(resume_tokens)
+        seeded_specs = set(resume_state.get("seeded_specs", []))
     if not token_specs:
-        return dict(resume_tokens)
+        return dict(resume_tokens), seeded_specs
     baseline = min(resume_tokens.get(spec_key, 0) for spec_key in token_specs)
+    if baseline <= 0:
+        return dict(resume_tokens), seeded_specs
     adjusted = dict(resume_tokens)
-    for spec in dataset_specs:
-        spec_key = spec["spec"]
-        if spec_key not in token_specs:
-            adjusted[spec_key] = baseline
-    return adjusted
+    missing_specs = {spec["spec"] for spec in dataset_specs if spec["spec"] not in token_specs}
+    seeded_specs |= missing_specs
+    for spec_key in seeded_specs:
+        adjusted[spec_key] = max(adjusted.get(spec_key, 0), baseline)
+    return adjusted, seeded_specs
 
 
 def cap_resume_rows(resume_rows, total_rows_by_spec):
@@ -84,10 +83,18 @@ def cap_resume_rows(resume_rows, total_rows_by_spec):
     return adjusted
 
 
-def build_resume_state(source_row_counts, dataset_specs, source_token_counts=None):
+def build_resume_state(source_row_counts, dataset_specs, source_token_counts=None, seeded_specs=None):
     # Emit current specs first so checkpoints remain easy to read.
     datasets = []
     seen = set()
+    seeded_specs_set = set(seeded_specs or [])
+    baseline_tokens = None
+    if source_token_counts is not None:
+        if dataset_specs:
+            baseline_tokens = min(
+                source_token_counts.get(spec["spec"], 0)
+                for spec in dataset_specs
+            )
     for spec in dataset_specs:
         spec_key = spec["spec"]
         entry = {
@@ -109,9 +116,16 @@ def build_resume_state(source_row_counts, dataset_specs, source_token_counts=Non
             "row_offset": source_row_counts.get(spec_key, 0),
         }
         if source_token_counts is not None:
-            entry["token_offset"] = source_token_counts.get(spec_key, 0)
+            token_offset = source_token_counts.get(spec_key, 0)
+            if baseline_tokens is not None and baseline_tokens > 0:
+                token_offset = baseline_tokens
+                seeded_specs_set.add(spec_key)
+            entry["token_offset"] = token_offset
         datasets.append(entry)
-    return {"datasets": datasets}
+    resume_state = {"datasets": datasets}
+    if seeded_specs_set:
+        resume_state["seeded_specs"] = sorted(seeded_specs_set)
+    return resume_state
 
 
 def is_resume_exhausted(row_offset, total_rows):

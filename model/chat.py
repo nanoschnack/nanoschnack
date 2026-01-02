@@ -108,11 +108,14 @@ def generate_reply_stream(model, tokenizer, prompt, context_len, max_new_tokens,
     input_ids = torch.tensor([prompt_ids[-context_len:]], device=device, dtype=torch.long)
     id_to_bytes = _build_id_to_bytes(tokenizer)
     decoder = codecs.getincrementaldecoder("utf-8")()
+    eos_id = tokenizer.token_to_id(DATASET_EOS_TOKEN)
 
     with torch.no_grad():
         for _ in range(max_new_tokens):
             logits = model(input_ids)[:, -1, :].squeeze(0)
             next_id = sample_next_token(logits, temperature, top_k)
+            if eos_id is not None and next_id == eos_id:
+                break
             if next_id < len(id_to_bytes) and id_to_bytes[next_id] is not None:
                 chunk = decoder.decode(id_to_bytes[next_id], final=False)
                 if chunk:

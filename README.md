@@ -45,6 +45,14 @@ https://huggingface.co/datasets/arnomatic/german-wikipedia-clean-no-lists
 
 Training downloads parquet shards on demand into `data/` and caches them locally.
 
+## Tokenizer corpus
+
+Build a German text corpus with equal character contributions per dataset:
+
+```sh
+python build_tokenizer_corpus.py --size 1000000000 --output data/german_corpus.txt
+```
+
 ## Training
 
 Open the training notebook and run the cells:

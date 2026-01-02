@@ -100,12 +100,11 @@ DATASET_SPECS="txt:data/goethe.txt:body" python model/training.py
 2) load_dataset_from_spec (streaming)  
 `raw_dataset = load_dataset_from_spec(spec, cache_dir=data_dir, streaming=True)`
 
-3) resolve_total_rows + token estimate  
-`total_rows = resolve_total_rows(raw_dataset, spec, cache_dir=data_dir)`  
-`avg_tokens, est_total_tokens = TokenEstimator(...).estimate_streaming(raw_dataset, total_rows)`
+3) resolve_total_rows  
+`total_rows = resolve_total_rows(raw_dataset, spec, cache_dir=data_dir)`
 
 4) load checkpoint / normalize_resume_rows  
-`resume_epoch, ..., resume_state = checkpointer.load_latest()`  
+`resume_epoch, global_step, resume_samples, resume_state = checkpointer.load_latest()`  
 `resume_rows = normalize_resume_rows(resume_state, dataset_specs)`
 
 5) rank0 warm cache + dist.barrier  
@@ -132,16 +131,22 @@ DATASET_SPECS="txt:data/goethe.txt:body" python model/training.py
 11) pack_tokens -> fixed blocks  
 `packed = tokenized.map(lambda batch: pack_tokens(...), batched=True, batch_size=pack_batch_size)`
 
-12) interleave_datasets  
-`base_dataset = build_interleaved_dataset(packed_datasets, seed=42)`
+12) least-tokens interleave  
+`base_dataset = build_interleaved_dataset(packed_datasets, seed=42, token_counts=resume_tokens)`
 
 13) shuffle(buffer) -> DataLoader  
 `dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=...)`  
 `loader = DataLoader(dataset_epoch, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.DATA_LOADER_WORKERS)`
 
-14) row_count aggregation -> SUM across ranks  
+14) row/token aggregation -> SUM across ranks  
 `dist.all_reduce(counts_tensor, op=dist.ReduceOp.SUM)`  
-`resume_state = build_resume_state(global_counts, dataset_specs)`
+`resume_state = build_resume_state(global_counts, dataset_specs, source_token_counts=global_token_counts, seeded_specs=seeded_specs)`
+
+## Configuration
+
+Training and data settings live in `model/config.py`. See that file for the
+full list of knobs and their defaults.  
+`model/config.py`
 
 To run distributed training with 8 GPUs:
 

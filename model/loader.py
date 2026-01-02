@@ -278,6 +278,9 @@ def _write_resume_cache(cache_path, payload):
     # Persist resume metadata for later runs.
     if cache_path is None:
         return
+    # Avoid multi-rank races by only letting rank 0 write the cache.
+    if int(os.getenv("RANK", "0")) != 0:
+        return
     # Ensure the cache directory exists before writing.
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
@@ -664,6 +667,8 @@ def build_packed_dataset(
         batch_size=pack_batch_size,
         remove_columns=packed_drop_columns,
     )
+    # Drop empty packed samples to avoid zero-length batches in DDP.
+    packed = packed.filter(lambda sample: len(sample["input_ids"]) > 0)
     packed_column_names = _resolve_column_names(packed)
     if packed_column_names:
         keep_columns = {"input_ids", "attention_mask", "row_count", "source_id"}

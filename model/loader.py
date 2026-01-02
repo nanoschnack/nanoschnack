@@ -278,6 +278,8 @@ def _write_resume_cache(cache_path, payload):
     # Persist resume metadata for later runs.
     if cache_path is None:
         return
+    # Ensure the cache directory exists before writing.
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
     with tmp_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle)

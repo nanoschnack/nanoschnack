@@ -116,6 +116,24 @@ class ResumeStateTests(unittest.TestCase):
         self.assertEqual(seeded["old:spec"], 120)
         self.assertEqual(seeded["new:spec"], 120)
 
+    def test_seed_missing_token_offsets_backfills_missing_tokens(self):
+        resume_state = {
+            "datasets": [
+                {"spec": "old:spec", "row_offset": 12, "token_offset": 120},
+                {"spec": "missing:tokens", "row_offset": 8},
+            ]
+        }
+        dataset_specs = [
+            {"spec": "old:spec"},
+            {"spec": "missing:tokens"},
+        ]
+
+        resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
+        seeded = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
+
+        self.assertEqual(seeded["old:spec"], 120)
+        self.assertEqual(seeded["missing:tokens"], 120)
+
     def test_is_resume_exhausted(self):
         self.assertFalse(is_resume_exhausted(3, None))
         self.assertFalse(is_resume_exhausted(3, 4))

@@ -1,6 +1,7 @@
 """Helpers for building streaming datasets with packing."""
 
 import json
+import os
 import random
 import shutil
 from bisect import bisect_right
@@ -688,10 +689,21 @@ def _least_tokens_interleave_generator(datasets, seed, token_counts):
     token_counts = list(token_counts)
     iterators = [iter(dataset) for dataset in datasets]
     active_indices = list(range(len(iterators)))
+    debug_every = int(os.getenv("DEBUG_INTERLEAVE_EVERY", "0"))
+    debug_step = 0
     while active_indices:
         min_count = min(token_counts[idx] for idx in active_indices)
         candidates = [idx for idx in active_indices if token_counts[idx] == min_count]
         choice = rng.choice(candidates) if len(candidates) > 1 else candidates[0]
+        # Emit periodic interleave picks for debugging local token counts.
+        if debug_every > 0 and debug_step % debug_every == 0:
+            print(
+                "Interleave pick "
+                f"step={debug_step} choice={choice} "
+                f"min_tokens={min_count} counts={token_counts}",
+                flush=True,
+            )
+        debug_step += 1
         try:
             sample = next(iterators[choice])
         except StopIteration:

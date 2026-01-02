@@ -28,7 +28,12 @@ class CheckpointerSnapshotTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             checkpointer = Checkpointer(tmpdir, model, optimizer, scheduler, device="cpu")
-            checkpointer.save_latest(epoch=0, step=0, global_step=0, sample_index=0, total_tokens=0)
+            checkpointer.save_latest(
+                epoch=0,
+                global_step=0,
+                total_tokens=0,
+                samples=0,
+            )
 
             for label, _ in SNAPSHOT_INTERVALS:
                 snapshot_path = checkpointer._snapshot_path(label)

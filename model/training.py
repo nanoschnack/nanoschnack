@@ -74,6 +74,7 @@ if is_master:
 torch.set_float32_matmul_precision("high")
 
 
+
 # %% [markdown]
 # ## Loading a tokenizer with Hugging Face's tokenizer library
 #
@@ -85,7 +86,6 @@ from tokenizer import PAD_TOKEN, load_tokenizer, print_vocab_alignment
 tokenizer = load_tokenizer()
 if is_master:
     print_vocab_alignment(tokenizer)
-
 
 
 # %%
@@ -172,6 +172,7 @@ if is_master:
     )
 
 
+
 # %% [markdown]
 # ## Create vizualization of the model
 
@@ -199,7 +200,6 @@ if is_notebook:
     y = model(x)
 
     make_dot(y, params=dict(model.named_parameters()))
-
 
 
 # %% [markdown]
@@ -249,7 +249,6 @@ if is_master:
     print(f"  Target: epochs=1 target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
 
 
-
 # %% [markdown]
 # ## Progress and Plotting
 
@@ -278,8 +277,12 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 
 # Load the latest checkpoint if available.
-resume_epoch, resume_step, global_step, resume_sample_index, resume_total_tokens, resume_state = checkpointer.load_latest(is_master=is_master)
+resume_epoch, global_step, resume_total_tokens, resume_samples, resume_state = checkpointer.load_latest(is_master=is_master)
 resume_info = checkpointer.last_resume_info
+
+# Backfill total samples for older checkpoints.
+if not resume_samples and global_step:
+    resume_samples = global_step * config.MACRO_BATCH_SIZE
 
 # Align the scheduler with the resumed token count.
 if resume_total_tokens:
@@ -292,8 +295,8 @@ if is_master and resume_info:
     lr_after = optimizer.param_groups[0]["lr"]
     display_epoch = max(resume_epoch + 1, 1)
     print(
-        f"  Checkpoint: loaded epoch={display_epoch} step={resume_step} "
-        f"sample={resume_sample_index}",
+        f"  Checkpoint: loaded epoch={display_epoch} "
+        f"step={global_step} tokens={resume_total_tokens} samples={resume_samples}",
         flush=True,
     )
     print(
@@ -312,9 +315,6 @@ resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
 
 # Seed new specs to the current token baseline for fair interleaving.
 resume_tokens = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
-
-global_row_counts = dict(resume_rows)
-global_token_counts = dict(resume_tokens)
 
 # Cap resume offsets to the known total rows to avoid invalid states.
 for dataset_index, spec in enumerate(dataset_specs):
@@ -551,13 +551,11 @@ macro_step = MacroStep(
 
 # Track current counters for checkpointing and interrupts.
 current_epoch = resume_epoch
-current_step = resume_step
-current_sample_index = 0
 
 # Initialize the progress logger to display training progress and loss
 progress = ProgressLogger(
     start_global_step=global_step,
-    start_total_samples=0,
+    start_total_samples=resume_samples,
     start_total_tokens=resume_total_tokens,
     estimated_total_tokens=target_tokens,
 )
@@ -659,7 +657,6 @@ for current_epoch in itertools.count(resume_epoch):
                     source_token_counts[spec_key] += int(sample_tokens)
 
             # Update checkpoint counters and save when needed.
-            current_sample_index += input_ids.size(0)
             if not macro_step.micro_step(token_count, input_ids.size(0), loss.item()):
                 continue
 
@@ -699,8 +696,10 @@ for current_epoch in itertools.count(resume_epoch):
             debug = sync(debug, device, ddp_enabled=ddp_enabled)
 
         next_total_tokens = progress.total_tokens + synced.token_count
+        global_row_counts = dict(resume_rows)
         for spec_key, value in zip(dataset_specs_keys, synced.row_counts):
             global_row_counts[spec_key] = global_row_counts.get(spec_key, 0) + int(value)
+        global_token_counts = dict(resume_tokens)
         for spec_key, value in zip(dataset_specs_keys, synced.token_counts):
             global_token_counts[spec_key] = global_token_counts.get(spec_key, 0) + int(value)
         # Update timing output for plot logs.
@@ -722,7 +721,7 @@ for current_epoch in itertools.count(resume_epoch):
                 token_count=synced.token_count,
                 lr=optimizer.param_groups[0]["lr"],
                 epoch=current_epoch,
-                step=current_step // macro_step.micro_steps,
+                step=progress.global_step,
                 remaining_tokens=max(target_tokens - next_total_tokens, 0),
                 io_time=io_wait_max,
                 gpu_time=compute_max,
@@ -809,10 +808,9 @@ for current_epoch in itertools.count(resume_epoch):
             if is_master:
                 checkpointer.save_latest(
                     current_epoch,
-                    current_step,
                     progress.global_step,
-                    current_sample_index,
                     progress.total_tokens,
+                    progress.total_samples,
                     resume_state=resume_state,
                 )
             if ddp_enabled:
@@ -825,8 +823,7 @@ for current_epoch in itertools.count(resume_epoch):
 
     else:
         # Reset the sample index after a full epoch without interruption.
-        current_sample_index = 0
-        continue
+                continue
 
     # Stop training after an interrupted epoch.
     break
@@ -834,5 +831,6 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
+
 
 

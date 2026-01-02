@@ -34,18 +34,23 @@ def normalize_resume_tokens(resume_state, dataset_specs):
 def seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs):
     # Seed new specs with a baseline token offset from the resume state.
     resume_specs = set()
+    token_specs = set()
     if isinstance(resume_state, dict):
         for entry in resume_state.get("datasets", []):
             spec_key = entry.get("spec")
             if spec_key:
                 resume_specs.add(spec_key)
+            if spec_key and "token_offset" in entry:
+                token_specs.add(spec_key)
     if not resume_specs:
         return dict(resume_tokens)
-    baseline = min(resume_tokens.get(spec_key, 0) for spec_key in resume_specs)
+    if not token_specs:
+        return dict(resume_tokens)
+    baseline = min(resume_tokens.get(spec_key, 0) for spec_key in token_specs)
     adjusted = dict(resume_tokens)
     for spec in dataset_specs:
         spec_key = spec["spec"]
-        if spec_key not in resume_specs:
+        if spec_key not in token_specs:
             adjusted[spec_key] = baseline
     return adjusted
 

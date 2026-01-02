@@ -56,7 +56,11 @@ def _cleanup_shard_cache(cache_root, keep_paths):
     keep = {Path(path).resolve() for path in keep_paths if path is not None}
     if not cache_root.exists():
         return
+
+    # Avoid deleting active downloads stored as temp files.
     for path in cache_root.rglob("*"):
+        if path.is_file() and path.suffix == ".tmp":
+            continue
         if path.is_file() and path.resolve() not in keep:
             path.unlink()
     for path in sorted(cache_root.rglob("*"), reverse=True):
@@ -135,6 +139,9 @@ class ShardPrefetcher:
             for idx in keep_indices
             if idx is not None and idx < len(self._rel_files)
         ]
+
+        # Preserve temp files for in-flight downloads to avoid cleanup races.
+        keep_paths.extend(path.with_suffix(path.suffix + ".tmp") for path in keep_paths)
         _cleanup_shard_cache(self._cache_root, keep_paths)
 
     def close(self):

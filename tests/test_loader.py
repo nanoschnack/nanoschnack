@@ -240,6 +240,17 @@ class LoaderHelperTests(unittest.TestCase):
 
         self.assertIsNone(next(iter(packed), None))
 
+    def test_cleanup_shard_cache_skips_tmp_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_root = Path(tmpdir) / "hf_shards"
+            cache_root.mkdir(parents=True, exist_ok=True)
+            tmp_file = cache_root / "shard.parquet.tmp"
+            tmp_file.write_text("tmp")
+
+            loader._cleanup_shard_cache(cache_root, [])
+
+            self.assertTrue(tmp_file.exists())
+
     def test_resolve_column_names_prefers_features(self):
         class _Dataset:
             column_names = None

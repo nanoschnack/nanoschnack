@@ -1,6 +1,6 @@
 TOKENIZER_DIR := tokenizer
 TOKENIZER_INPUT := data/german.txt
-TOKENIZER_OUTPUT := tokenizer.json
+TOKENIZER_OUTPUT := $(TOKENIZER_DIR)/tokenizer.json
 TOKENIZER_SIZE := 32000
 TOKENIZER_TOP := 50
 CORPUS_SIZE := 1000000000
@@ -15,7 +15,7 @@ CORPUS_SIZE := 1000000000
 tokenizer: $(TOKENIZER_OUTPUT)
 
 $(TOKENIZER_OUTPUT): $(TOKENIZER_INPUT)
-	cat $(TOKENIZER_INPUT) | (cd $(TOKENIZER_DIR) && go run . --target $(TOKENIZER_SIZE) -f ../$(TOKENIZER_OUTPUT) --top $(TOKENIZER_TOP))
+	cat $(TOKENIZER_INPUT) | (cd $(TOKENIZER_DIR) && go run . --target $(TOKENIZER_SIZE) -f tokenizer.json --top $(TOKENIZER_TOP))
 
 corpus: $(TOKENIZER_INPUT)
 

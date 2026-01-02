@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 )
@@ -39,6 +40,7 @@ func main() {
 
 	trainLines := data
 
+	log.Printf("Training tokenizer: lines=%d target_vocab=%d", len(trainLines), *target)
 	iter := func() func() (string, bool) {
 		i := 0
 		return func() (string, bool) {

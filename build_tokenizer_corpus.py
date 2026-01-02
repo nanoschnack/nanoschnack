@@ -29,10 +29,13 @@ def _iter_equal_char_texts(specs, cache_dir, seed):
     datasets = []
     text_keys = []
     labels = []
+    print("Loading datasets...", flush=True)
     for spec in specs:
+        label = dataset_label(spec)
+        print(f"  {label}", flush=True)
         datasets.append(load_dataset_from_spec(spec, cache_dir=cache_dir, streaming=True))
         text_keys.append(spec.get("text_key", "text"))
-        labels.append(dataset_label(spec))
+        labels.append(label)
 
     iterators = [iter(dataset) for dataset in datasets]
     char_counts = [0] * len(iterators)
@@ -53,7 +56,7 @@ def _iter_equal_char_texts(specs, cache_dir, seed):
 
         char_len = len(text)
         char_counts[choice] += char_len
-        yield text, choice, char_len, labels
+        yield text, choice, char_len
 
 
 def build_corpus(
@@ -73,10 +76,11 @@ def build_corpus(
     bytes_written = 0
     row_counts = [0] * len(specs)
     char_counts = [0] * len(specs)
+    labels = [dataset_label(spec) for spec in specs]
     next_log = log_every
     start = time.time()
     with output_path.open("w", encoding="utf-8") as handle:
-        for text, idx, char_len, labels in _iter_equal_char_texts(
+        for text, idx, char_len in _iter_equal_char_texts(
             specs,
             cache_dir,
             seed,
@@ -92,11 +96,14 @@ def build_corpus(
             char_counts[idx] += char_len
             if log_every and bytes_written >= next_log:
                 elapsed = time.time() - start
+                pct = (bytes_written / target_size) * 100 if target_size else 0
                 print(
-                    f"Wrote {bytes_written} bytes in {elapsed:.1f}s "
+                    f"Wrote {bytes_written} bytes ({pct:.1f}%) in {elapsed:.1f}s "
                     f"({bytes_written / max(elapsed, 1e-6):.0f} B/s)",
                     flush=True,
                 )
+                for label, count in zip(labels, char_counts):
+                    print(f"  {label}: chars={count}", flush=True)
                 next_log += log_every
 
     # Emit a final per-dataset summary.
@@ -106,7 +113,6 @@ def build_corpus(
         f"({bytes_written / max(elapsed, 1e-6):.0f} B/s)",
         flush=True,
     )
-    labels = [dataset_label(spec) for spec in specs]
     for idx, label in enumerate(labels):
         print(
             f"  {label}: rows={row_counts[idx]} chars={char_counts[idx]}",

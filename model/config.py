@@ -25,6 +25,17 @@ def _env_float(name, default):
 def _env_str(name, default):
     return _env_override(name, str, default)
 
+def _env_bool(name, default):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value for {name}: {value}")
+
 
 # Maximum sequence length used to size positional embeddings.
 # Keep this aligned between training and inference.
@@ -87,6 +98,20 @@ SHUFFLE_BUFFER = _env_int("SHUFFLE_BUFFER", 10_000 * _env_int("WORLD_SIZE", 1))
 DATA_LOADER_WORKERS = _env_int("DATA_LOADER_WORKERS", 0)
 # Keep worker count visible to child processes for data loading.
 os.environ.setdefault("DATA_LOADER_WORKERS", str(DATA_LOADER_WORKERS))
+
+# DataLoader overlap controls for CPU/GPU pipelining.
+DATA_LOADER_PREFETCH_FACTOR = _env_int("DATA_LOADER_PREFETCH_FACTOR", 2)
+DATA_LOADER_PERSISTENT = _env_bool("DATA_LOADER_PERSISTENT", False)
+DATA_LOADER_PIN_MEMORY = _env_bool("DATA_LOADER_PIN_MEMORY", False)
+
+# Force HF dataset loading to use local cache only.
+HF_LOCAL_ONLY = _env_bool("HF_LOCAL_ONLY", False)
+
+# Use PyArrow for local HF shard iteration when enabled.
+HF_PYARROW_SHARDS = _env_bool("HF_PYARROW_SHARDS", False)
+
+# Use a datasets-free pipeline for tokenization and packing.
+DATASET_FAST_PIPELINE = _env_bool("DATASET_FAST_PIPELINE", True)
 
 # Batch size for dataset packing during tokenization.
 PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 20 * _env_int("WORLD_SIZE", 1))
@@ -230,6 +255,12 @@ def print_training_hyperparams(
         f"  warmup_pct={WARMUP_PCT}",
         f"  max_training_factor={MAX_TRAINING_FACTOR}",
         f"  data_loader_workers={DATA_LOADER_WORKERS}",
+        f"  data_loader_prefetch_factor={DATA_LOADER_PREFETCH_FACTOR}",
+        f"  data_loader_persistent={DATA_LOADER_PERSISTENT}",
+        f"  data_loader_pin_memory={DATA_LOADER_PIN_MEMORY}",
+        f"  hf_local_only={HF_LOCAL_ONLY}",
+        f"  hf_pyarrow_shards={HF_PYARROW_SHARDS}",
+        f"  dataset_fast_pipeline={DATASET_FAST_PIPELINE}",
         f"  shuffle_buffer={SHUFFLE_BUFFER}",
         f"  dataset_specs={DATASET_SPECS}",
         f"  hf_shard_cache_cleanup={HF_SHARD_CACHE_CLEANUP}",

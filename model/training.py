@@ -211,10 +211,13 @@ from loader import (
     build_interleaved_dataset,
     build_packed_dataset,
     cap_streaming_rows,
+    format_dataset_for_torch,
     load_dataset_from_spec,
     parse_dataset_specs,
+    resolve_dataloader_workers,
     resolve_resume_plan,
     resolve_total_rows,
+    shuffle_dataset,
     with_initial_log,
 )
 from resume import build_resume_state, cap_resume_rows, is_resume_exhausted, normalize_resume_rows, normalize_resume_tokens, seed_missing_token_offsets
@@ -585,6 +588,14 @@ def _request_stop(signum, frame):
     global stop_requested
     stop_requested = True
 
+def _as_tensor_batch(batch):
+    # Normalize list/tensor batches into a torch tensor.
+    if torch.is_tensor(batch):
+        return batch
+    if isinstance(batch, (list, tuple)) and batch and torch.is_tensor(batch[0]):
+        return torch.stack(batch, dim=0)
+    return torch.as_tensor(batch)
+
 print("Starting training loop...", flush=True) if is_master else None
 for current_epoch in itertools.count(resume_epoch):
     is_resume_epoch = current_epoch == resume_epoch
@@ -593,13 +604,33 @@ for current_epoch in itertools.count(resume_epoch):
         for spec in dataset_specs:
             source_row_counts[spec["spec"]] = 0
             source_token_counts[spec["spec"]] = 0
-    dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch).with_format("torch")
-    loader = DataLoader(
-        dataset_epoch,
-        batch_size=config.BATCH_SIZE,
-        shuffle=False,
-        num_workers=config.DATA_LOADER_WORKERS,
-    )
+    dataset_epoch = shuffle_dataset(base_dataset, config.SHUFFLE_BUFFER, 42 + current_epoch)
+    dataset_epoch = format_dataset_for_torch(dataset_epoch)
+    worker_count = resolve_dataloader_workers(dataset_epoch, config.DATA_LOADER_WORKERS)
+    if is_master and worker_count != config.DATA_LOADER_WORKERS:
+        print(
+            f"  DataLoader: forcing workers=0 (requested {config.DATA_LOADER_WORKERS}) "
+            "for the fast dataset pipeline.",
+            flush=True,
+        )
+    # Configure DataLoader overlap settings for CPU/GPU pipelining.
+    if worker_count > 0:
+        loader = DataLoader(
+            dataset_epoch,
+            batch_size=config.BATCH_SIZE,
+            shuffle=False,
+            num_workers=worker_count,
+            prefetch_factor=config.DATA_LOADER_PREFETCH_FACTOR,
+            persistent_workers=config.DATA_LOADER_PERSISTENT,
+            pin_memory=config.DATA_LOADER_PIN_MEMORY,
+        )
+    else:
+        loader = DataLoader(
+            dataset_epoch,
+            batch_size=config.BATCH_SIZE,
+            shuffle=False,
+            num_workers=0,
+        )
 
     # Announce first-batch wait to avoid silent startup stalls.
     for current_step, batch in enumerate(macro_step.measure_io(time_until_first_batch(loader, is_master))):
@@ -615,6 +646,11 @@ for current_epoch in itertools.count(resume_epoch):
         # Move batch tensors to the device and prepare an optional attention mask.
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
+
+        # Normalize list batches to tensors for the fast iterable pipeline.
+        input_ids = _as_tensor_batch(input_ids)
+        if attention_mask is not None:
+            attention_mask = _as_tensor_batch(attention_mask)
         attn_mask = None
         if attention_mask is not None and not attention_mask.all():
             attn_mask = attention_mask[:, :-1].to(device)
@@ -830,6 +866,3 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
-
-
-

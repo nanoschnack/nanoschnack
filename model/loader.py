@@ -4,18 +4,75 @@ import json
 import os
 import random
 import shutil
+import functools
+import time
 from bisect import bisect_right
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import re
 
-from datasets import IterableDataset, interleave_datasets, load_dataset
-
-import time
+from datasets import IterableDataset as HfIterableDataset, interleave_datasets, load_dataset
+from torch.utils.data import IterableDataset as TorchIterableDataset
 
 import config
 
 from tokenizer import DATASET_EOS_TOKEN
+
+
+class _LoaderProfiler:
+    """Track loader stage timings for pipeline profiling.
+    Aggregates per-event counts, durations, and token totals.
+    Emits periodic summaries for long-running streams.
+    """
+    def __init__(self, every):
+        self.every = max(int(every), 1)
+        self.stats = {}
+
+    def record(self, event, duration_s, rows=0, tokens=0, blocks=0, shards=0):
+        stat = self.stats.setdefault(
+            event,
+            {"count": 0, "duration": 0.0, "rows": 0, "tokens": 0, "blocks": 0, "shards": 0},
+        )
+        stat["count"] += 1
+        stat["duration"] += duration_s
+        stat["rows"] += rows
+        stat["tokens"] += tokens
+        stat["blocks"] += blocks
+        stat["shards"] += shards
+        if stat["count"] % self.every == 0:
+            self._log(event, stat)
+
+    def _log(self, event, stat):
+        # Emit a periodic profile summary for a loader stage.
+        count = stat["count"]
+        duration = stat["duration"]
+        rows = stat["rows"]
+        tokens = stat["tokens"]
+        blocks = stat["blocks"]
+        shards = stat["shards"]
+        rows_per_s = rows / duration if duration > 0 else 0.0
+        tokens_per_s = tokens / duration if duration > 0 else 0.0
+        print(
+            f"Loader profile: {event} count={count} "
+            f"rows={rows} tokens={tokens} blocks={blocks} shards={shards} "
+            f"duration={duration:.2f}s rows/s={rows_per_s:.1f} tokens/s={tokens_per_s:.1f}",
+            flush=True,
+        )
+
+
+# Enable loader profiling when PROFILE_LOADER is truthy.
+_PROFILE_LOADER = os.getenv("PROFILE_LOADER", "0") not in {"0", "", "false", "False"}
+_PROFILE_LOADER_EVERY = int(os.getenv("PROFILE_LOADER_EVERY", "200"))
+_LOADER_PROFILER = _LoaderProfiler(_PROFILE_LOADER_EVERY) if _PROFILE_LOADER else None
+_HF_LOCAL_ONLY = config.HF_LOCAL_ONLY
+_HF_PYARROW_SHARDS = config.HF_PYARROW_SHARDS
+_DATASET_FAST_PIPELINE = config.DATASET_FAST_PIPELINE
+
+
+def _record_loader_profile(event, duration_s, rows=0, tokens=0, blocks=0, shards=0):
+    if _LOADER_PROFILER is None:
+        return
+    _LOADER_PROFILER.record(event, duration_s, rows=rows, tokens=tokens, blocks=blocks, shards=shards)
 
 
 def load_dataset_source(repo_id, split="train", data_files=None, cache_dir=None, streaming=True, name=None):
@@ -96,12 +153,13 @@ class ShardPrefetcher:
     Downloads the next shard in a background worker to hide network latency.
     Tracks the current and next shard for optional cache cleanup.
     """
-    def __init__(self, repo_id, split, cache_dir, rel_files, cleanup_mode):
+    def __init__(self, repo_id, split, cache_dir, rel_files, cleanup_mode, local_files_only=False):
         self._repo_id = repo_id
         self._split = split
         self._cache_dir = cache_dir
         self._rel_files = rel_files
         self._cleanup_mode = cleanup_mode
+        self._local_files_only = local_files_only
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._future = None
         self._future_index = None
@@ -109,7 +167,13 @@ class ShardPrefetcher:
 
     def _download(self, index):
         rel_path = self._rel_files[index]
-        return _ensure_local_shard(self._repo_id, rel_path, self._cache_dir, self._split)
+        return _ensure_local_shard(
+            self._repo_id,
+            rel_path,
+            self._cache_dir,
+            self._split,
+            local_files_only=self._local_files_only,
+        )
 
     def prefetch(self, index):
         if index is None or index >= len(self._rel_files):
@@ -141,29 +205,84 @@ class ShardPrefetcher:
         self._executor.shutdown(wait=False)
 
 
+def _iter_hf_shards(repo_id, split, name, cache_dir, rel_files, cleanup_mode, prefetch, local_files_only):
+    # Stream shards sequentially with optional prefetch and cleanup.
+    prefetcher = ShardPrefetcher(
+        repo_id,
+        split,
+        cache_dir,
+        rel_files,
+        cleanup_mode,
+        local_files_only=local_files_only,
+    )
+    logged_reader = False
+    try:
+        for index, _ in enumerate(rel_files):
+            if _PROFILE_LOADER and not logged_reader:
+                reader = "pyarrow" if _HF_PYARROW_SHARDS else "datasets"
+                print(f"Loader profile: shard reader={reader}")
+                logged_reader = True
+            # Capture shard load timing for profiling.
+            start = time.perf_counter()
+            local_path = prefetcher.get(index)
+            if prefetch:
+                prefetcher.prefetch(index + 1)
+            row_count = 0
+            if _HF_PYARROW_SHARDS:
+                for row in _iter_parquet_rows(local_path):
+                    row_count += 1
+                    yield row
+            else:
+                dataset = load_dataset("parquet", data_files=str(local_path), split="train", streaming=False)
+                for row in dataset:
+                    row_count += 1
+                    yield row
+            keep_indices = [index, index + 1] if prefetch else [index]
+            prefetcher.cleanup(keep_indices)
+            _record_loader_profile(
+                "shard",
+                time.perf_counter() - start,
+                rows=row_count,
+                shards=1,
+            )
+    finally:
+        prefetcher.close()
+
+
+def _iter_parquet_rows(path):
+    # Stream rows from a local parquet file via PyArrow.
+    import pyarrow.parquet as pq
+
+    parquet = pq.ParquetFile(path)
+    for batch in parquet.iter_batches():
+        columns = batch.to_pydict()
+        if not columns:
+            continue
+        keys = list(columns.keys())
+        rows = len(next(iter(columns.values())))
+        for idx in range(rows):
+            yield {key: columns[key][idx] for key in keys}
+
+
 def hf_load_dataset_sharded(repo_id, split="train", name=None, cache_dir=None, data_files=None, prefetch=1):
     # Load an HF dataset shard-by-shard with local caching.
     rel_files = data_files or _hf_parquet_files(repo_id, split, name=name)
     if not rel_files:
         return None
     cleanup_mode = config.HF_SHARD_CACHE_CLEANUP
-
-    def _iter_shards():
-        prefetcher = ShardPrefetcher(repo_id, split, cache_dir, rel_files, cleanup_mode)
-        try:
-            for index, _ in enumerate(rel_files):
-                local_path = prefetcher.get(index)
-                if prefetch:
-                    prefetcher.prefetch(index + 1)
-                dataset = load_dataset("parquet", data_files=str(local_path), split="train", streaming=False)
-                for row in dataset:
-                    yield row
-                keep_indices = [index, index + 1] if prefetch else [index]
-                prefetcher.cleanup(keep_indices)
-        finally:
-            prefetcher.close()
-
-    return IterableDataset.from_generator(_iter_shards)
+    return HfIterableDataset.from_generator(
+        _iter_hf_shards,
+        gen_kwargs={
+            "repo_id": repo_id,
+            "split": split,
+            "name": name,
+            "cache_dir": cache_dir,
+            "rel_files": tuple(rel_files),
+            "cleanup_mode": cleanup_mode,
+            "prefetch": prefetch,
+            "local_files_only": _HF_LOCAL_ONLY,
+        },
+    )
 
 
 def cap_streaming_rows(dataset, remaining_rows):
@@ -173,6 +292,49 @@ def cap_streaming_rows(dataset, remaining_rows):
     if remaining_rows <= 0:
         return dataset.take(0)
     return dataset.take(remaining_rows)
+
+
+class GeneratorIterableDataset(TorchIterableDataset):
+    """Wrap a generator function as a torch IterableDataset.
+    Keeps streaming pipelines out of datasets.map overhead.
+    Stores arguments for per-worker iteration.
+    """
+    supports_workers = False
+
+    def __init__(self, generator_fn, kwargs):
+        self._generator_fn = generator_fn
+        self._kwargs = kwargs
+
+    def __iter__(self):
+        return iter(self._generator_fn(**self._kwargs))
+
+
+class PackedIterableDataset(TorchIterableDataset):
+    """Stream packed token blocks from a raw row iterable.
+    Batches rows, tokenizes with EOS, and packs into fixed blocks.
+    Drops empty packs to keep DataLoader batches valid.
+    """
+    supports_workers = False
+
+    def __init__(self, dataset, tokenizer, block_size, text_key, pack_batch_size, source_id):
+        self._dataset = dataset
+        self._tokenizer = tokenizer
+        self._block_size = block_size
+        self._text_key = text_key
+        self._pack_batch_size = pack_batch_size
+        self._source_id = source_id
+
+    def __iter__(self):
+        return iter(
+            _iter_packed_samples(
+                self._dataset,
+                self._tokenizer,
+                self._block_size,
+                self._text_key,
+                self._pack_batch_size,
+                self._source_id,
+            )
+        )
 
 
 def with_initial_log(message, iterable, start_time=None):
@@ -197,6 +359,63 @@ def with_initial_log(message, iterable, start_time=None):
             _emit()
             yield item
     return _wrapped()
+
+
+class ShuffledIterableDataset(TorchIterableDataset):
+    """Shuffle an iterable dataset with a fixed-size buffer.
+    Uses a deterministic RNG seed for reproducible order.
+    """
+    supports_workers = False
+
+    def __init__(self, dataset, buffer_size, seed):
+        self._dataset = dataset
+        self._buffer_size = buffer_size
+        self._seed = seed
+
+    def __iter__(self):
+        return iter(_shuffle_generator(self._dataset, self._buffer_size, self._seed))
+
+
+def _shuffle_generator(dataset, buffer_size, seed):
+    rng = random.Random(seed)
+    buffer = []
+    for item in dataset:
+        if buffer_size <= 1:
+            yield item
+            continue
+        if len(buffer) < buffer_size:
+            buffer.append(item)
+            continue
+        index = rng.randrange(len(buffer))
+        yield buffer[index]
+        buffer[index] = item
+    if buffer:
+        rng.shuffle(buffer)
+        yield from buffer
+
+
+def shuffle_dataset(dataset, buffer_size, seed):
+    # Shuffle using dataset.shuffle when available, otherwise apply a buffer shuffle.
+    shuffle = getattr(dataset, "shuffle", None)
+    if callable(shuffle):
+        return shuffle(buffer_size=buffer_size, seed=seed)
+    return ShuffledIterableDataset(dataset, buffer_size, seed)
+
+
+def format_dataset_for_torch(dataset):
+    # Apply datasets formatting when available, otherwise return unchanged.
+    with_format = getattr(dataset, "with_format", None)
+    if callable(with_format):
+        return with_format("torch")
+    return dataset
+
+
+def resolve_dataloader_workers(dataset, requested_workers):
+    # Disable workers for datasets that are not safe to pickle.
+    supports_workers = getattr(dataset, "supports_workers", True)
+    if not supports_workers and requested_workers > 0:
+        return 0
+    return requested_workers
 
 
 def parse_dataset_specs(specs_str):
@@ -355,9 +574,7 @@ def _hf_parquet_files(repo_id, split, name=None):
 
 
 def _select_hf_data_files(spec, cache_dir):
-    # Prefer parquet files for german-commons to unify normal and resume loads.
-    if spec.get("repo_id") != "coral-nlp/german-commons":
-        return None
+    # Prefer parquet files for all HF datasets to unify normal and resume loads.
     files, _ = _load_hf_parquet_index(
         spec["repo_id"],
         spec.get("split", "train"),
@@ -394,6 +611,12 @@ def _load_hf_parquet_index(repo_id, split, cache_dir, name=None):
         and cached.get("name") == name
     ):
         return cached.get("files", []), cached.get("row_counts", [])
+    if _HF_LOCAL_ONLY:
+        raise FileNotFoundError(
+            "HF_LOCAL_ONLY is enabled but no cached parquet index was found "
+            f"for {repo_id} split={split}. Run once with HF_LOCAL_ONLY=false to "
+            "populate the cache."
+        )
 
     files = _hf_parquet_files(repo_id, split, name=name)
     if not files:
@@ -511,6 +734,11 @@ def load_dataset_from_spec(spec, cache_dir=None, streaming=True, data_files=None
         )
         if sharded is not None:
             return sharded
+        if _HF_LOCAL_ONLY:
+            raise FileNotFoundError(
+                "HF_LOCAL_ONLY is enabled but no local shards were found for "
+                f"{spec['repo_id']} split={split}."
+            )
         if rel_files is not None:
             split = "train"
         return load_dataset_source(
@@ -568,17 +796,34 @@ def dataset_label(spec):
     return spec.get("repo_id") or spec.get("path") or "unknown"
 
 
-def build_tokenizer(tokenizer, text_key="text"):
-    # Wrap tokenizer to return token ids for datasets.map.
-    def tokenizer_batch(batch):
-        token_batch = tokenizer.encode_batch(batch[text_key])
-        eos_token_id = tokenizer.token_to_id(DATASET_EOS_TOKEN)
+class _TokenizerBatch:
+    """Tokenize dataset batches with stable, picklable callables.
+    Carries the tokenizer and text key across DataLoader workers.
+    Appends EOS tokens and preserves row counts when present.
+    """
+    def __init__(self, tokenizer, text_key):
+        self.tokenizer = tokenizer
+        self.text_key = text_key
+
+    def __call__(self, batch):
+        # Track tokenization cost when profiling is enabled.
+        start = time.perf_counter() if _LOADER_PROFILER is not None else None
+        token_batch = self.tokenizer.encode_batch(batch[self.text_key])
+        eos_token_id = self.tokenizer.token_to_id(DATASET_EOS_TOKEN)
         input_ids = []
         for encoding in token_batch:
             ids = list(encoding.ids)
             if eos_token_id is not None:
                 ids.append(eos_token_id)
             input_ids.append(ids)
+        if start is not None:
+            token_count = sum(len(ids) for ids in input_ids)
+            _record_loader_profile(
+                "tokenize",
+                time.perf_counter() - start,
+                rows=len(input_ids),
+                tokens=token_count,
+            )
         row_count = batch.get("row_count")
         if row_count is not None and len(row_count) != len(input_ids):
             raise RuntimeError(
@@ -589,11 +834,16 @@ def build_tokenizer(tokenizer, text_key="text"):
             return {"input_ids": input_ids, "row_count": row_count}
         return {"input_ids": input_ids}
 
-    return tokenizer_batch
+
+def build_tokenizer(tokenizer, text_key="text"):
+    # Wrap tokenizer to return token ids for datasets.map.
+    return _TokenizerBatch(tokenizer, text_key)
 
 
 def pack_tokens(batch, block_size, source_id=None):
     # Pack token lists into fixed-size blocks, dropping remainder tokens.
+    # Capture pack timing only when profiling is enabled.
+    start = time.perf_counter() if _LOADER_PROFILER is not None else None
     concatenated = []
     for ids in batch["input_ids"]:
         concatenated.extend(ids)
@@ -627,12 +877,97 @@ def pack_tokens(batch, block_size, source_id=None):
         source_id if source_id is not None else -1
         for _ in input_ids
     ]
+    if start is not None:
+        _record_loader_profile(
+            "pack",
+            time.perf_counter() - start,
+            rows=len(batch["input_ids"]),
+            tokens=len(concatenated),
+            blocks=len(input_ids),
+        )
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "row_count": row_counts,
         "source_id": source_ids,
     }
+
+
+def _pack_tokens_batch(batch, block_size, source_id):
+    return pack_tokens(batch, block_size, source_id=source_id)
+
+
+def _non_empty_sample(sample):
+    return len(sample["input_ids"]) > 0
+
+
+def _add_row_count_batch(batch, text_key):
+    start = time.perf_counter() if _LOADER_PROFILER is not None else None
+    row_count = len(batch[text_key])
+    payload = {"row_count": [1] * row_count}
+    if start is not None:
+        _record_loader_profile(
+            "stream",
+            time.perf_counter() - start,
+            rows=row_count,
+        )
+    return payload
+
+
+def _tokenize_texts(tokenizer_batch, text_key, rows):
+    texts = []
+    for row in rows:
+        if text_key not in row:
+            raise KeyError(f"Missing text_key={text_key} in row: {row}")
+        texts.append(row[text_key])
+    tokenized = tokenizer_batch({text_key: texts})
+    return tokenized["input_ids"]
+
+
+def _iter_packed_samples(dataset, tokenizer, block_size, text_key, pack_batch_size, source_id):
+    if pack_batch_size <= 0:
+        raise ValueError("pack_batch_size must be positive.")
+
+    tokenizer_batch = _TokenizerBatch(tokenizer, text_key)
+    batch = []
+    stream_start = time.perf_counter() if _LOADER_PROFILER is not None else None
+    for row in dataset:
+        batch.append(row)
+        if len(batch) < pack_batch_size:
+            continue
+        if stream_start is not None:
+            _record_loader_profile(
+                "stream",
+                time.perf_counter() - stream_start,
+                rows=len(batch),
+            )
+        input_ids = _tokenize_texts(tokenizer_batch, text_key, batch)
+        packed = pack_tokens({"input_ids": input_ids}, block_size, source_id=source_id)
+        for idx, ids in enumerate(packed["input_ids"]):
+            yield {
+                "input_ids": ids,
+                "attention_mask": packed["attention_mask"][idx],
+                "row_count": packed["row_count"][idx],
+                "source_id": packed["source_id"][idx],
+            }
+        batch = []
+        stream_start = time.perf_counter() if _LOADER_PROFILER is not None else None
+    if batch:
+        if stream_start is not None:
+            _record_loader_profile(
+                "stream",
+                time.perf_counter() - stream_start,
+                rows=len(batch),
+            )
+        input_ids = _tokenize_texts(tokenizer_batch, text_key, batch)
+        packed = pack_tokens({"input_ids": input_ids}, block_size, source_id=source_id)
+        for idx, ids in enumerate(packed["input_ids"]):
+            yield {
+                "input_ids": ids,
+                "attention_mask": packed["attention_mask"][idx],
+                "row_count": packed["row_count"][idx],
+                "source_id": packed["source_id"][idx],
+            }
 
 
 def build_packed_dataset(
@@ -644,12 +979,21 @@ def build_packed_dataset(
     source_id=None,
 ):
     # Tokenize and pack a dataset into fixed-length blocks.
+    if _DATASET_FAST_PIPELINE:
+        return PackedIterableDataset(
+            dataset=dataset,
+            tokenizer=tokenizer,
+            block_size=block_size,
+            text_key=text_key,
+            pack_batch_size=pack_batch_size,
+            source_id=source_id,
+        )
 
     # Track raw rows so resume counts stay aligned with source rows.
-    def _add_row_count(batch):
-        return {"row_count": [1] * len(batch[text_key])}
-
-    dataset = dataset.map(_add_row_count, batched=True)
+    dataset = dataset.map(
+        functools.partial(_add_row_count_batch, text_key=text_key),
+        batched=True,
+    )
     tokenizer_batch = build_tokenizer(
         tokenizer,
         text_key=text_key,
@@ -662,13 +1006,13 @@ def build_packed_dataset(
     )
     packed_drop_columns = _resolve_column_names(tokenized)
     packed = tokenized.map(
-        lambda batch: pack_tokens(batch, block_size, source_id=source_id),
+        functools.partial(_pack_tokens_batch, block_size=block_size, source_id=source_id),
         batched=True,
         batch_size=pack_batch_size,
         remove_columns=packed_drop_columns,
     )
     # Drop empty packed samples to avoid zero-length batches in DDP.
-    packed = packed.filter(lambda sample: len(sample["input_ids"]) > 0)
+    packed = packed.filter(_non_empty_sample)
     packed_column_names = _resolve_column_names(packed)
     if packed_column_names:
         keep_columns = {"input_ids", "attention_mask", "row_count", "source_id"}
@@ -721,10 +1065,35 @@ def _least_tokens_interleave_generator(datasets, seed, token_counts):
         yield sample
 
 
+def _weighted_interleave_generator(datasets, seed, probabilities):
+    # Interleave datasets by sampling from weighted probabilities.
+    rng = random.Random(seed)
+    iterators = [iter(dataset) for dataset in datasets]
+    active_indices = list(range(len(iterators)))
+    while active_indices:
+        weights = [probabilities[idx] for idx in active_indices]
+        choice = rng.choices(active_indices, weights=weights, k=1)[0]
+        try:
+            sample = next(iterators[choice])
+        except StopIteration:
+            active_indices.remove(choice)
+            continue
+        yield sample
+
+
 def build_interleaved_dataset(datasets, seed=42, probabilities=None, weights_provider=None, token_counts=None):
     # Interleave datasets with normalized sampling probabilities.
     if token_counts is not None:
-        return IterableDataset.from_generator(
+        if _DATASET_FAST_PIPELINE:
+            return GeneratorIterableDataset(
+                _least_tokens_interleave_generator,
+                {
+                    "datasets": tuple(datasets),
+                    "seed": seed,
+                    "token_counts": tuple(token_counts),
+                },
+            )
+        return HfIterableDataset.from_generator(
             _least_tokens_interleave_generator,
             gen_kwargs={
                 "datasets": tuple(datasets),
@@ -735,6 +1104,15 @@ def build_interleaved_dataset(datasets, seed=42, probabilities=None, weights_pro
     if probabilities is None:
         probabilities = [1 / len(datasets)] * len(datasets)
     probabilities = normalize_interleave_probabilities(probabilities)
+    if _DATASET_FAST_PIPELINE:
+        return GeneratorIterableDataset(
+            _weighted_interleave_generator,
+            {
+                "datasets": tuple(datasets),
+                "seed": seed,
+                "probabilities": tuple(probabilities),
+            },
+        )
     return interleave_datasets(
         datasets,
         seed=seed,

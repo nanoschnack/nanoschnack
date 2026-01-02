@@ -1,3 +1,4 @@
+import itertools
 import unittest
 
 from datasets import IterableDataset
@@ -44,7 +45,7 @@ class LoaderInterleaveTests(unittest.TestCase):
             seed=123,
             token_counts=token_counts,
         )
-        samples = list(dataset.take(3))
+        samples = list(itertools.islice(dataset, 3))
 
         self.assertEqual([item["value"] for item in samples], ["a0", "a1", "a2"])
 

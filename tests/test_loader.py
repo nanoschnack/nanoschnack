@@ -55,17 +55,23 @@ class LoaderHelperTests(unittest.TestCase):
         )
 
     def test_select_hf_data_files_limits_repo(self):
-        # Only german-commons should opt into parquet file selection.
+        # Prefer parquet files for any HF dataset when available.
         spec = {"repo_id": "other/repo", "split": "train", "name": None}
-        with mock.patch.object(loader, "_load_hf_parquet_index") as mocked:
+        with mock.patch.object(loader, "_load_hf_parquet_index", return_value=([], [])) as mocked:
             self.assertIsNone(loader._select_hf_data_files(spec, cache_dir="cache"))
-            mocked.assert_not_called()
+            mocked.assert_called_once()
 
     def test_select_hf_data_files_uses_parquet_index(self):
         # Use parquet file list when present for german-commons.
         spec = {"repo_id": "coral-nlp/german-commons", "split": "wiki", "name": "web"}
         with mock.patch.object(loader, "_load_hf_parquet_index", return_value=(["file.parquet"], [10])):
             self.assertEqual(loader._select_hf_data_files(spec, cache_dir="cache"), ["file.parquet"])
+
+    def test_local_only_requires_cached_index(self):
+        with mock.patch.object(loader, "_read_resume_cache", return_value=None):
+            with mock.patch.object(loader, "_HF_LOCAL_ONLY", True):
+                with self.assertRaises(FileNotFoundError):
+                    loader._load_hf_parquet_index("org/repo", "train", cache_dir="cache")
 
     def test_cap_streaming_rows_limits_stream(self):
         dataset = IterableDataset.from_generator(lambda: ({"x": i} for i in range(5)))

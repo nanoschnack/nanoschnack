@@ -4,6 +4,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _is_compiling():
+    dynamo = getattr(torch, "_dynamo", None)
+    if dynamo is None:
+        return False
+    return dynamo.is_compiling()
+
+
 class RotaryEmbedding(nn.Module):
     """Rotary embedding helper for attention inputs.
 
@@ -26,17 +33,27 @@ class RotaryEmbedding(nn.Module):
         half = x.shape[-1] // 2
         return torch.cat((-x[..., half:], x[..., :half]), dim=-1)
 
-    def _get_cos_sin(self, seq_len, device, dtype):
-        # Cache cosine/sine tables keyed by length, device, and dtype.
-        cache_key = (seq_len, device, dtype)
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
+    def _build_cos_sin(self, seq_len, device, dtype):
+        # Compute cosine/sine tables for a given sequence length.
         positions = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
         freqs = torch.outer(positions, self.inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
         cos = emb.cos().to(dtype)
         sin = emb.sin().to(dtype)
+        return cos, sin
+
+    def _get_cos_sin(self, seq_len, device, dtype):
+        # Cache cosine/sine tables keyed by length, device, and dtype.
+        cache_key = (seq_len, device, dtype)
+
+        # Avoid cache mutation during torch.compile graph capture.
+        if _is_compiling():
+            return self._build_cos_sin(seq_len, device, dtype)
+
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+        cos, sin = self._build_cos_sin(seq_len, device, dtype)
         self._cache[cache_key] = (cos, sin)
         return cos, sin
 

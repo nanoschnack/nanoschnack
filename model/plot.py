@@ -1,3 +1,5 @@
+import shutil
+import textwrap
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -5,7 +7,7 @@ from dataclasses import dataclass, field
 import asciichartpy
 
 from chat import generate_reply_stream
-from text_format import format_compact, format_completion
+from text_format import format_compact
 from tokenizer import DATASET_EOS_TOKEN
 
 
@@ -152,13 +154,33 @@ def plot_with_completion(points, model, tokenizer, config, device):
     finally:
         if was_training:
             model.train()
-    formatted = format_completion(
-        "Validation: ",
+
+    formatted = format_validation_completion(
+        "Validation:",
         f"{config.PLOT_COMPLETION_PROMPT}|>{completion}",
     )
     if chart:
         return f"{chart}\n{formatted}"
     return formatted
+
+
+def format_validation_completion(label, completion):
+    # Format validation output with two-space indentation and real newlines.
+    term_width = shutil.get_terminal_size((120, 20)).columns
+    content_lines = completion.splitlines() or [""]
+    wrapped = []
+    for line in content_lines:
+        wrapped.append(
+            textwrap.fill(
+                line,
+                width=max(1, term_width - 2),
+                initial_indent="  ",
+                subsequent_indent="  ",
+                replace_whitespace=False,
+                drop_whitespace=False,
+            )
+        )
+    return f"{label}\n" + "\n".join(wrapped)
 
 
 def ascii_loss_plot(points, width=60, height=10):

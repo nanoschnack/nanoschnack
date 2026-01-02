@@ -109,6 +109,7 @@ def generate_reply_stream(model, tokenizer, prompt, context_len, max_new_tokens,
     id_to_bytes = _build_id_to_bytes(tokenizer)
     decoder = codecs.getincrementaldecoder("utf-8")()
     eos_id = tokenizer.token_to_id(DATASET_EOS_TOKEN)
+    use_byte_decoder = True
 
     with torch.no_grad():
         for _ in range(max_new_tokens):
@@ -116,12 +117,19 @@ def generate_reply_stream(model, tokenizer, prompt, context_len, max_new_tokens,
             next_id = sample_next_token(logits, temperature, top_k)
             if eos_id is not None and next_id == eos_id:
                 break
-            if next_id < len(id_to_bytes) and id_to_bytes[next_id] is not None:
-                chunk = decoder.decode(id_to_bytes[next_id], final=False)
-                if chunk:
-                    yield chunk
+
+            # Prefer byte-level streaming but fall back if bytes are invalid UTF-8.
+            if use_byte_decoder and next_id < len(id_to_bytes) and id_to_bytes[next_id] is not None:
+                try:
+                    chunk = decoder.decode(id_to_bytes[next_id], final=False)
+                except UnicodeDecodeError:
+                    use_byte_decoder = False
+                    chunk = tokenizer.decode([next_id])
             else:
-                yield tokenizer.decode([next_id])
+                chunk = tokenizer.decode([next_id])
+
+            if chunk:
+                yield chunk
             input_ids = torch.cat([input_ids, torch.tensor([[next_id]], device=device)], dim=1)
             if input_ids.size(1) > context_len:
                 input_ids = input_ids[:, -context_len:]

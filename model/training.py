@@ -644,19 +644,16 @@ for current_epoch in itertools.count(resume_epoch):
                 loss.backward()
 
             # Micro step bookkeeping.
-            token_count = attention_mask[:, 1:].sum().item()
-
-            # Advance per-source row counters for resume safety.
             row_counts = batch["row_count"].tolist()
             source_ids = batch["source_id"].tolist()
-            for source_id, row_count in zip(source_ids, row_counts):
-                if row_count:
-                    spec_key = dataset_specs[int(source_id)]["spec"]
-                    source_row_counts[spec_key] += int(row_count)
             token_counts = attention_mask[:, 1:].sum(dim=1).tolist()
-            for source_id, sample_tokens in zip(source_ids, token_counts):
-                if sample_tokens:
-                    spec_key = dataset_specs[int(source_id)]["spec"]
+            token_count = int(sum(token_counts))
+
+            # Advance per-source row/token counters for resume safety.
+            for source_id, row_count, sample_tokens in zip(source_ids, row_counts, token_counts):
+                if row_count or sample_tokens:
+                    spec_key = dataset_specs_keys[int(source_id)]
+                    source_row_counts[spec_key] += int(row_count)
                     source_token_counts[spec_key] += int(sample_tokens)
 
             # Update checkpoint counters and save when needed.

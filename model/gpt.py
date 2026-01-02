@@ -187,6 +187,9 @@ class GPT(nn.Module):
         # Keep absolute position embedding for backward-compatible checkpoints.
         self.pos = nn.Embedding(context_len, embed_size)
         self.pos_embed_type = pos_embed_type
+        if pos_embed_type == "rope":
+            # Keep the parameter for checkpoint compatibility but avoid DDP unused-grad errors.
+            self.pos.requires_grad_(False)
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(

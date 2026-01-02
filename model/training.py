@@ -362,7 +362,7 @@ for dataset_index, spec in enumerate(dataset_specs):
     # Skip datasets that are already fully consumed by resume offsets.
     total_rows = total_rows_by_spec.get(spec_key)
     if is_resume_exhausted(row_offset, total_rows):
-        print(f"Skipping exhausted dataset {spec_key}: row_offset {row_offset} >= total_rows {total_rows}") if is_master else None
+        print(f"  {spec_key}: skipping exhausted row_offset={row_offset} total_rows={total_rows}") if is_master else None
         continue
     packed_dataset_specs_keys.append(spec_key)
     data_files, in_shard_offset, shard_label = resolve_resume_plan(

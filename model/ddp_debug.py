@@ -23,8 +23,10 @@ def log_ddp_debug(gathered_losses, stats_gathered, rng_gathered, is_master):
         for idx, value in enumerate(stats_gathered)
     )
     print(f"ddp-batch: {stats}", flush=True)
+    mask = (1 << 64) - 1
     rngs = " ".join(
-        f"{idx}=cpu:{int(value[0].item()):016x} cuda:{int(value[1].item()):016x}"
+        f"{idx}=cpu:{(int(value[0].item()) & mask):016x} "
+        f"cuda:{(int(value[1].item()) & mask):016x}"
         for idx, value in enumerate(rng_gathered)
     )
     print(f"ddp-rng: {rngs}", flush=True)

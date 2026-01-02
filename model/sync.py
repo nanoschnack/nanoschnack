@@ -12,7 +12,8 @@ _DTYPES = {
     "i32": torch.int32,
     "i64": torch.int64,
     "u8": torch.uint8,
-    "u64": torch.uint64,
+    # NCCL does not support uint64, so map to int64 for DDP sync/debug tensors.
+    "u64": torch.int64,
 }
 
 _REDUCE_OPS = {

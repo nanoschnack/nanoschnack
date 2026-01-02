@@ -1,4 +1,5 @@
 from huggingface_hub import hf_hub_download
+from pathlib import Path
 from tokenizers import Tokenizer
 import math
 
@@ -85,7 +86,12 @@ BOS_TOKEN = "[BOS]"
 
 def load_tokenizer():
     # Load the tokenizer and align special tokens with training.
-    tokenizer_path = hf_hub_download(repo_id="openai-community/gpt2", filename="tokenizer.json")
+    tokenizer_path = _resolve_tokenizer_path()
+    if tokenizer_path is None:
+        tokenizer_path = hf_hub_download(
+            repo_id="openai-community/gpt2",
+            filename="tokenizer.json",
+        )
     tokenizer = Tokenizer.from_file(tokenizer_path)
 
     # Keep the vocab aligned with training if a pad token was added.
@@ -100,3 +106,15 @@ def load_tokenizer():
     # Attach alignment metadata for training diagnostics.
     tokenizer.vocab_alignment = _alignment_report(base_size, resolved_size)
     return tokenizer
+
+
+def _resolve_tokenizer_path():
+    # Resolve TOKENIZER_JSON_PATH relative to the repo root when needed.
+    if not config.TOKENIZER_JSON_PATH:
+        return None
+    candidate = Path(config.TOKENIZER_JSON_PATH)
+    if not candidate.is_absolute():
+        candidate = (Path(__file__).resolve().parent.parent / candidate).resolve()
+    if candidate.is_file():
+        return str(candidate)
+    raise FileNotFoundError(f"Tokenizer JSON not found at {candidate}")

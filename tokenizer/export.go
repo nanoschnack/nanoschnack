@@ -46,7 +46,7 @@ func WriteTokenizerJSON(path string, t *Tokenizer) error {
 			map[string]any{
 				"type":     "Split",
 				"pattern":  map[string]any{"Regex": pattern},
-				"behavior": "isolated",
+				"behavior": "Isolated",
 				"invert":   false,
 			},
 			map[string]any{

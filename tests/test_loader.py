@@ -214,6 +214,32 @@ class LoaderHelperTests(unittest.TestCase):
             {"input_ids", "attention_mask", "row_count", "source_id"},
         )
 
+    def test_build_packed_dataset_filters_empty(self):
+        class _Encoding:
+            def __init__(self, ids):
+                self.ids = ids
+
+        class _Tokenizer:
+            def encode_batch(self, texts):
+                return [_Encoding([]) for _ in texts]
+
+            def token_to_id(self, token):
+                return None
+
+        dataset = IterableDataset.from_generator(
+            lambda: ({"text": "hi"} for _ in range(2))
+        )
+        packed = loader.build_packed_dataset(
+            dataset,
+            tokenizer=_Tokenizer(),
+            block_size=4,
+            text_key="text",
+            pack_batch_size=2,
+            source_id=0,
+        )
+
+        self.assertIsNone(next(iter(packed), None))
+
     def test_resolve_column_names_prefers_features(self):
         class _Dataset:
             column_names = None

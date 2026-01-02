@@ -1,22 +1,15 @@
 from huggingface_hub import hf_hub_download
 import importlib.util
 from pathlib import Path
-import sys
 from tokenizers import Tokenizer
 import math
-
-import config
-
-# Ensure we use the local config module even when imported from another project.
+# Load the local config module directly to avoid cross-project name collisions.
 _CONFIG_PATH = Path(__file__).resolve().parent / "config.py"
-_loaded_config_path = Path(getattr(config, "__file__", "")).resolve() if getattr(config, "__file__", None) else None
-if _loaded_config_path != _CONFIG_PATH:
-    spec = importlib.util.spec_from_file_location("config", _CONFIG_PATH)
-    if spec and spec.loader:
-        local_config = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(local_config)
-        sys.modules["config"] = local_config
-        config = local_config
+_spec = importlib.util.spec_from_file_location("nanoschnack_config", _CONFIG_PATH)
+if _spec is None or _spec.loader is None:
+    raise ImportError(f"Unable to load config from {_CONFIG_PATH}")
+_local_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_local_config)
 
 
 def _alignment_report(base_size, aligned_size):
@@ -54,7 +47,7 @@ def ensure_vocab_size(tokenizer, target_size):
     resolved_size = target_size
     if not resolved_size:
         resolved_size = _aligned_vocab_size(current_size)
-        config.VOCAB_SIZE = resolved_size
+        _local_config.VOCAB_SIZE = resolved_size
     if resolved_size == current_size:
         return current_size
     if resolved_size < current_size:
@@ -115,7 +108,7 @@ def load_tokenizer():
 
     # Align after adding special tokens so padding is counted in the base size.
     base_size = tokenizer.get_vocab_size()
-    resolved_size = ensure_vocab_size(tokenizer, config.VOCAB_SIZE)
+    resolved_size = ensure_vocab_size(tokenizer, _local_config.VOCAB_SIZE)
     # Attach alignment metadata for training diagnostics.
     tokenizer.vocab_alignment = _alignment_report(base_size, resolved_size)
     return tokenizer
@@ -123,7 +116,7 @@ def load_tokenizer():
 
 def _resolve_tokenizer_path():
     # Resolve TOKENIZER_JSON_PATH relative to the repo root when needed.
-    tokenizer_path = getattr(config, "TOKENIZER_JSON_PATH", "")
+    tokenizer_path = getattr(_local_config, "TOKENIZER_JSON_PATH", "")
     if not tokenizer_path:
         return None
     candidate = Path(tokenizer_path)

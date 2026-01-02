@@ -37,12 +37,15 @@ func WriteTokenizerJSON(path string, t *Tokenizer) error {
 		merges = append(merges, left+" "+right)
 	}
 
+	// Ensure the regex is JS-compatible for Transformers.js.
+	pattern := jsCompatiblePattern(t.GetPattern())
+
 	preTokenizer := map[string]any{
 		"type": "Sequence",
 		"pretokenizers": []any{
 			map[string]any{
 				"type":     "Split",
-				"pattern":  map[string]any{"Regex": t.GetPattern()},
+				"pattern":  map[string]any{"Regex": pattern},
 				"behavior": "isolated",
 				"invert":   false,
 			},
@@ -133,4 +136,12 @@ func encodeTokenBytes(encoder [256]rune, data []byte) string {
 		b.WriteRune(encoder[v])
 	}
 	return b.String()
+}
+
+func jsCompatiblePattern(pattern string) string {
+	replacer := strings.NewReplacer(
+		"(?>", "(?:",
+		"'(?i:[sdmt]|ll|ve|re)", "(?i:'s|'t|'re|'ve|'m|'ll|'d)",
+	)
+	return replacer.Replace(pattern)
 }

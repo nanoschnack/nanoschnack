@@ -1,0 +1,6 @@
+{
+  "model_max_length": 2048,
+  "tokenizer_class": "PreTrainedTokenizerFast",
+  "add_special_tokens": false,
+  "additional_special_tokens": []
+}

@@ -8,6 +8,7 @@ CORPUS_SIZE := 1000000000
 .PHONY: tokenizer
 .PHONY: all
 .PHONY: train
+.PHONY: train-local
 .PHONY: chat
 .PHONY: corpus
 
@@ -25,6 +26,9 @@ $(TOKENIZER_INPUT): build_tokenizer_corpus.py
 all: $(TOKENIZER_OUTPUT)
 
 train: $(TOKENIZER_OUTPUT)
+	python model/training.py
+
+train-local: $(TOKENIZER_OUTPUT)
 	EMBED_SIZE=384 CONTEXT_LEN=128 NUM_LAYERS=3 BATCH_SIZE=32 python model/training.py
 
 chat:

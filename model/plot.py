@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 import asciichartpy
+import torch
 
 from chat import generate_reply_stream
 from text_format import format_compact
@@ -125,12 +126,20 @@ class Plotter:
                 )
 
 
+def _unwrap_model(model):
+    # Prefer the underlying module when wrapped by DDP-like containers.
+    if hasattr(model, "module") and isinstance(model.module, torch.nn.Module):
+        return model.module
+    return model
+
+
 def plot_with_completion(points, model, tokenizer, config, device):
     """Render a loss chart with a sample completion appended."""
     # Render the loss plot first so completion failures don't block logs.
     chart = ascii_loss_plot(points)
 
-    # Append the configured completion snapshot.
+    # Append the configured completion snapshot without DDP collectives.
+    model = _unwrap_model(model)
     was_training = model.training
     if was_training:
         model.eval()

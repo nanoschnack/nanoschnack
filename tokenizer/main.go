@@ -10,7 +10,8 @@ import (
 
 func main() {
 	target := flag.Uint("target", 32000, "target vocabulary size")
-	outPath := flag.String("f", "", "output file for encoded ids (default: stdout)")
+	jsonPath := flag.String("f", "", "output Hugging Face tokenizer.json")
+	inText := flag.String("in", "", "input text to encode and print token ids")
 	flag.Parse()
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -36,11 +37,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	encodeText := data[len(data)-1]
-	trainLines := data[:len(data)-1]
-	if len(trainLines) == 0 {
-		trainLines = []string{encodeText}
-	}
+	trainLines := data
 
 	iter := func() func() (string, bool) {
 		i := 0
@@ -59,25 +56,26 @@ func main() {
 		panic(err)
 	}
 
-	ids, err := t.Encode(encodeText)
-	if err != nil {
-		panic(err)
-	}
-
-	var b strings.Builder
-	for i, id := range ids {
-		if i > 0 {
-			b.WriteByte(' ')
+	if *jsonPath != "" {
+		if err := WriteTokenizerJSON(*jsonPath, t); err != nil {
+			panic(err)
 		}
-		fmt.Fprint(&b, id)
 	}
-	b.WriteByte('\n')
 
-	if *outPath == "" {
+	if *inText != "" {
+		ids, err := t.Encode(*inText)
+		if err != nil {
+			panic(err)
+		}
+
+		var b strings.Builder
+		for i, id := range ids {
+			if i > 0 {
+				b.WriteByte(' ')
+			}
+			fmt.Fprint(&b, id)
+		}
+		b.WriteByte('\n')
 		fmt.Print(b.String())
-		return
-	}
-	if err := os.WriteFile(*outPath, []byte(b.String()), 0o644); err != nil {
-		panic(err)
 	}
 }

@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -14,7 +15,7 @@ class GoTokenizerCliTests(unittest.TestCase):
     def test_stdin_train_and_output_file(self):
         stdin_text = "hallo welt\n\nhallo welt\n"
         with tempfile.TemporaryDirectory() as tmpdir:
-            out_path = os.path.join(tmpdir, "out.txt")
+            json_path = os.path.join(tmpdir, "tokenizer.json")
             cmd = [
                 "go",
                 "-C",
@@ -24,9 +25,11 @@ class GoTokenizerCliTests(unittest.TestCase):
                 "--target",
                 "260",
                 "-f",
-                out_path,
+                json_path,
+                "--in",
+                "hallo welt",
             ]
-            subprocess.run(
+            result = subprocess.run(
                 cmd,
                 input=stdin_text,
                 text=True,
@@ -34,11 +37,15 @@ class GoTokenizerCliTests(unittest.TestCase):
                 check=True,
             )
 
-            with open(out_path, "r", encoding="utf-8") as handle:
-                data = handle.read().strip()
+            with open(json_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
 
-        self.assertTrue(data)
-        self.assertRegex(data, r"^\d+( \d+)*$")
+        stdout = result.stdout.strip()
+        self.assertTrue(stdout)
+        self.assertRegex(stdout, r"^\d+( \d+)*$")
+
+        self.assertEqual(payload["model"]["type"], "BPE")
+        self.assertEqual(payload["pre_tokenizer"]["type"], "Sequence")
 
 
 if __name__ == "__main__":

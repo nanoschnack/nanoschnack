@@ -31,7 +31,6 @@ class CheckpointerSnapshotTests(unittest.TestCase):
             checkpointer.save_latest(
                 epoch=0,
                 global_step=0,
-                total_tokens=0,
                 samples=0,
             )
 

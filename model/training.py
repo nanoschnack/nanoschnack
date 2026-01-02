@@ -74,7 +74,6 @@ if is_master:
 torch.set_float32_matmul_precision("high")
 
 
-
 # %% [markdown]
 # ## Loading a tokenizer with Hugging Face's tokenizer library
 #
@@ -86,6 +85,7 @@ from tokenizer import PAD_TOKEN, load_tokenizer, print_vocab_alignment
 tokenizer = load_tokenizer()
 if is_master:
     print_vocab_alignment(tokenizer)
+
 
 
 # %%
@@ -172,7 +172,6 @@ if is_master:
     )
 
 
-
 # %% [markdown]
 # ## Create vizualization of the model
 
@@ -200,6 +199,7 @@ if is_notebook:
     y = model(x)
 
     make_dot(y, params=dict(model.named_parameters()))
+
 
 
 # %% [markdown]
@@ -249,6 +249,7 @@ if is_master:
     print(f"  Target: epochs=1 target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
 
 
+
 # %% [markdown]
 # ## Progress and Plotting
 
@@ -277,12 +278,23 @@ lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 
 # Load the latest checkpoint if available.
-resume_epoch, global_step, resume_total_tokens, resume_samples, resume_state = checkpointer.load_latest(is_master=is_master)
+resume_epoch, global_step, resume_samples, resume_state = checkpointer.load_latest(is_master=is_master)
 resume_info = checkpointer.last_resume_info
 
 # Backfill total samples for older checkpoints.
 if not resume_samples and global_step:
     resume_samples = global_step * config.MACRO_BATCH_SIZE
+
+# Normalize resume offsets for row/token counts.
+resume_rows = normalize_resume_rows(resume_state, dataset_specs)
+resume_rows = cap_resume_rows(resume_rows, total_rows_by_spec)
+resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
+
+# Seed new specs to the current token baseline for fair interleaving.
+resume_tokens = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
+
+# Sum token offsets for scheduler alignment and logging.
+resume_total_tokens = sum(resume_tokens.values())
 
 # Align the scheduler with the resumed token count.
 if resume_total_tokens:
@@ -307,14 +319,6 @@ if is_master and resume_info:
         f"  Scheduler: {resume_info['scheduler']} lr={lr_after:.8f}",
         flush=True,
     )
-
-# Normalize resume offsets for row/token counts.
-resume_rows = normalize_resume_rows(resume_state, dataset_specs)
-resume_rows = cap_resume_rows(resume_rows, total_rows_by_spec)
-resume_tokens = normalize_resume_tokens(resume_state, dataset_specs)
-
-# Seed new specs to the current token baseline for fair interleaving.
-resume_tokens = seed_missing_token_offsets(resume_tokens, resume_state, dataset_specs)
 
 # Cap resume offsets to the known total rows to avoid invalid states.
 for dataset_index, spec in enumerate(dataset_specs):
@@ -809,7 +813,6 @@ for current_epoch in itertools.count(resume_epoch):
                 checkpointer.save_latest(
                     current_epoch,
                     progress.global_step,
-                    progress.total_tokens,
                     progress.total_samples,
                     resume_state=resume_state,
                 )
@@ -831,6 +834,5 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
-
 
 

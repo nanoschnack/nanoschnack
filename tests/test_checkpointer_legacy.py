@@ -84,14 +84,12 @@ class CheckpointerLegacyTests(unittest.TestCase):
             (
                 resume_epoch,
                 global_step,
-                total_tokens,
                 samples,
                 resume_state,
             ) = checkpointer.load_latest()
 
         self.assertEqual(resume_epoch, 0)
         self.assertEqual(global_step, 2)
-        self.assertEqual(total_tokens, 4)
         self.assertEqual(samples, 0)
         self.assertIsNone(resume_state)
         self.assertTrue(torch.equal(new_model.tok.weight, model.tok.weight))

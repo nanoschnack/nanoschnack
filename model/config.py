@@ -1,6 +1,7 @@
 """Shared hyperparameters for training and inference."""
 
 import os
+from pathlib import Path
 import torch
 
 ###
@@ -108,7 +109,8 @@ DATASET_SPECS = _env_str(
 )
 
 # Tokenizer JSON path for training and chat.
-TOKENIZER_JSON_PATH = _env_str("TOKENIZER_JSON_PATH", "tokenizer/tokenizer.json")
+_TOKENIZER_JSON_DEFAULT = Path(__file__).resolve().parent.parent / "tokenizer" / "tokenizer.json"
+TOKENIZER_JSON_PATH = _env_str("TOKENIZER_JSON_PATH", str(_TOKENIZER_JSON_DEFAULT))
 
 ###
 ### Inference defaults

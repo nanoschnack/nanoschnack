@@ -1,9 +1,22 @@
 from huggingface_hub import hf_hub_download
+import importlib.util
 from pathlib import Path
+import sys
 from tokenizers import Tokenizer
 import math
 
 import config
+
+# Ensure we use the local config module even when imported from another project.
+_CONFIG_PATH = Path(__file__).resolve().parent / "config.py"
+_loaded_config_path = Path(getattr(config, "__file__", "")).resolve() if getattr(config, "__file__", None) else None
+if _loaded_config_path != _CONFIG_PATH:
+    spec = importlib.util.spec_from_file_location("config", _CONFIG_PATH)
+    if spec and spec.loader:
+        local_config = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(local_config)
+        sys.modules["config"] = local_config
+        config = local_config
 
 
 def _alignment_report(base_size, aligned_size):
@@ -110,9 +123,10 @@ def load_tokenizer():
 
 def _resolve_tokenizer_path():
     # Resolve TOKENIZER_JSON_PATH relative to the repo root when needed.
-    if not config.TOKENIZER_JSON_PATH:
+    tokenizer_path = getattr(config, "TOKENIZER_JSON_PATH", "")
+    if not tokenizer_path:
         return None
-    candidate = Path(config.TOKENIZER_JSON_PATH)
+    candidate = Path(tokenizer_path)
     if not candidate.is_absolute():
         candidate = (Path(__file__).resolve().parent.parent / candidate).resolve()
     if candidate.is_file():

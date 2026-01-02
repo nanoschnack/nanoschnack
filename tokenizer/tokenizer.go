@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/dlclark/regexp2"
 )
@@ -241,7 +242,7 @@ func (t *Tokenizer) trainCoreIncremental(words []Word, counts []int64, vocabSize
 	}
 
 	var mergesDone uint32
-	var lastLogPercent uint32
+	lastLogTime := time.Now().Add(-2 * time.Second)
 
 	for mergesDone < numMerges {
 		if h.Len() == 0 {
@@ -288,11 +289,11 @@ func (t *Tokenizer) trainCoreIncremental(words []Word, counts []int64, vocabSize
 
 		mergesDone++
 
-		currentPercent := (mergesDone * 100) / numMerges
-		if currentPercent > lastLogPercent {
+		if time.Since(lastLogTime) >= 2*time.Second {
+			percent := (mergesDone * 100) / numMerges
 			log.Printf("Progress: %d%% (%d/%d merges) - Last merge: (%d,%d) -> %d (frequency: %d)",
-				currentPercent, mergesDone, numMerges, top.pair.A, top.pair.B, newID, top.count)
-			lastLogPercent = currentPercent
+				percent, mergesDone, numMerges, top.pair.A, top.pair.B, newID, top.count)
+			lastLogTime = time.Now()
 		}
 	}
 
@@ -323,6 +324,8 @@ func (t *Tokenizer) TrainFromIterator(iter func() (string, bool), vocabSize uint
 	counts := make(map[string]int64)
 	buf := make([]string, 0, bufferSize)
 	exhausted := false
+	lastLogTime := time.Now().Add(-2 * time.Second)
+	var totalLines int
 
 	for {
 		buf = buf[:0]
@@ -333,6 +336,11 @@ func (t *Tokenizer) TrainFromIterator(iter func() (string, bool), vocabSize uint
 				break
 			}
 			buf = append(buf, next)
+			totalLines++
+			if time.Since(lastLogTime) >= 2*time.Second {
+				log.Printf("Loading corpus: lines=%d", totalLines)
+				lastLogTime = time.Now()
+			}
 		}
 
 		if len(buf) == 0 && exhausted {

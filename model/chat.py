@@ -1,5 +1,6 @@
 import argparse
 
+import codecs
 import torch
 
 try:
@@ -72,16 +73,52 @@ def sample_next_token(logits, temperature, top_k):
     return int(torch.multinomial(probs, num_samples=1).item())
 
 
+def _build_id_to_bytes(tokenizer):
+    vocab = tokenizer.get_vocab()
+    max_id = max(vocab.values())
+    id_to_token = [None] * (max_id + 1)
+    for token, idx in vocab.items():
+        id_to_token[idx] = token
+
+    byte_decoder = _build_byte_decoder()
+    id_to_bytes = [None] * (max_id + 1)
+    for idx, token in enumerate(id_to_token):
+        if token is None:
+            continue
+        id_to_bytes[idx] = bytes(byte_decoder[ch] for ch in token)
+    return id_to_bytes
+
+
+def _build_byte_decoder():
+    bs = list(range(33, 127)) + list(range(161, 173)) + list(range(174, 256))
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    byte_encoder = {b: chr(c) for b, c in zip(bs, cs)}
+    return {v: k for k, v in byte_encoder.items()}
+
+
 def generate_reply_stream(model, tokenizer, prompt, context_len, max_new_tokens, temperature, top_k, device):
     # Stream tokens from autoregressive decoding for a single reply.
     prompt_ids = tokenizer.encode(prompt).ids
     input_ids = torch.tensor([prompt_ids[-context_len:]], device=device, dtype=torch.long)
+    id_to_bytes = _build_id_to_bytes(tokenizer)
+    decoder = codecs.getincrementaldecoder("utf-8")()
 
     with torch.no_grad():
         for _ in range(max_new_tokens):
             logits = model(input_ids)[:, -1, :].squeeze(0)
             next_id = sample_next_token(logits, temperature, top_k)
-            yield tokenizer.decode([next_id])
+            if next_id < len(id_to_bytes) and id_to_bytes[next_id] is not None:
+                chunk = decoder.decode(id_to_bytes[next_id], final=False)
+                if chunk:
+                    yield chunk
+            else:
+                yield tokenizer.decode([next_id])
             input_ids = torch.cat([input_ids, torch.tensor([[next_id]], device=device)], dim=1)
             if input_ids.size(1) > context_len:
                 input_ids = input_ids[:, -context_len:]

@@ -91,6 +91,9 @@ DATA_LOADER_WORKERS = _env_int("DATA_LOADER_WORKERS", 0)
 # Keep worker count visible to child processes for data loading.
 os.environ.setdefault("DATA_LOADER_WORKERS", str(DATA_LOADER_WORKERS))
 
+# Pin DataLoader batches in host memory for faster H2D transfers.
+PIN_MEMORY = bool(_env_int("PIN_MEMORY", 1))
+
 # Batch size for dataset packing during tokenization.
 PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 128 * _env_int("WORLD_SIZE", 1))
 
@@ -234,6 +237,7 @@ def print_training_hyperparams(
         f"  max_training_factor={MAX_TRAINING_FACTOR}",
         f"  max_steps={MAX_STEPS}",
         f"  data_loader_workers={DATA_LOADER_WORKERS}",
+        f"  pin_memory={PIN_MEMORY}",
         f"  shuffle_buffer={SHUFFLE_BUFFER}",
         f"  dataset_specs={DATASET_SPECS}",
         f"  hf_shard_cache_cleanup={HF_SHARD_CACHE_CLEANUP}",

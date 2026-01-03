@@ -41,6 +41,9 @@ class ProgressLogger:
         io_time=0.0,
         gpu_time=0.0,
         sync_time=0.0,
+        transfer_time=0.0,
+        step_time=0.0,
+        log_time=0.0,
     ):
         # Log throughput and loss for every tick (caller controls cadence).
         now = time.time()
@@ -74,10 +77,13 @@ class ProgressLogger:
         if loss_delta is not None:
             parts[-1] = f"Loss {self._format_loss(loss_value)} (Δ{loss_delta:.2f})"
         parts.append(
-            "Wait IO/GPU/Sync "
+            "Wait IO/Xfer/GPU/Sync/Step/Log "
             f"{self._format_duration(io_time)}/"
+            f"{self._format_duration(transfer_time)}/"
             f"{self._format_duration(gpu_time)}/"
-            f"{self._format_duration(sync_time)}"
+            f"{self._format_duration(sync_time)}/"
+            f"{self._format_duration(step_time)}/"
+            f"{self._format_duration(log_time)}"
         )
         parts.extend(
             [

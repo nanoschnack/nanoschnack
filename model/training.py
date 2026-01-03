@@ -457,12 +457,18 @@ class MacroStep:
     micro_loss_total_tensor: torch.Tensor | None = None
     io_wait: float = 0.0
     compute_time: float = 0.0
+    transfer_time: float = 0.0
+    step_time: float = 0.0
+    log_time: float = 0.0
     sync_wait: float = 0.0
 
     def begin(self, optimizer):
         self.compute_time = 0.0
         self.io_wait = 0.0
         self.sync_wait = 0.0
+        self.transfer_time = 0.0
+        self.step_time = 0.0
+        self.log_time = 0.0
         optimizer.zero_grad()
         self.micro_loss_total_tensor = None
         self.micro_token_total = 0
@@ -490,6 +496,30 @@ class MacroStep:
             self.compute_time += time.time() - start
 
     @contextlib.contextmanager
+    def measure_transfer(self):
+        start = time.time()
+        try:
+            yield
+        finally:
+            self.transfer_time += time.time() - start
+
+    @contextlib.contextmanager
+    def measure_step(self):
+        start = time.time()
+        try:
+            yield
+        finally:
+            self.step_time += time.time() - start
+
+    @contextlib.contextmanager
+    def measure_log(self):
+        start = time.time()
+        try:
+            yield
+        finally:
+            self.log_time += time.time() - start
+
+    @contextlib.contextmanager
     def measure_sync(self):
         start = time.time()
         try:
@@ -508,6 +538,9 @@ class MacroStep:
     def finish(self):
         self.io_wait = 0.0
         self.sync_wait = 0.0
+        self.transfer_time = 0.0
+        self.step_time = 0.0
+        self.log_time = 0.0
         self.current_micro_step = 0
 
 
@@ -535,6 +568,9 @@ class Synced:
     io_wait: float = all_reduce("max")
     compute_time: float = all_reduce("max")
     sync_wait: float = all_reduce("max")
+    transfer_time: float = all_reduce("max")
+    step_time: float = all_reduce("max")
+    log_time: float = all_reduce("max")
     row_counts: list = all_reduce("sum", dtype="i64")
     token_counts: list = all_reduce("sum", dtype="i64")
     print_input: bool = flag_broadcast(src=0)
@@ -605,7 +641,7 @@ for current_epoch in itertools.count(resume_epoch):
         shuffle=False,
         num_workers=config.DATA_LOADER_WORKERS,
         worker_init_fn=worker_init_fn,
-        pin_memory=(device.type == "cuda"),
+        pin_memory=(device.type == "cuda" and config.PIN_MEMORY),
     )
 
     # Announce first-batch wait to avoid silent startup stalls.
@@ -624,9 +660,14 @@ for current_epoch in itertools.count(resume_epoch):
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
 
+        # Compute token counts on CPU to avoid GPU sync on tolist.
+        token_counts = attention_mask[:, 1:].sum(dim=1).tolist()
+        token_count = int(sum(token_counts))
+
         # Transfer batch tensors to device once, then slice on device.
-        input_ids = input_ids.to(device, non_blocking=(device.type == "cuda"))
-        attention_mask = attention_mask.to(device, non_blocking=(device.type == "cuda"))
+        with macro_step.measure_transfer():
+            input_ids = input_ids.to(device, non_blocking=(device.type == "cuda"))
+            attention_mask = attention_mask.to(device, non_blocking=(device.type == "cuda"))
 
         attn_mask = None
         if attention_mask is not None and not attention_mask.all():
@@ -645,10 +686,6 @@ for current_epoch in itertools.count(resume_epoch):
             print(f"Input text: {tokenizer.decode(input_preview)}")
             print(f"Target text: {tokenizer.decode(target_preview)}")
             printed_debug_sample = True
-
-        # Compute token counts on CPU to avoid GPU sync on tolist.
-        token_counts = attention_mask[:, 1:].sum(dim=1).tolist()
-        token_count = int(sum(token_counts))
 
         # Run the forward pass with autocast and compute loss.
         with macro_step.measure_compute():
@@ -699,6 +736,9 @@ for current_epoch in itertools.count(resume_epoch):
             io_wait=macro_step.io_wait,
             compute_time=macro_step.compute_time,
             sync_wait=macro_step.sync_wait,
+            transfer_time=macro_step.transfer_time,
+            step_time=macro_step.step_time,
+            log_time=macro_step.log_time,
             row_counts=[source_row_counts.get(spec_key, 0) for spec_key in dataset_specs_keys],
             token_counts=[source_token_counts.get(spec_key, 0) for spec_key in dataset_specs_keys],
             print_input=(is_master and input_requested),
@@ -721,66 +761,76 @@ for current_epoch in itertools.count(resume_epoch):
         io_wait_max = macro_step.io_wait
         compute_max = macro_step.compute_time
         sync_wait_max = macro_step.sync_wait
+        transfer_max = macro_step.transfer_time
+        step_max = macro_step.step_time
+        log_max = macro_step.log_time
         if ddp_enabled:
             io_wait_max = synced.io_wait
             compute_max = synced.compute_time
             sync_wait_max = synced.sync_wait
+            transfer_max = synced.transfer_time
+            step_max = synced.step_time
+            log_max = synced.log_time
 
         # Log macro step counts while keeping micro-step checkpointing intact.
-        plot_printed = False
-        if is_master:
-            progress.tick(
+        with macro_step.measure_log():
+            plot_printed = False
+            if is_master:
+                progress.tick(
+                    synced.average_loss,
+                    loss_delta=(synced.loss_max - synced.loss_min if ddp_enabled else None),
+                    batch_size=macro_step.micro_sample_total,
+                    token_count=synced.token_count,
+                    lr=optimizer.param_groups[0]["lr"],
+                    epoch=current_epoch,
+                    step=progress.global_step,
+                    remaining_tokens=max(target_tokens - next_total_tokens, 0),
+                    io_time=io_wait_max,
+                    gpu_time=compute_max,
+                    sync_time=sync_wait_max,
+                    transfer_time=transfer_max,
+                    step_time=step_max,
+                    log_time=log_max,
+                )
+            plot_printed = plotter.tick(
+                synced.token_count,
                 synced.average_loss,
-                loss_delta=(synced.loss_max - synced.loss_min if ddp_enabled else None),
-                batch_size=macro_step.micro_sample_total,
-                token_count=synced.token_count,
-                lr=optimizer.param_groups[0]["lr"],
-                epoch=current_epoch,
-                step=progress.global_step,
-                remaining_tokens=max(target_tokens - next_total_tokens, 0),
-                io_time=io_wait_max,
-                gpu_time=compute_max,
-                sync_time=sync_wait_max,
+                is_master=is_master,
             )
-        plot_printed = plotter.tick(
-            synced.token_count,
-            synced.average_loss,
-            is_master=is_master,
-        )
-        if ddp_enabled and plot_printed and is_master:
-            log_ddp_debug(synced.gathered_losses, synced.stats_gathered, synced.rng_gathered, is_master)
+            if ddp_enabled and plot_printed and is_master:
+                log_ddp_debug(synced.gathered_losses, synced.stats_gathered, synced.rng_gathered, is_master)
 
-        if plot_printed and is_master:
-            plotter.print_dataset_pos(
-                total_tokens=progress.total_tokens,
-                global_row_counts=global_row_counts,
-                resume_base=resume_rows if is_resume_epoch else {},
-                token_counts_by_spec=global_token_counts,
-                dataset_specs=dataset_specs,
-                total_rows_by_spec=total_rows_by_spec,
-                target_tokens=target_tokens,
-            )
+            if plot_printed and is_master:
+                plotter.print_dataset_pos(
+                    total_tokens=progress.total_tokens,
+                    global_row_counts=global_row_counts,
+                    resume_base=resume_rows if is_resume_epoch else {},
+                    token_counts_by_spec=global_token_counts,
+                    dataset_specs=dataset_specs,
+                    total_rows_by_spec=total_rows_by_spec,
+                    target_tokens=target_tokens,
+                )
 
-        # Emit a per-rank input sample for shard sanity checks.
-        if debug_level >= 1 or synced.print_input:
-            progress.print_input_sample(
-                ddp_rank,
-                inputs,
-                attention_mask,
-                tokenizer,
-                source_ids=batch.get("source_id"),
-                dataset_specs=dataset_specs,
-            )
+            # Emit a per-rank input sample for shard sanity checks.
+            if debug_level >= 1 or synced.print_input:
+                progress.print_input_sample(
+                    ddp_rank,
+                    inputs,
+                    attention_mask,
+                    tokenizer,
+                    source_ids=batch.get("source_id"),
+                    dataset_specs=dataset_specs,
+                )
+
 
         # Apply gradient clipping.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-        # Apply the optimizer step.
-        optimizer.step()
-
-        # Apply the optimizer step and advance the token scheduler.
-        scheduler.last_epoch = next_total_tokens - 1
-        scheduler.step()
+        # Apply the optimizer step and scheduler update.
+        with macro_step.measure_step():
+            optimizer.step()
+            scheduler.last_epoch = next_total_tokens - 1
+            scheduler.step()
 
         macro_step.finish()
         now = time.time()

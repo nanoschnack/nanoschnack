@@ -98,7 +98,7 @@ PIN_MEMORY = bool(_env_int("PIN_MEMORY", 1))
 PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 128 * _env_int("WORLD_SIZE", 1))
 
 # Tokenizer worker threads for batch parallelism.
-TOKENIZER_WORKERS = _env_int("TOKENIZER_WORKERS", 2)
+TOKENIZER_WORKERS = _env_int("TOKENIZER_WORKERS", 4)
 
 # HF shard cache cleanup mode: auto or keep.
 HF_SHARD_CACHE_CLEANUP = _env_str("HF_SHARD_CACHE_CLEANUP", "auto")

@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 
 import torch
+from torch.utils.data import get_worker_info
 from datasets import IterableDataset, interleave_datasets, load_dataset
 
 import time
@@ -42,9 +43,10 @@ class _TokenizerPoolCache:
 _TOKENIZER_POOL = _TokenizerPoolCache()
 
 
-def _get_tokenizer_pool():
+def _get_tokenizer_pool(workers=None):
     # Lazily create a tokenizer worker pool when enabled.
-    workers = int(config.TOKENIZER_WORKERS)
+    if workers is None:
+        workers = int(config.TOKENIZER_WORKERS)
     if workers <= 1:
         return None
     if _TOKENIZER_POOL.executor is None or _TOKENIZER_POOL.workers != workers:
@@ -616,12 +618,19 @@ def build_tokenizer(tokenizer, text_key="text"):
     # Wrap tokenizer to return token ids for datasets.map.
     def tokenizer_batch(batch):
         texts = batch[text_key]
-        pool = _get_tokenizer_pool()
+        worker_info = get_worker_info()
+        pool = None
+        if worker_info is None or config.TOKENIZER_WORKERS_PER_WORKER > 0:
+            # Cap per-worker threads to avoid runaway concurrency.
+            workers = int(config.TOKENIZER_WORKERS)
+            if worker_info is not None:
+                workers = min(workers, int(config.TOKENIZER_WORKERS_PER_WORKER))
+            pool = _get_tokenizer_pool(workers)
         if pool is None or len(texts) <= 1:
             token_batch = tokenizer.encode_batch(texts)
         else:
             # Split batches for parallel encoding without reordering.
-            workers = min(int(config.TOKENIZER_WORKERS), len(texts))
+            workers = min(workers, len(texts))
             chunk_size = math.ceil(len(texts) / workers)
             futures = [
                 pool.submit(tokenizer.encode_batch, texts[start:start + chunk_size])

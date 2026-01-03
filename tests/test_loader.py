@@ -270,6 +270,32 @@ class LoaderHelperTests(unittest.TestCase):
         self.assertEqual(encoded["input_ids"], [[1], [3], [2], [4]])
         self.assertEqual(encoded["row_count"], batch["row_count"])
 
+    def test_build_tokenizer_skips_pool_in_workers(self):
+        class _Encoding:
+            def __init__(self, ids):
+                self.ids = ids
+
+        class _Tokenizer:
+            def encode_batch(self, texts):
+                return [_Encoding([len(text)]) for text in texts]
+
+            def token_to_id(self, token):
+                return None
+
+        batch = {"text": ["a", "bb"], "row_count": [1, 1]}
+        tokenizer_batch = loader.build_tokenizer(_Tokenizer(), text_key="text")
+        original_setting = loader.config.TOKENIZER_WORKERS_PER_WORKER
+
+        try:
+            loader.config.TOKENIZER_WORKERS_PER_WORKER = 0
+            with mock.patch.object(loader, "get_worker_info", return_value=object()):
+                with mock.patch.object(loader, "_get_tokenizer_pool") as mocked_pool:
+                    tokenizer_batch(batch)
+
+            mocked_pool.assert_not_called()
+        finally:
+            loader.config.TOKENIZER_WORKERS_PER_WORKER = original_setting
+
     def test_build_packed_dataset_filters_empty(self):
         class _Encoding:
             def __init__(self, ids):

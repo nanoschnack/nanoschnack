@@ -635,6 +635,7 @@ for current_epoch in itertools.count(resume_epoch):
             source_row_counts[spec["spec"]] = 0
             source_token_counts[spec["spec"]] = 0
     dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch)
+    # Prefer spawn context to avoid fork + tokenizer thread deadlocks.
     loader = DataLoader(
         dataset_epoch,
         batch_size=config.BATCH_SIZE,
@@ -642,6 +643,7 @@ for current_epoch in itertools.count(resume_epoch):
         num_workers=config.DATA_LOADER_WORKERS,
         worker_init_fn=worker_init_fn,
         pin_memory=(device.type == "cuda" and config.PIN_MEMORY),
+        multiprocessing_context="spawn" if config.DATA_LOADER_WORKERS > 0 else None,
     )
 
     # Announce first-batch wait to avoid silent startup stalls.

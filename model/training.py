@@ -259,6 +259,7 @@ if is_master:
 from plot import Plotter, plot_with_completion
 from progress import ProgressLogger
 from ddp_debug import build_rng_tensor, log_ddp_debug
+from debug import build_dataloader_worker_init
 from sync import all_gather, all_reduce, flag_broadcast, flag_reduce, sync
 from input import make_input_poller
 from loader import time_until_first_batch
@@ -269,6 +270,10 @@ import itertools
 import os
 import signal
 import time
+
+
+# Build a worker init hook for per-process crash logs.
+worker_init_fn = build_dataloader_worker_init()
 
 # Set up optimizer, learning-rate scheduler, and loss function
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
@@ -599,6 +604,7 @@ for current_epoch in itertools.count(resume_epoch):
         batch_size=config.BATCH_SIZE,
         shuffle=False,
         num_workers=config.DATA_LOADER_WORKERS,
+        worker_init_fn=worker_init_fn,
     )
 
     # Announce first-batch wait to avoid silent startup stalls.

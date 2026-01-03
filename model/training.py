@@ -646,6 +646,10 @@ for current_epoch in itertools.count(resume_epoch):
             print(f"Target text: {tokenizer.decode(target_preview)}")
             printed_debug_sample = True
 
+        # Compute token counts on CPU to avoid GPU sync on tolist.
+        token_counts = attention_mask[:, 1:].sum(dim=1).tolist()
+        token_count = int(sum(token_counts))
+
         # Run the forward pass with autocast and compute loss.
         with macro_step.measure_compute():
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext():
@@ -659,8 +663,6 @@ for current_epoch in itertools.count(resume_epoch):
             # Micro step bookkeeping.
             row_counts = batch["row_count"].tolist()
             source_ids = batch["source_id"].tolist()
-            token_counts = attention_mask[:, 1:].sum(dim=1).tolist()
-            token_count = int(sum(token_counts))
 
             # Advance per-source row/token counters for resume safety.
             for source_id, row_count, sample_tokens in zip(source_ids, row_counts, token_counts):

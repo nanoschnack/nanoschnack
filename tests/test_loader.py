@@ -266,6 +266,43 @@ class LoaderHelperTests(unittest.TestCase):
 
         self.assertIsNone(next(iter(packed), None))
 
+    def test_build_packed_dataset_drops_unused_columns_before_tokenize(self):
+        class _Encoding:
+            def __init__(self, ids):
+                self.ids = ids
+
+        class _Tokenizer:
+            def encode_batch(self, texts):
+                return [_Encoding([1, 2, 3]) for _ in texts]
+
+            def token_to_id(self, token):
+                return None
+
+        dataset = IterableDataset.from_generator(
+            lambda: ({"text": "hello", "extra": i} for i in range(2))
+        )
+
+        def _assert_tokenizer_batch(batch):
+            self.assertIn("text", batch)
+            self.assertIn("row_count", batch)
+            self.assertNotIn("extra", batch)
+            row_count = batch.get("row_count")
+            encoded = _Tokenizer().encode_batch(batch["text"])
+            input_ids = [encoding.ids for encoding in encoded]
+            return {"input_ids": input_ids, "row_count": row_count}
+
+        with mock.patch.object(loader, "build_tokenizer", return_value=_assert_tokenizer_batch):
+            packed = loader.build_packed_dataset(
+                dataset,
+                tokenizer=_Tokenizer(),
+                block_size=2,
+                text_key="text",
+                pack_batch_size=2,
+                source_id=0,
+            )
+
+            next(iter(packed))
+
     def test_cleanup_shard_cache_skips_tmp_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_root = Path(tmpdir) / "hf_shards"

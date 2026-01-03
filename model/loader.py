@@ -652,6 +652,13 @@ def build_packed_dataset(
 ):
     # Tokenize and pack a dataset into fixed-length blocks.
 
+    # Drop unused columns early to reduce dataset formatting overhead.
+    column_names = _resolve_column_names(dataset, fallback=[text_key])
+    if column_names:
+        drop_columns = [col for col in column_names if col != text_key]
+        if drop_columns:
+            dataset = dataset.remove_columns(drop_columns)
+
     # Track raw rows so resume counts stay aligned with source rows.
     def _add_row_count(batch):
         return {"row_count": [1] * len(batch[text_key])}
@@ -661,11 +668,10 @@ def build_packed_dataset(
         tokenizer,
         text_key=text_key,
     )
-    column_names = _resolve_column_names(dataset, fallback=[text_key])
     tokenized = dataset.map(
         tokenizer_batch,
         batched=True,
-        remove_columns=column_names,
+        remove_columns=[text_key, "row_count"],
     )
     packed_drop_columns = _resolve_column_names(tokenized)
     packed = tokenized.map(

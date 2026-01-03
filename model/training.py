@@ -454,7 +454,7 @@ class MacroStep:
     current_micro_step: int = 0
     micro_token_total: int = 0
     micro_sample_total: int = 0
-    micro_loss_total: float = 0.0
+    micro_loss_total_tensor: torch.Tensor | None = None
     io_wait: float = 0.0
     compute_time: float = 0.0
     sync_wait: float = 0.0
@@ -464,15 +464,17 @@ class MacroStep:
         self.io_wait = 0.0
         self.sync_wait = 0.0
         optimizer.zero_grad()
-        self.micro_loss_total = 0.0
+        self.micro_loss_total_tensor = None
         self.micro_token_total = 0
         self.micro_sample_total = 0
 
     # Return True only for the final micro step in the macro batch.
-    def micro_step(self, token_count, sample_count, loss_value):
+    def micro_step(self, token_count, sample_count, loss_tensor):
         self.micro_token_total += token_count
         self.micro_sample_total += sample_count
-        self.micro_loss_total += loss_value
+        # Detach to avoid holding the graph across micro steps.
+        loss_tensor = loss_tensor.detach()
+        self.micro_loss_total_tensor = loss_tensor if self.micro_loss_total_tensor is None else self.micro_loss_total_tensor + loss_tensor
         if self.current_micro_step != self.micro_steps - 1:
             self.current_micro_step += 1
             return False
@@ -663,7 +665,7 @@ for current_epoch in itertools.count(resume_epoch):
                     source_token_counts[spec_key] += int(sample_tokens)
 
             # Update checkpoint counters and save when needed.
-            if not macro_step.micro_step(token_count, input_ids.size(0), loss.item()):
+            if not macro_step.micro_step(token_count, input_ids.size(0), loss):
                 continue
 
         # Check for on-demand plot requests from stdin.
@@ -675,12 +677,15 @@ for current_epoch in itertools.count(resume_epoch):
 
         # Average the micro loss across ranks for consistent logging.
         # Sync per-spec row counts across ranks for plotting and resume logs.
+
+        with macro_step.measure_sync():
+            micro_loss_total = macro_step.micro_loss_total_tensor.item()
         now = time.time()
         ckpt_interval = config.CHECKPOINT_WARMUP_SECS if (now - last_ckpt_time) < config.WARMUP_WINDOW_SECS else config.CHECKPOINT_INTERVAL_SECS
         synced = Synced(
-            average_loss=macro_step.micro_loss_total / (ddp_world_size if ddp_enabled else 1),
-            loss_min=macro_step.micro_loss_total,
-            loss_max=macro_step.micro_loss_total,
+            average_loss=micro_loss_total / (ddp_world_size if ddp_enabled else 1),
+            loss_min=micro_loss_total,
+            loss_max=micro_loss_total,
             token_count=macro_step.micro_token_total,
             sample_count=macro_step.micro_sample_total,
             stop_flag=stop_requested,
@@ -693,7 +698,7 @@ for current_epoch in itertools.count(resume_epoch):
             should_checkpoint=(now - last_ckpt_time >= ckpt_interval) if is_master else False,
         )
         debug = SyncedDebug(
-            gathered_losses=macro_step.micro_loss_total,
+            gathered_losses=micro_loss_total,
             stats_gathered=[macro_step.micro_token_total, macro_step.micro_sample_total],
             rng_gathered=build_rng_tensor(device),
         )

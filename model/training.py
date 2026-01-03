@@ -523,6 +523,7 @@ class MacroStep:
 class Synced:
     """Aggregate synced scalars for per-step logging.
     Groups reductions by op to keep the sync block small.
+    Includes debug gathers to avoid extra sync calls.
     Uses float fields to match collective expectations.
     """
     average_loss: float = all_reduce("sum")
@@ -538,13 +539,6 @@ class Synced:
     token_counts: list = all_reduce("sum", dtype="i64")
     print_input: bool = flag_broadcast(src=0)
     should_checkpoint: bool = flag_broadcast(src=0)
-
-@dataclass
-class SyncedDebug:
-    """Gather per-rank debug stats for DDP parity checks.
-    Bundles loss, batch stats, and RNG fingerprints.
-    Only used when debug output is enabled.
-    """
     gathered_losses: float = all_gather(dtype="f32")
     stats_gathered: list = all_gather(dtype="i64")
     rng_gathered: list = all_gather(dtype="u64")
@@ -707,15 +701,12 @@ for current_epoch in itertools.count(resume_epoch):
             token_counts=[source_token_counts.get(spec_key, 0) for spec_key in dataset_specs_keys],
             print_input=(is_master and input_requested),
             should_checkpoint=(now - last_ckpt_time >= ckpt_interval) if is_master else False,
-        )
-        debug = SyncedDebug(
             gathered_losses=micro_loss_total,
             stats_gathered=[macro_step.micro_token_total, macro_step.micro_sample_total],
             rng_gathered=build_rng_tensor(device),
         )
         with macro_step.measure_sync() if ddp_enabled else contextlib.nullcontext():
             synced = sync(synced, device, ddp_enabled=ddp_enabled)
-            debug = sync(debug, device, ddp_enabled=ddp_enabled)
 
         next_total_tokens = progress.total_tokens + synced.token_count
         global_row_counts = dict(resume_rows)
@@ -755,7 +746,7 @@ for current_epoch in itertools.count(resume_epoch):
             is_master=is_master,
         )
         if ddp_enabled and plot_printed and is_master:
-            log_ddp_debug(debug.gathered_losses, debug.stats_gathered, debug.rng_gathered, is_master)
+            log_ddp_debug(synced.gathered_losses, synced.stats_gathered, synced.rng_gathered, is_master)
 
         if plot_printed and is_master:
             plotter.print_dataset_pos(

@@ -611,6 +611,7 @@ for current_epoch in itertools.count(resume_epoch):
         shuffle=False,
         num_workers=config.DATA_LOADER_WORKERS,
         worker_init_fn=worker_init_fn,
+        pin_memory=(device.type == "cuda"),
     )
 
     # Announce first-batch wait to avoid silent startup stalls.
@@ -628,13 +629,18 @@ for current_epoch in itertools.count(resume_epoch):
         # Move batch tensors to the device and prepare an optional attention mask.
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
+
+        # Transfer batch tensors to device once, then slice on device.
+        input_ids = input_ids.to(device, non_blocking=(device.type == "cuda"))
+        attention_mask = attention_mask.to(device, non_blocking=(device.type == "cuda"))
+
         attn_mask = None
         if attention_mask is not None and not attention_mask.all():
-            attn_mask = attention_mask[:, :-1].to(device)
+            attn_mask = attention_mask[:, :-1]
 
         # Build next-token prediction pairs.
-        inputs = input_ids[:, :-1].to(device) # everything from the first token except the last
-        targets = input_ids[:, 1:].to(device) # everything from the second token onward
+        inputs = input_ids[:, :-1] # everything from the first token except the last
+        targets = input_ids[:, 1:] # everything from the second token onward
 
         # Preview tokenization outputs for debugging.
         if debug_level >= 2 and not printed_debug_sample and is_master:

@@ -19,22 +19,40 @@ import config
 
 from tokenizer import DATASET_EOS_TOKEN
 
-_TOKENIZER_POOL = None
-_TOKENIZER_POOL_WORKERS = None
+class _TokenizerPoolCache:
+    """Cache the tokenizer worker pool for batch encoding.
+
+    Keeps the executor in-process without making it picklable.
+    Ensures dill can serialize module globals for HF datasets.
+    Rebuilds the pool when the worker count changes.
+    """
+
+    def __init__(self):
+        self.executor = None
+        self.workers = None
+
+    def __getstate__(self):
+        return {}
+
+    def __setstate__(self, state):
+        self.executor = None
+        self.workers = None
+
+
+_TOKENIZER_POOL = _TokenizerPoolCache()
 
 
 def _get_tokenizer_pool():
     # Lazily create a tokenizer worker pool when enabled.
-    global _TOKENIZER_POOL, _TOKENIZER_POOL_WORKERS
     workers = int(config.TOKENIZER_WORKERS)
     if workers <= 1:
         return None
-    if _TOKENIZER_POOL is None or _TOKENIZER_POOL_WORKERS != workers:
-        if _TOKENIZER_POOL is not None:
-            _TOKENIZER_POOL.shutdown(wait=False)
-        _TOKENIZER_POOL = ThreadPoolExecutor(max_workers=workers)
-        _TOKENIZER_POOL_WORKERS = workers
-    return _TOKENIZER_POOL
+    if _TOKENIZER_POOL.executor is None or _TOKENIZER_POOL.workers != workers:
+        if _TOKENIZER_POOL.executor is not None:
+            _TOKENIZER_POOL.executor.shutdown(wait=False)
+        _TOKENIZER_POOL.executor = ThreadPoolExecutor(max_workers=workers)
+        _TOKENIZER_POOL.workers = workers
+    return _TOKENIZER_POOL.executor
 
 
 def load_dataset_source(repo_id, split="train", data_files=None, cache_dir=None, streaming=True, name=None):

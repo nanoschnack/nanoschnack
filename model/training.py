@@ -171,6 +171,10 @@ if is_master:
         ddp_world_size=ddp_world_size,
     )
 
+# Avoid nested workers and tokenizer threads; use one form of parallelism.
+if config.DATA_LOADER_WORKERS > 0 and config.TOKENIZER_WORKERS > 0:
+    raise ValueError("DATA_LOADER_WORKERS and TOKENIZER_WORKERS cannot both be > 0.")
+
 
 
 # %% [markdown]

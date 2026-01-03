@@ -94,6 +94,9 @@ os.environ.setdefault("DATA_LOADER_WORKERS", str(DATA_LOADER_WORKERS))
 # Pin DataLoader batches in host memory for faster H2D transfers.
 PIN_MEMORY = bool(_env_int("PIN_MEMORY", 1))
 
+# Threaded prefetch batches for iterators (0 disables).
+PREFETCH_BATCHES = _env_int("PREFETCH_BATCHES", 2)
+
 # Batch size for dataset packing during tokenization.
 PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 128 * _env_int("WORLD_SIZE", 1))
 
@@ -241,6 +244,7 @@ def print_training_hyperparams(
         f"  max_steps={MAX_STEPS}",
         f"  data_loader_workers={DATA_LOADER_WORKERS}",
         f"  pin_memory={PIN_MEMORY}",
+        f"  prefetch_batches={PREFETCH_BATCHES}",
         f"  shuffle_buffer={SHUFFLE_BUFFER}",
         f"  dataset_specs={DATASET_SPECS}",
         f"  tokenizer_workers={TOKENIZER_WORKERS}",

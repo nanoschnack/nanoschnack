@@ -93,6 +93,17 @@ class LoaderHelperTests(unittest.TestCase):
         printed = mocked_print.call_args[0][0]
         self.assertIn("skip done rows=5", printed)
 
+    def test_prefetch_batches_preserves_order(self):
+        items = [{"x": 1}, {"x": 2}, {"x": 3}]
+
+        def _iter_items():
+            for item in items:
+                yield item
+
+        prefetched = list(loader.prefetch_batches(_iter_items(), buffer_size=2))
+
+        self.assertEqual(prefetched, items)
+
     def test_hf_local_shard_path_uses_basename(self):
         cache_dir = Path("/tmp/cache-root")
         path = loader._hf_local_shard_path(

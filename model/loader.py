@@ -5,9 +5,11 @@ import math
 import os
 import random
 import shutil
+import threading
 from bisect import bisect_right
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from queue import Queue
 import re
 
 import torch
@@ -241,6 +243,39 @@ def with_initial_log(message, iterable, start_time=None):
             _emit()
             yield item
     return _wrapped()
+
+
+def prefetch_batches(iterable, buffer_size):
+    # Prefetch batches in a background thread to overlap iterator work.
+    if buffer_size <= 0:
+        return iterable
+    queue = Queue(maxsize=buffer_size)
+    sentinel = object()
+    exc = None
+
+    def _worker():
+        nonlocal exc
+        try:
+            for item in iterable:
+                queue.put(item)
+        except Exception as exc_value:
+            exc = exc_value
+        finally:
+            queue.put(sentinel)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    def _iterator():
+        while True:
+            item = queue.get()
+            if item is sentinel:
+                if exc is not None:
+                    raise exc
+                return
+            yield item
+
+    return _iterator()
 
 
 def parse_dataset_specs(specs_str):
@@ -829,6 +864,7 @@ def time_until_first_batch(loader, is_master):
     if is_master:
         print("Waiting for first batch...")
         loader = with_initial_log("First batch after {duration_s:.1f}s", loader, start_time=start)
+    loader = prefetch_batches(loader, int(config.PREFETCH_BATCHES))
     iterator = iter(loader)
     while True:
         try:

@@ -118,6 +118,32 @@ class LoaderHelperTests(unittest.TestCase):
             self.assertTrue(keep.exists())
             self.assertFalse(drop.exists())
 
+    def test_shard_prefetcher_cleanup_keeps_tmp_for_kept_paths(self):
+        # Keep tracked shards and temp files when cleanup runs.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir)
+            rel_files = ["data/keep", "data/drop.parquet"]
+            prefetcher = loader.ShardPrefetcher("org/repo", "train", cache_dir, rel_files, "auto")
+            try:
+                keep_path = loader._hf_local_shard_path(cache_dir, "org/repo", "train", rel_files[0])
+                drop_path = loader._hf_local_shard_path(cache_dir, "org/repo", "train", rel_files[1])
+                keep_path.parent.mkdir(parents=True, exist_ok=True)
+                keep_path.write_text("keep")
+                drop_path.write_text("drop")
+                keep_tmp = keep_path.with_name(keep_path.name + ".tmp")
+                drop_tmp = drop_path.with_name(drop_path.name + ".tmp")
+                keep_tmp.write_text("keep tmp")
+                drop_tmp.write_text("drop tmp")
+
+                prefetcher.cleanup([0])
+            finally:
+                prefetcher.close()
+
+            self.assertTrue(keep_path.exists())
+            self.assertTrue(keep_tmp.exists())
+            self.assertFalse(drop_path.exists())
+            self.assertTrue(drop_tmp.exists())
+
     def test_hf_load_dataset_sharded_prefetches_next_shard(self):
         rel_files = [
             "data/train-00000.parquet",

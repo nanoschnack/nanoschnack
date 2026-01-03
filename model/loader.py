@@ -139,9 +139,9 @@ class ShardPrefetcher:
             for idx in keep_indices
             if idx is not None and idx < len(self._rel_files)
         ]
-
         # Preserve temp files for in-flight downloads to avoid cleanup races.
-        keep_paths.extend(path.with_suffix(path.suffix + ".tmp") for path in keep_paths)
+        temp_paths = [path.with_suffix(path.suffix + ".tmp") for path in keep_paths]
+        keep_paths.extend(temp_paths)
         _cleanup_shard_cache(self._cache_root, keep_paths)
 
     def close(self):

@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import re
 
+import torch
 from datasets import IterableDataset, interleave_datasets, load_dataset
 
 import time
@@ -607,7 +608,12 @@ def pack_tokens(batch, block_size, source_id=None):
 
     total_length = (len(concatenated) // block_size) * block_size
     if total_length == 0:
-        return {"input_ids": [], "attention_mask": [], "row_count": [], "source_id": []}
+        return {
+            "input_ids": torch.empty((0, block_size), dtype=torch.long),
+            "attention_mask": torch.empty((0, block_size), dtype=torch.long),
+            "row_count": torch.empty((0,), dtype=torch.long),
+            "source_id": torch.empty((0,), dtype=torch.long),
+        }
 
     batch_row_counts = batch.get("row_count")
     if batch_row_counts is not None and len(batch_row_counts) != len(batch["input_ids"]):
@@ -634,11 +640,12 @@ def pack_tokens(batch, block_size, source_id=None):
         source_id if source_id is not None else -1
         for _ in input_ids
     ]
+
     return {
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-        "row_count": row_counts,
-        "source_id": source_ids,
+        "input_ids": torch.tensor(input_ids, dtype=torch.long),
+        "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+        "row_count": torch.tensor(row_counts, dtype=torch.long),
+        "source_id": torch.tensor(source_ids, dtype=torch.long),
     }
 
 
@@ -789,4 +796,3 @@ def time_until_first_batch(loader, is_master):
                         print(f"Dataset columns: {column_names}")
             raise
         yield batch
-

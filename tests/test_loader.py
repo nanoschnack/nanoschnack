@@ -197,7 +197,7 @@ class LoaderHelperTests(unittest.TestCase):
 
         packed = loader.pack_tokens(batch, block_size=3, source_id=1)
 
-        self.assertEqual(packed["row_count"][0], 5)
+        self.assertEqual(int(packed["row_count"][0].item()), 5)
 
     def test_pack_tokens_respects_row_count_over_expanded_inputs(self):
         batch = {
@@ -207,7 +207,7 @@ class LoaderHelperTests(unittest.TestCase):
 
         packed = loader.pack_tokens(batch, block_size=3, source_id=1)
 
-        self.assertEqual(packed["row_count"][0], 3)
+        self.assertEqual(int(packed["row_count"][0].item()), 3)
 
     def test_build_packed_dataset_drops_extra_columns(self):
         class _Encoding:

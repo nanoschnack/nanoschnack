@@ -604,14 +604,13 @@ for current_epoch in itertools.count(resume_epoch):
         for spec in dataset_specs:
             source_row_counts[spec["spec"]] = 0
             source_token_counts[spec["spec"]] = 0
-    dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch).with_format("torch")
+    dataset_epoch = base_dataset.shuffle(buffer_size=config.SHUFFLE_BUFFER, seed=42 + current_epoch)
     loader = DataLoader(
         dataset_epoch,
         batch_size=config.BATCH_SIZE,
         shuffle=False,
         num_workers=config.DATA_LOADER_WORKERS,
         worker_init_fn=worker_init_fn,
-        pin_memory=device.type == "cuda",
     )
 
     # Announce first-batch wait to avoid silent startup stalls.

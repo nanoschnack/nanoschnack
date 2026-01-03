@@ -611,6 +611,7 @@ for current_epoch in itertools.count(resume_epoch):
         shuffle=False,
         num_workers=config.DATA_LOADER_WORKERS,
         worker_init_fn=worker_init_fn,
+        pin_memory=device.type == "cuda",
     )
 
     # Announce first-batch wait to avoid silent startup stalls.

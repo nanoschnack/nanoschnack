@@ -80,6 +80,9 @@ WARMUP_PCT = _env_float("WARMUP_PCT", 0.03)
 # Maximum training tokens multiplier relative to parameter count (0 = unlimited).
 MAX_TRAINING_FACTOR = _env_int("MAX_TRAINING_FACTOR", 20)
 
+# Maximum number of macro steps before stopping (0 = unlimited).
+MAX_STEPS = _env_int("MAX_STEPS", 0)
+
 # Shuffle buffer size for streaming datasets.
 SHUFFLE_BUFFER = _env_int("SHUFFLE_BUFFER", 10_000 * _env_int("WORLD_SIZE", 1))
 
@@ -229,6 +232,7 @@ def print_training_hyperparams(
         f"  learning_rate={LEARNING_RATE}",
         f"  warmup_pct={WARMUP_PCT}",
         f"  max_training_factor={MAX_TRAINING_FACTOR}",
+        f"  max_steps={MAX_STEPS}",
         f"  data_loader_workers={DATA_LOADER_WORKERS}",
         f"  shuffle_buffer={SHUFFLE_BUFFER}",
         f"  dataset_specs={DATASET_SPECS}",

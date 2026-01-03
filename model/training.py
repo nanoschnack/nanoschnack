@@ -472,6 +472,7 @@ class MacroStep:
     def micro_step(self, token_count, sample_count, loss_tensor):
         self.micro_token_total += token_count
         self.micro_sample_total += sample_count
+
         # Detach to avoid holding the graph across micro steps.
         loss_tensor = loss_tensor.detach()
         self.micro_loss_total_tensor = loss_tensor if self.micro_loss_total_tensor is None else self.micro_loss_total_tensor + loss_tensor
@@ -508,6 +509,7 @@ class MacroStep:
         self.io_wait = 0.0
         self.sync_wait = 0.0
         self.current_micro_step = 0
+
 
 
 
@@ -593,6 +595,8 @@ def _request_stop(signum, frame):
     stop_requested = True
 
 print("Starting training loop...", flush=True) if is_master else None
+steps_remaining = config.MAX_STEPS
+
 for current_epoch in itertools.count(resume_epoch):
     is_resume_epoch = current_epoch == resume_epoch
     # Reset row counters at epoch boundaries beyond the resume epoch.
@@ -610,6 +614,7 @@ for current_epoch in itertools.count(resume_epoch):
     )
 
     # Announce first-batch wait to avoid silent startup stalls.
+
     for current_step, batch in enumerate(macro_step.measure_io(time_until_first_batch(loader, is_master))):
         # Install the SIGINT handler after the first batch to allow early aborts.
         if not sigint_installed:
@@ -780,6 +785,12 @@ for current_epoch in itertools.count(resume_epoch):
 
         macro_step.finish()
         now = time.time()
+
+        # Cap training to a fixed number of macro steps when configured.
+        if config.MAX_STEPS:
+            steps_remaining -= 1
+            if steps_remaining <= 0:
+                break
 
         # Determine if we should checkpoint at this step.
         if synced.should_checkpoint or synced.stop_flag:

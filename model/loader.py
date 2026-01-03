@@ -789,3 +789,4 @@ def time_until_first_batch(loader, is_master):
                         print(f"Dataset columns: {column_names}")
             raise
         yield batch
+

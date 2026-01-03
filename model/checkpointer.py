@@ -11,10 +11,11 @@ SNAPSHOT_INTERVALS = (
     ("10min", 10 * 60),
     ("1h", 60 * 60),
     ("2h", 2 * 60 * 60),
-    ("4h", 4 * 60 * 60),
-    ("8h", 8 * 60 * 60),
-    ("24h", 24 * 60 * 60),
+    ("12h", 12 * 60 * 60),
 )
+
+# Do not keep checkpoint files older than this threshold.
+MAX_CHECKPOINT_AGE_SECS = 12 * 60 * 60
 
 def apply_checkpoint_config(ckpt_config):
     # Apply checkpoint hyperparameters to global config.
@@ -320,6 +321,16 @@ class Checkpointer:
         torch.save(ckpt, tmp_path)
         tmp_path.replace(path)
 
+    def _cleanup_old_checkpoints(self, now):
+        # Remove checkpoint files older than the retention window.
+        cutoff = now - MAX_CHECKPOINT_AGE_SECS
+        for path in self.directory.glob("latest*.pt"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except FileNotFoundError:
+                continue
+
     def load_latest(self, is_master=True):
         # Load state from disk if present, otherwise start fresh.
         if not self.path.exists():
@@ -410,6 +421,7 @@ class Checkpointer:
                 if now - last_saved < interval:
                     continue
             self._write_checkpoint(snapshot_path, ckpt)
+        self._cleanup_old_checkpoints(now)
         elapsed = time.time() - start_time
         total_tokens = 0
         if isinstance(resume_state, dict):

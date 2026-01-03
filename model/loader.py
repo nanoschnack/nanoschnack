@@ -1,6 +1,7 @@
 """Helpers for building streaming datasets with packing."""
 
 import json
+import math
 import os
 import random
 import shutil
@@ -17,6 +18,23 @@ import time
 import config
 
 from tokenizer import DATASET_EOS_TOKEN
+
+_TOKENIZER_POOL = None
+_TOKENIZER_POOL_WORKERS = None
+
+
+def _get_tokenizer_pool():
+    # Lazily create a tokenizer worker pool when enabled.
+    global _TOKENIZER_POOL, _TOKENIZER_POOL_WORKERS
+    workers = int(config.TOKENIZER_WORKERS)
+    if workers <= 1:
+        return None
+    if _TOKENIZER_POOL is None or _TOKENIZER_POOL_WORKERS != workers:
+        if _TOKENIZER_POOL is not None:
+            _TOKENIZER_POOL.shutdown(wait=False)
+        _TOKENIZER_POOL = ThreadPoolExecutor(max_workers=workers)
+        _TOKENIZER_POOL_WORKERS = workers
+    return _TOKENIZER_POOL
 
 
 def load_dataset_source(repo_id, split="train", data_files=None, cache_dir=None, streaming=True, name=None):
@@ -579,7 +597,21 @@ def dataset_label(spec):
 def build_tokenizer(tokenizer, text_key="text"):
     # Wrap tokenizer to return token ids for datasets.map.
     def tokenizer_batch(batch):
-        token_batch = tokenizer.encode_batch(batch[text_key])
+        texts = batch[text_key]
+        pool = _get_tokenizer_pool()
+        if pool is None or len(texts) <= 1:
+            token_batch = tokenizer.encode_batch(texts)
+        else:
+            # Split batches for parallel encoding without reordering.
+            workers = min(int(config.TOKENIZER_WORKERS), len(texts))
+            chunk_size = math.ceil(len(texts) / workers)
+            futures = [
+                pool.submit(tokenizer.encode_batch, texts[start:start + chunk_size])
+                for start in range(0, len(texts), chunk_size)
+            ]
+            token_batch = []
+            for future in futures:
+                token_batch.extend(future.result())
         eos_token_id = tokenizer.token_to_id(DATASET_EOS_TOKEN)
         input_ids = []
         for encoding in token_batch:

@@ -97,6 +97,9 @@ PIN_MEMORY = bool(_env_int("PIN_MEMORY", 1))
 # Batch size for dataset packing during tokenization.
 PACK_BATCH_SIZE = _env_int("PACK_BATCH_SIZE", 128 * _env_int("WORLD_SIZE", 1))
 
+# Tokenizer worker threads for batch parallelism.
+TOKENIZER_WORKERS = _env_int("TOKENIZER_WORKERS", 2)
+
 # HF shard cache cleanup mode: auto or keep.
 HF_SHARD_CACHE_CLEANUP = _env_str("HF_SHARD_CACHE_CLEANUP", "auto")
 
@@ -240,6 +243,7 @@ def print_training_hyperparams(
         f"  pin_memory={PIN_MEMORY}",
         f"  shuffle_buffer={SHUFFLE_BUFFER}",
         f"  dataset_specs={DATASET_SPECS}",
+        f"  tokenizer_workers={TOKENIZER_WORKERS}",
         f"  hf_shard_cache_cleanup={HF_SHARD_CACHE_CLEANUP}",
     ]
     if ddp_enabled:

@@ -1,5 +1,6 @@
 import tempfile
 import time
+from concurrent.futures import Future
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -239,6 +240,35 @@ class LoaderHelperTests(unittest.TestCase):
             set(first.keys()),
             {"input_ids", "attention_mask", "row_count", "source_id"},
         )
+
+    def test_build_tokenizer_parallel_pool_preserves_order(self):
+        class _Encoding:
+            def __init__(self, ids):
+                self.ids = ids
+
+        class _Tokenizer:
+            def encode_batch(self, texts):
+                return [_Encoding([len(text)]) for text in texts]
+
+            def token_to_id(self, token):
+                return None
+
+        def _submit(fn, *args, **kwargs):
+            future = Future()
+            future.set_result(fn(*args, **kwargs))
+            return future
+
+        pool = mock.Mock()
+        pool.submit.side_effect = _submit
+        tokenizer_batch = loader.build_tokenizer(_Tokenizer(), text_key="text")
+        batch = {"text": ["a", "bbb", "cc", "dddd"], "row_count": [1, 1, 1, 1]}
+
+        with mock.patch.object(loader, "_get_tokenizer_pool", return_value=pool):
+            encoded = tokenizer_batch(batch)
+
+        self.assertGreaterEqual(pool.submit.call_count, 2)
+        self.assertEqual(encoded["input_ids"], [[1], [3], [2], [4]])
+        self.assertEqual(encoded["row_count"], batch["row_count"])
 
     def test_build_packed_dataset_filters_empty(self):
         class _Encoding:

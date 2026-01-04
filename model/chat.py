@@ -1,4 +1,5 @@
 import argparse
+import os
 
 import codecs
 import torch
@@ -142,6 +143,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
     except Exception:
         pass
 
+    debug_level = int(os.getenv("DEBUG", "0"))
     show_tokens = False
     print("Type '/help' for commands.")
 
@@ -154,7 +156,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if not user_text:
             continue
         if user_text == "/help":
-            print("Commands: /help, /quit, /exit, /reset, /temp <value>, /topk <value>, /chat on|off, /debug on|off")
+            print("Commands: /help, /quit, /exit, /reset, /temp <value>, /topk <value>, /debug on|off")
             continue
         if user_text.startswith("/temp"):
             parts = user_text.split(maxsplit=1)
@@ -223,6 +225,9 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
             print()
         if reply_parts:
             print()
+        if debug_level >= 1 and reply_parts:
+            raw_context = prompt + "".join(reply_parts)
+            print(f"raw> {raw_context}")
 
 
 def main():
@@ -246,6 +251,9 @@ def main():
     info = device_info(device)
     print_device_info(info)
     tokenizer = load_tokenizer()
+    mode = "chat" if config.POST_TRAINING else "completion"
+    print("Chat:")
+    print(f"  mode={mode}")
     # Confirm base tokenizer size before alignment padding.
     alignment = getattr(tokenizer, "vocab_alignment", None)
     base_size = alignment["base_size"] if alignment else tokenizer.get_vocab_size()

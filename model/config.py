@@ -126,6 +126,7 @@ DATASET_SPECS = _env_str(
     # "hf:coral-nlp/german-commons:web:wikipedia:text,"
     "hf:coral-nlp/german-commons:web:youtubecommons:text,"
     "hf:coral-nlp/german-commons:cultural:wikivoyage:text,"
+    "hf:arnomatic/german-wikipedia-clean-2:train:text,"
     "hf:PatrickHaller/fineweb-2-de-1B:train:text",
 )
 

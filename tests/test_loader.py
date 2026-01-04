@@ -310,6 +310,45 @@ class LoaderHelperTests(unittest.TestCase):
 
         self.assertIsNone(next(iter(packed), None))
 
+    def test_pack_tokens_post_training_masks_assistant(self):
+        batch = {"input_ids": [[11, 100, 13, 12, 200, 13]], "row_count": [1]}
+
+        packed = loader.pack_tokens(
+            batch,
+            block_size=6,
+            source_id=0,
+            post_training=True,
+            eos_id=0,
+            system_id=10,
+            user_id=11,
+            assistant_id=12,
+            end_id=13,
+        )
+
+        self.assertEqual(packed["loss_mask"][0].tolist(), [0, 0, 0, 1, 1, 1])
+
+    def test_pack_tokens_post_training_injects_user(self):
+        batch = {
+            "input_ids": [[10, 101, 13, 11, 201, 202, 13, 12, 301, 13]],
+            "row_count": [1],
+        }
+
+        packed = loader.pack_tokens(
+            batch,
+            block_size=5,
+            source_id=0,
+            post_training=True,
+            eos_id=0,
+            system_id=10,
+            user_id=11,
+            assistant_id=12,
+            end_id=13,
+        )
+
+        input_ids = packed["input_ids"].tolist()
+        self.assertEqual(input_ids[0], [10, 101, 13, 11, 201])
+        self.assertEqual(input_ids[1], [10, 101, 13, 11, 202])
+
     def test_build_packed_dataset_drops_unused_columns_before_tokenize(self):
         class _Encoding:
             def __init__(self, ids):

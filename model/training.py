@@ -702,6 +702,7 @@ for current_epoch in itertools.count(resume_epoch):
         # Move batch tensors to the device and prepare an optional attention mask.
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
+        loss_mask = batch.get("loss_mask")
 
         # Compute token counts on CPU to avoid GPU sync on tolist.
         token_counts = attention_mask[:, 1:].sum(dim=1).tolist()
@@ -711,6 +712,8 @@ for current_epoch in itertools.count(resume_epoch):
         with macro_step.measure_transfer():
             input_ids = input_ids.to(device, non_blocking=(device.type == "cuda"))
             attention_mask = attention_mask.to(device, non_blocking=(device.type == "cuda"))
+            if loss_mask is not None:
+                loss_mask = loss_mask.to(device, non_blocking=(device.type == "cuda"))
 
         attn_mask = None
         if attention_mask is not None and not attention_mask.all():
@@ -719,6 +722,10 @@ for current_epoch in itertools.count(resume_epoch):
         # Build next-token prediction pairs.
         inputs = input_ids[:, :-1] # everything from the first token except the last
         targets = input_ids[:, 1:] # everything from the second token onward
+        if config.POST_TRAINING:
+            if loss_mask is None:
+                raise RuntimeError("POST_TRAINING requires loss_mask in the batch.")
+            targets = targets.masked_fill(loss_mask[:, 1:] == 0, -100)
 
         # Preview tokenization outputs for debugging.
         if debug_level >= 2 and not printed_debug_sample and is_master:

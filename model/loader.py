@@ -19,7 +19,7 @@ import time
 
 import config
 
-from tokenizer import EOS_TOKEN
+from tokenizer import ASSISTANT_TOKEN, END_TOKEN, EOS_TOKEN, SYSTEM_TOKEN, USER_TOKEN
 
 class _TokenizerPoolCache:
     """Cache the tokenizer worker pool for batch encoding.
@@ -709,20 +709,198 @@ def build_tokenizer(tokenizer, text_key="text"):
     return tokenizer_batch
 
 
-def pack_tokens(batch, block_size, source_id=None):
+def _reset_chat_state(state):
+    state["in_user"] = False
+    state["in_system"] = False
+    state["in_assistant"] = False
+    state["last_system_span"] = None
+    state["system_buffer"] = []
+
+def _start_system(state, token):
+    state["in_system"] = True
+    state["system_buffer"] = [token]
+    state["in_user"] = False
+    state["in_assistant"] = False
+
+def _finalize_system(state):
+    state["last_system_span"] = list(state["system_buffer"])
+    state["system_buffer"] = []
+    state["in_system"] = False
+
+def _start_user(state):
+    state["in_user"] = True
+    state["in_assistant"] = False
+
+def _end_user(state):
+    state["in_user"] = False
+
+def _start_assistant(state):
+    state["in_assistant"] = True
+
+def _end_assistant(state):
+    state["in_assistant"] = False
+
+def _update_chat_stream_state(token, state, eos_id, system_id, user_id, assistant_id, end_id):
+    # Track conversation state for block-boundary injections.
+    if state["in_system"]:
+        state["system_buffer"].append(token)
+        if token == end_id:
+            _finalize_system(state)
+        if token == eos_id:
+            _reset_chat_state(state)
+        return
+    if token == eos_id:
+        _reset_chat_state(state)
+        return
+    if token == system_id:
+        _start_system(state, token)
+        return
+    if token == user_id:
+        _start_user(state)
+        return
+    if token == assistant_id:
+        _start_assistant(state)
+        return
+    if token == end_id:
+        if state["in_user"]:
+            _end_user(state)
+            return
+        if state["in_assistant"]:
+            _end_assistant(state)
+            return
+
+def _update_loss_state(token, state, eos_id, system_id, user_id, assistant_id, end_id):
+    if token == eos_id or token == system_id:
+        state["in_user"] = False
+        state["in_assistant"] = False
+        state["user_complete"] = False
+        state["assistant_allowed"] = False
+        return
+    if token == user_id:
+        state["in_user"] = True
+        state["user_complete"] = False
+        state["in_assistant"] = False
+        state["assistant_allowed"] = False
+        return
+    if token == assistant_id:
+        state["in_assistant"] = True
+        state["assistant_allowed"] = state["user_complete"]
+        return
+    if token == end_id:
+        if state["in_assistant"]:
+            state["assistant_ended"] = state["assistant_allowed"]
+            state["in_assistant"] = False
+            state["assistant_allowed"] = False
+            return
+        if state["in_user"]:
+            state["in_user"] = False
+            state["user_complete"] = True
+        return
+
+def _build_assistant_loss_mask(block, eos_id, system_id, user_id, assistant_id, end_id):
+    # Mask loss to assistant spans guarded by a complete user span in the block.
+    mask = [0] * len(block)
+    state = {
+        "in_user": False,
+        "in_assistant": False,
+        "user_complete": False,
+        "assistant_allowed": False,
+        "assistant_ended": False,
+    }
+    for idx, token in enumerate(block):
+        _update_loss_state(token, state, eos_id, system_id, user_id, assistant_id, end_id)
+        if state["in_assistant"] and state["assistant_allowed"]:
+            mask[idx] = 1
+        if token == end_id and state["assistant_ended"]:
+            mask[idx] = 1
+            state["assistant_ended"] = False
+    return mask
+
+def _pack_chat_blocks(tokens, block_size, eos_id, system_id, user_id, assistant_id, end_id):
+    # Pack chat tokens while injecting user/system markers at block boundaries.
+    blocks = []
+    loss_masks = []
+    state = {
+        "in_user": False,
+        "in_system": False,
+        "in_assistant": False,
+        "last_system_span": None,
+        "system_buffer": [],
+    }
+    idx = 0
+    while idx < len(tokens):
+        block = []
+        # Reserve one slot to ensure forward progress on the stream.
+        if state["in_user"] and block_size > 1:
+            injection_budget = block_size - 1
+            last_system_span = state["last_system_span"]
+            if last_system_span and len(last_system_span) + 1 <= injection_budget:
+                block.extend(last_system_span)
+            if len(block) < injection_budget:
+                block.append(user_id)
+        while idx < len(tokens) and len(block) < block_size:
+            token = tokens[idx]
+            block.append(token)
+            _update_chat_stream_state(token, state, eos_id, system_id, user_id, assistant_id, end_id)
+            idx += 1
+        if len(block) < block_size:
+            break
+        blocks.append(block)
+        loss_masks.append(
+            _build_assistant_loss_mask(block, eos_id, system_id, user_id, assistant_id, end_id)
+        )
+    return blocks, loss_masks
+
+def pack_tokens(
+    batch,
+    block_size,
+    source_id=None,
+    post_training=False,
+    eos_id=None,
+    system_id=None,
+    user_id=None,
+    assistant_id=None,
+    end_id=None,
+):
     # Pack token lists into fixed-size blocks, dropping remainder tokens.
     concatenated = []
     for ids in batch["input_ids"]:
         concatenated.extend(ids)
 
-    total_length = (len(concatenated) // block_size) * block_size
-    if total_length == 0:
-        return {
-            "input_ids": torch.empty((0, block_size), dtype=torch.long),
-            "attention_mask": torch.empty((0, block_size), dtype=torch.long),
-            "row_count": torch.empty((0,), dtype=torch.long),
-            "source_id": torch.empty((0,), dtype=torch.long),
-        }
+    if post_training:
+        if None in (eos_id, system_id, user_id, assistant_id, end_id):
+            raise RuntimeError("POST_TRAINING requires chat token ids.")
+        input_ids, loss_masks = _pack_chat_blocks(
+            concatenated,
+            block_size,
+            eos_id,
+            system_id,
+            user_id,
+            assistant_id,
+            end_id,
+        )
+        if not input_ids:
+            return {
+                "input_ids": torch.empty((0, block_size), dtype=torch.long),
+                "attention_mask": torch.empty((0, block_size), dtype=torch.long),
+                "loss_mask": torch.empty((0, block_size), dtype=torch.long),
+                "row_count": torch.empty((0,), dtype=torch.long),
+                "source_id": torch.empty((0,), dtype=torch.long),
+            }
+    else:
+        total_length = (len(concatenated) // block_size) * block_size
+        if total_length == 0:
+            return {
+                "input_ids": torch.empty((0, block_size), dtype=torch.long),
+                "attention_mask": torch.empty((0, block_size), dtype=torch.long),
+                "row_count": torch.empty((0,), dtype=torch.long),
+                "source_id": torch.empty((0,), dtype=torch.long),
+            }
+        input_ids = [
+            concatenated[i:i + block_size]
+            for i in range(0, total_length, block_size)
+        ]
+        loss_masks = None
 
     batch_row_counts = batch.get("row_count")
     if batch_row_counts is not None and len(batch_row_counts) != len(batch["input_ids"]):
@@ -731,10 +909,6 @@ def pack_tokens(batch, block_size, source_id=None):
             f"input_rows={len(batch['input_ids'])} "
             f"row_count_rows={len(batch_row_counts)}."
         )
-    input_ids = [
-        concatenated[i:i + block_size]
-        for i in range(0, total_length, block_size)
-    ]
     attention_mask = [[1] * block_size for _ in input_ids]
 
     # Record raw row consumption on the first packed block only.
@@ -750,12 +924,15 @@ def pack_tokens(batch, block_size, source_id=None):
         for _ in input_ids
     ]
 
-    return {
+    packed = {
         "input_ids": torch.tensor(input_ids, dtype=torch.long),
         "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
         "row_count": torch.tensor(row_counts, dtype=torch.long),
         "source_id": torch.tensor(source_ids, dtype=torch.long),
     }
+    if loss_masks is not None:
+        packed["loss_mask"] = torch.tensor(loss_masks, dtype=torch.long)
+    return packed
 
 
 def build_packed_dataset(
@@ -790,8 +967,45 @@ def build_packed_dataset(
         remove_columns=[text_key, "row_count"],
     )
     packed_drop_columns = _resolve_column_names(tokenized)
+    eos_id = None
+    system_id = None
+    user_id = None
+    assistant_id = None
+    end_id = None
+    if config.POST_TRAINING:
+        eos_id = tokenizer.token_to_id(EOS_TOKEN)
+        system_id = tokenizer.token_to_id(SYSTEM_TOKEN)
+        user_id = tokenizer.token_to_id(USER_TOKEN)
+        assistant_id = tokenizer.token_to_id(ASSISTANT_TOKEN)
+        end_id = tokenizer.token_to_id(END_TOKEN)
+        if None in (eos_id, system_id, user_id, assistant_id, end_id):
+            missing = []
+            if eos_id is None:
+                missing.append("eos")
+            if system_id is None:
+                missing.append("system")
+            if user_id is None:
+                missing.append("user")
+            if assistant_id is None:
+                missing.append("assistant")
+            if end_id is None:
+                missing.append("end")
+            raise RuntimeError(
+                "Missing chat tokens for POST_TRAINING: "
+                f"{', '.join(sorted(missing))}."
+            )
     packed = tokenized.map(
-        lambda batch: pack_tokens(batch, block_size, source_id=source_id),
+        lambda batch: pack_tokens(
+            batch,
+            block_size,
+            source_id=source_id,
+            post_training=config.POST_TRAINING,
+            eos_id=eos_id,
+            system_id=system_id,
+            user_id=user_id,
+            assistant_id=assistant_id,
+            end_id=end_id,
+        ),
         batched=True,
         batch_size=pack_batch_size,
         remove_columns=packed_drop_columns,
@@ -801,6 +1015,8 @@ def build_packed_dataset(
     packed_column_names = _resolve_column_names(packed)
     if packed_column_names:
         keep_columns = {"input_ids", "attention_mask", "row_count", "source_id"}
+        if config.POST_TRAINING:
+            keep_columns.add("loss_mask")
         drop_columns = [col for col in packed_column_names if col not in keep_columns]
         if drop_columns:
             packed = packed.remove_columns(drop_columns)

@@ -89,6 +89,9 @@ MAX_TRAINING_FACTOR = _env_int("MAX_TRAINING_FACTOR", 20)
 # Freeze token and positional embeddings (post-training mode).
 FREEZE_EMBEDDINGS = bool(_env_int("FREEZE_EMBEDDINGS", 0))
 
+# Post-training mode expects chat-formatted inputs and assistant-only loss.
+POST_TRAINING = bool(_env_int("POST_TRAINING", 0))
+
 # Maximum number of macro steps before stopping (0 = unlimited).
 MAX_STEPS = _env_int("MAX_STEPS", 0)
 
@@ -257,6 +260,7 @@ def print_training_hyperparams(
         f"  max_training_factor={MAX_TRAINING_FACTOR}",
         f"  max_steps={MAX_STEPS}",
         f"  freeze_embeddings={FREEZE_EMBEDDINGS}",
+        f"  post_training={POST_TRAINING}",
         f"  data_loader_workers={DATA_LOADER_WORKERS}",
         f"  pin_memory={PIN_MEMORY}",
         f"  prefetch_batches={PREFETCH_BATCHES}",

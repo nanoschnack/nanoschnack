@@ -150,7 +150,7 @@ TOKENIZER_JSON_PATH = _env_str("TOKENIZER_JSON_PATH", "")
 
 # Default maximum number of tokens to generate per reply.
 # Increase for longer responses at higher compute cost.
-MAX_NEW_TOKENS = _env_int("MAX_NEW_TOKENS", 128)
+MAX_NEW_TOKENS = _env_int("MAX_NEW_TOKENS", 512)
 
 # Sampling temperature for inference (0 disables sampling).
 # Lower values are more deterministic.

@@ -19,7 +19,7 @@ from checkpointer import (
     resize_vocab_state_dict,
     select_state_dict,
 )
-from tokenizer import EOS_TOKEN, load_tokenizer
+from tokenizer import ASSISTANT_TOKEN, END_TOKEN, EOS_TOKEN, USER_TOKEN, load_tokenizer
 
 
 def load_model(checkpoint_path, vocab_size, device):
@@ -104,20 +104,32 @@ def _build_byte_decoder():
     return {v: k for k, v in byte_encoder.items()}
 
 
-def generate_reply_stream(model, tokenizer, prompt, context_len, max_new_tokens, temperature, top_k, device):
+def generate_reply_stream(
+    model,
+    tokenizer,
+    prompt,
+    context_len,
+    max_new_tokens,
+    temperature,
+    top_k,
+    device,
+    stop_id=None,
+):
     # Stream tokens from autoregressive decoding for a single reply.
     prompt_ids = tokenizer.encode(prompt).ids
     input_ids = torch.tensor([prompt_ids[-context_len:]], device=device, dtype=torch.long)
     id_to_bytes = _build_id_to_bytes(tokenizer)
     decoder = codecs.getincrementaldecoder("utf-8")()
     eos_id = tokenizer.token_to_id(EOS_TOKEN)
+    if stop_id is None:
+        stop_id = eos_id
     use_byte_decoder = True
 
     with torch.no_grad():
         for _ in range(max_new_tokens):
             logits = model(input_ids)[:, -1, :].squeeze(0)
             next_id = sample_next_token(logits, temperature, top_k)
-            if eos_id is not None and next_id == eos_id:
+            if stop_id is not None and next_id == stop_id:
                 break
 
             # Prefer byte-level streaming but fall back if bytes are invalid UTF-8.
@@ -146,6 +158,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
 
     debug_level = int(os.getenv("DEBUG", "0"))
     show_tokens = False
+    history = ""
     print("Type '/help' for commands.")
 
     while True:
@@ -187,6 +200,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
             break
         if user_text == "/reset":
             print("History cleared.")
+            history = ""
             continue
         if user_text.startswith("/debug"):
             parts = user_text.split(maxsplit=1)
@@ -201,7 +215,9 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
             continue
 
         if config.POST_TRAINING:
-            prompt = f"{EOS_TOKEN}<|USER|>{user_text}<|END|><|ASSISTANT|>"
+            if not history:
+                history = EOS_TOKEN
+            prompt = f"{history}{USER_TOKEN}{user_text}{END_TOKEN}{ASSISTANT_TOKEN}"
         else:
             prompt = f"{EOS_TOKEN}{user_text}"
 
@@ -244,6 +260,9 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
             first_line = False
         reply_parts = []
         try:
+            stop_id = None
+            if config.POST_TRAINING:
+                stop_id = tokenizer.token_to_id(END_TOKEN)
             for token in generate_reply_stream(
                 model,
                 tokenizer,
@@ -253,6 +272,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
                 temperature=temperature,
                 top_k=top_k,
                 device=device,
+                stop_id=stop_id,
             ):
                 for char in token:
                     if pending_backslash:
@@ -281,6 +301,16 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if debug_level >= 1 and reply_parts:
             raw_context = prompt + "".join(reply_parts)
             print(f"raw> {raw_context}")
+        if config.POST_TRAINING and reply_parts:
+            assistant_text = "".join(reply_parts)
+            history += f"{USER_TOKEN}{user_text}{END_TOKEN}{ASSISTANT_TOKEN}{assistant_text}"
+            if not history.endswith(END_TOKEN):
+                history += END_TOKEN
+
+            # Keep a rolling context window to avoid unbounded growth.
+            history_ids = tokenizer.encode(history).ids
+            if len(history_ids) > context_len:
+                history = tokenizer.decode(history_ids[-context_len:], skip_special_tokens=False)
 
 
 def main():

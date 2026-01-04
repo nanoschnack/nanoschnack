@@ -74,10 +74,12 @@ def print_vocab_alignment(tokenizer):
     alignment = getattr(tokenizer, "vocab_alignment", None)
     if not alignment:
         return
+    print("Tokenizer:")
+    print(f"  file={_local_config.TOKENIZER_FILENAME}")
     base_size = alignment["base_size"]
-    print(f"Tokenizer vocab size (base): {base_size}")
+    print(f"  Tokenizer vocab size (base): {base_size}")
     print(
-        "Tokenizer vocab alignment: "
+        "  Tokenizer vocab alignment: "
         f"base={alignment['base_size']} "
         f"aligned={alignment['aligned_size']} "
         f"power={alignment['power']} "

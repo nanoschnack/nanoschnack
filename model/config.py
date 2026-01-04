@@ -72,6 +72,10 @@ MACRO_BATCH_SIZE = _env_int("MACRO_BATCH_SIZE", 512)
 # Source: GPT-3 paper Table 2 (GPT-3 Small 125M uses 6.0e-4),
 # https://arxiv.org/src/2005.14165
 LEARNING_RATE = _env_float("LEARNING_RATE", 6e-4)
+# Weight decay for AdamW (DECAY is the preferred env key).
+WEIGHT_DECAY = _env_float("WEIGHT_DECAY", _env_float("DECAY", 0.01))
+# Minimum LR ratio for cosine schedules (1.0 disables decay).
+LEARNING_RATE_MIN_RATIO = _env_float("LEARNING_RATE_MIN_RATIO", 0.1)
 
 # Warmup-only schedule toggle (1 = warmup across full run).
 WARMUP = bool(_env_int("WARMUP", 0))
@@ -241,6 +245,8 @@ def print_training_hyperparams(
         f"  macro_batch_size={MACRO_BATCH_SIZE}",
         f"  micro_steps={micro_steps} (macro / batch per rank)",
         f"  learning_rate={LEARNING_RATE}",
+        f"  weight_decay={WEIGHT_DECAY}",
+        f"  learning_rate_min_ratio={LEARNING_RATE_MIN_RATIO}",
         f"  warmup_pct={WARMUP_PCT}",
         f"  max_training_factor={MAX_TRAINING_FACTOR}",
         f"  max_steps={MAX_STEPS}",

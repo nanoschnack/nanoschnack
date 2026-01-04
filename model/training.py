@@ -268,7 +268,6 @@ from sync import all_gather, all_reduce, flag_broadcast, flag_reduce, sync
 from input import make_input_poller
 from loader import time_until_first_batch
 from checkpointer import Checkpointer
-from scheduler import build_warmup_cosine_tokens
 from torch.utils.data import DataLoader
 import itertools
 import os
@@ -280,8 +279,17 @@ import time
 worker_init_fn = build_dataloader_worker_init()
 
 # Set up optimizer, learning-rate scheduler, and loss function
-optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE)
-scheduler = build_warmup_cosine_tokens(optimizer, target_tokens, config.WARMUP_PCT)
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=config.LEARNING_RATE,
+    weight_decay=config.WEIGHT_DECAY,
+)
+scheduler = build_warmup_cosine_tokens(
+    optimizer,
+    target_tokens,
+    config.WARMUP_PCT,
+    min_lr_ratio=config.LEARNING_RATE_MIN_RATIO,
+)
 lossFn = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 checkpointer = Checkpointer(checkpoint_dir, model, optimizer, scheduler, device=device)
 

@@ -5,7 +5,7 @@ import math
 import torch
 
 
-def build_warmup_cosine(optimizer, total_steps, warmup_pct):
+def build_warmup_cosine(optimizer, total_steps, warmup_pct, min_lr_ratio=0.1):
     """Create a warmup + cosine schedule for the given optimizer.
 
     The warmup ramps linearly to the base LR, then cosine anneals for the
@@ -20,7 +20,7 @@ def build_warmup_cosine(optimizer, total_steps, warmup_pct):
     warmup_steps = min(warmup_steps, total_steps)
     cosine_steps = max(total_steps - warmup_steps, 1)
     base_lr = optimizer.param_groups[0]["lr"]
-    min_lr = base_lr * 0.1
+    min_lr = base_lr * min_lr_ratio
 
     if warmup_steps == 0:
         return torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -48,7 +48,7 @@ def build_warmup_cosine(optimizer, total_steps, warmup_pct):
     )
 
 
-def build_warmup_cosine_tokens(optimizer, total_tokens, warmup_pct):
+def build_warmup_cosine_tokens(optimizer, total_tokens, warmup_pct, min_lr_ratio=0.1):
     """Create a warmup + cosine schedule driven by total token count."""
     if total_tokens <= 0:
         raise ValueError("total_tokens must be positive.")
@@ -58,7 +58,7 @@ def build_warmup_cosine_tokens(optimizer, total_tokens, warmup_pct):
     warmup_tokens = int(math.ceil(total_tokens * warmup_pct))
     warmup_tokens = min(warmup_tokens, total_tokens)
     base_lr = optimizer.param_groups[0]["lr"]
-    min_lr = base_lr * 0.1
+    min_lr = base_lr * min_lr_ratio
     start_factor = 1e-6
 
     def lr_lambda(token_count):

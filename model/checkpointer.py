@@ -32,6 +32,10 @@ def apply_checkpoint_config(ckpt_config):
     ):
         if name in ckpt_config:
             setattr(config, name, ckpt_config[name])
+    if "TOKENIZER_FILENAME" in ckpt_config:
+        config.TOKENIZER_FILENAME = ckpt_config["TOKENIZER_FILENAME"]
+    else:
+        config.TOKENIZER_FILENAME = "tokenizer.json"
     if "POS_EMBED_TYPE" in ckpt_config:
         config.POS_EMBED_TYPE = ckpt_config["POS_EMBED_TYPE"]
     else:

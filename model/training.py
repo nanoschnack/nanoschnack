@@ -83,9 +83,6 @@ torch.set_float32_matmul_precision("high")
 
 # %%
 from tokenizer import PAD_TOKEN, load_tokenizer, print_vocab_alignment
-tokenizer = load_tokenizer()
-if is_master:
-    print_vocab_alignment(tokenizer)
 
 
 # %%
@@ -110,6 +107,12 @@ if checkpoint_path.exists():
         apply_checkpoint_config(checkpoint_state["config"])
     elif isinstance(checkpoint_state, dict):
         config.POS_EMBED_TYPE = "learned"
+        config.TOKENIZER_FILENAME = "tokenizer.json"
+
+# Load tokenizer after applying checkpoint config.
+tokenizer = load_tokenizer()
+if is_master:
+    print_vocab_alignment(tokenizer)
 
 # add special tokens
 tokenizer.add_special_tokens([PAD_TOKEN])
@@ -929,6 +932,4 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
-
-
 

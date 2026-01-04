@@ -130,9 +130,9 @@ DATASET_SPECS = _env_str(
     "hf:PatrickHaller/fineweb-2-de-1B:train:text",
 )
 
-# Tokenizer JSON path for training and chat.
-_TOKENIZER_JSON_DEFAULT = Path(__file__).resolve().parent.parent / "tokenizer" / "tokenizer.json"
-TOKENIZER_JSON_PATH = _env_str("TOKENIZER_JSON_PATH", str(_TOKENIZER_JSON_DEFAULT))
+# Tokenizer filename and path for training and chat.
+TOKENIZER_FILENAME = _env_str("TOKENIZER_FILENAME", "tokenizer-v2.json")
+TOKENIZER_JSON_PATH = _env_str("TOKENIZER_JSON_PATH", "")
 
 ###
 ### Inference defaults
@@ -193,6 +193,7 @@ def snapshot():
         "NUM_LAYERS": NUM_LAYERS,
         "NUM_HEADS": NUM_HEADS,
         "HIDDEN_SIZE": HIDDEN_SIZE,
+        "TOKENIZER_FILENAME": TOKENIZER_FILENAME,
     }
 
 

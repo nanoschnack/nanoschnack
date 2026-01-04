@@ -880,6 +880,7 @@ for current_epoch in itertools.count(resume_epoch):
                     tokenizer,
                     sample_count=3,
                     source_ids=batch.get("source_id"),
+                    dataset_specs=dataset_specs,
                 )
 
 
@@ -960,7 +961,10 @@ for current_epoch in itertools.count(resume_epoch):
 
     else:
         # Reset the sample index after a full epoch without interruption.
-                continue
+        # Stop after a full pass in post-training mode.
+        if config.POST_TRAINING:
+            break
+        continue
 
     # Stop training after an interrupted epoch.
     break

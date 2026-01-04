@@ -144,7 +144,13 @@ def plot_with_completion(points, model, tokenizer, config, device):
     if was_training:
         model.eval()
     try:
-        completion_prompt = f"{EOS_TOKEN}{config.PLOT_COMPLETION_PROMPT}"
+        if config.POST_TRAINING:
+            completion_prompt = (
+                f"{EOS_TOKEN}<|USER|>Was ist die Hauptstadt von Deutschland<|END|>"
+                f"<|ASSISTANT|>"
+            )
+        else:
+            completion_prompt = f"{EOS_TOKEN}{config.PLOT_COMPLETION_PROMPT}"
         reply_parts = []
         for token in generate_reply_stream(
                 model,
@@ -164,9 +170,14 @@ def plot_with_completion(points, model, tokenizer, config, device):
         if was_training:
             model.train()
 
+    label_prompt = (
+        "<|USER|>Was ist die Hauptstadt von Deutschland<|END|><|ASSISTANT|>"
+        if config.POST_TRAINING
+        else config.PLOT_COMPLETION_PROMPT
+    )
     formatted = format_validation_completion(
         "Validation:",
-        f"{config.PLOT_COMPLETION_PROMPT}|>{completion}",
+        f"{label_prompt}|>{completion}",
     )
     if chart:
         return f"{chart}\n{formatted}"

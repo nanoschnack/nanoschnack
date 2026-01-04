@@ -90,6 +90,16 @@ appears inside this same block.
 - Add `POST_TRAINING=1` to enable assistant-only loss.
 - Reuse `WARMUP_PCT` for the spec-change warmup reset.
 
+## Dataset Generation Length Filter
+
+When producing post-training chat text files, skip any tail that would exceed
+the model context length:
+
+- The first user/assistant pair must fit with the system span (if any).
+- Subsequent pairs only need the user+assistant span to fit.
+- If a pair does not fit, drop the rest of the conversation; keep the prefix.
+- If the first pair does not fit, skip the conversation entirely.
+
 ## Tests
 
 - Loader unit test: verify `loss_mask` is present and marks only assistant

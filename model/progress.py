@@ -121,7 +121,7 @@ class ProgressLogger:
                 mask = mask[:-1]
             if mask.size(0) == inputs.size(1):
                 input_ids = input_ids[mask.bool()]
-        decoded_input = tokenizer.decode(input_ids.tolist())
+        decoded_input = self._decode_with_special_tokens(tokenizer, input_ids.tolist())
         escaped = (
             decoded_input.replace("\\", "\\\\")
             .replace("\n", "\\n")
@@ -145,6 +145,7 @@ class ProgressLogger:
         tokenizer,
         sample_count=3,
         source_ids=None,
+        dataset_specs=None,
     ):
         # Print random decoded samples with source ids for dataset sanity checks.
         if inputs.numel() == 0:
@@ -156,7 +157,16 @@ class ProgressLogger:
             source_id = None
             if source_ids is not None:
                 source_id = int(source_ids[index])
-            label = f"Sample (source {source_id}):" if source_id is not None else "Sample:"
+            label = "Sample:"
+            if source_id is not None and dataset_specs is not None:
+                if 0 <= source_id < len(dataset_specs):
+                    spec = dataset_specs[source_id].get("spec")
+                    if spec:
+                        label = f"Sample {spec}:"
+                    else:
+                        label = "Sample:"
+            elif source_id is not None:
+                label = f"Sample (source {source_id}):"
             print(label)
             input_ids = inputs[index]
             if attention_mask is not None:
@@ -165,10 +175,17 @@ class ProgressLogger:
                     mask = mask[:-1]
                 if mask.size(0) == inputs.size(1):
                     input_ids = input_ids[mask.bool()]
-            decoded = tokenizer.decode(input_ids.tolist())
+            decoded = self._decode_with_special_tokens(tokenizer, input_ids.tolist())
             lines = decoded.splitlines() or [""]
             for line in lines:
                 print(f"  {line}")
+
+    def _decode_with_special_tokens(self, tokenizer, ids):
+        # Prefer showing special tokens in debug samples when supported.
+        try:
+            return tokenizer.decode(ids, skip_special_tokens=False)
+        except TypeError:
+            return tokenizer.decode(ids)
 
     def _format_eta(self, remaining_units, units_per_sec):
         # Format an ETA string from remaining samples and throughput.

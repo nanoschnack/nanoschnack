@@ -142,7 +142,6 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
     except Exception:
         pass
 
-    use_chat_template = False
     show_tokens = False
     print("Type '/help' for commands.")
 
@@ -186,17 +185,6 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if user_text == "/reset":
             print("History cleared.")
             continue
-        if user_text.startswith("/chat"):
-            parts = user_text.split(maxsplit=1)
-            if len(parts) == 1:
-                use_chat_template = not use_chat_template
-            elif parts[1] in {"on", "off"}:
-                use_chat_template = parts[1] == "on"
-            else:
-                print("Usage: /chat [on|off]")
-                continue
-            print(f"Chat template {'enabled' if use_chat_template else 'disabled'}.")
-            continue
         if user_text.startswith("/debug"):
             parts = user_text.split(maxsplit=1)
             if len(parts) == 1:
@@ -209,8 +197,8 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
             print(f"Debug tokens {'enabled' if show_tokens else 'disabled'}.")
             continue
 
-        if use_chat_template:
-            prompt = f"User: {user_text}\nAssistant:"
+        if config.POST_TRAINING:
+            prompt = f"{EOS_TOKEN}<|USER|>{user_text}<|END|><|ASSISTANT|>"
         else:
             prompt = f"{EOS_TOKEN}{user_text}"
 

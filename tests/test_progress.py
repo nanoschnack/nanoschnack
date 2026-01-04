@@ -24,6 +24,12 @@ class ProgressLoggerTests(unittest.TestCase):
         logger = ProgressLogger()
         inputs = torch.tensor([[1, 2, 3]])
         source_ids = torch.tensor([3])
+        dataset_specs = [
+            {"spec": "spec0"},
+            {"spec": "spec1"},
+            {"spec": "spec2"},
+            {"spec": "spec3"},
+        ]
 
         random.seed(0)
         stream = io.StringIO()
@@ -34,9 +40,10 @@ class ProgressLoggerTests(unittest.TestCase):
                 tokenizer=_Tokenizer(),
                 sample_count=1,
                 source_ids=source_ids,
+                dataset_specs=dataset_specs,
             )
 
         output = stream.getvalue().splitlines()
-        self.assertEqual(output[0], "Sample (source 3):")
+        self.assertEqual(output[0], "Sample spec3:")
         self.assertEqual(output[1], "  line one")
         self.assertEqual(output[2], "  line two")

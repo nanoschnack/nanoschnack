@@ -331,7 +331,8 @@ if is_master and resume_info:
     display_epoch = max(resume_epoch + 1, 1)
     print(
         f"  Checkpoint: loaded epoch={display_epoch} "
-        f"step={global_step} tokens={resume_total_tokens} samples={resume_samples}",
+        f"step={global_step} tokens={resume_total_tokens} samples={resume_samples} "
+        f"tokenizer={config.TOKENIZER_FILENAME}",
         flush=True,
     )
     print(
@@ -932,4 +933,3 @@ for current_epoch in itertools.count(resume_epoch):
 # Clean up the process group after training completes.
 if ddp_enabled:
     dist.destroy_process_group()
-

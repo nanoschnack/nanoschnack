@@ -17,8 +17,11 @@ OASST_DE_OUTPUT := data/posttraining/OpenAssistant/OASST-DE.txt
 
 tokenizer: $(TOKENIZER_OUTPUT)
 
-$(TOKENIZER_OUTPUT): $(TOKENIZER_INPUT)
-	cat $(TOKENIZER_INPUT) | (cd $(TOKENIZER_DIR) && go run . --target $(TOKENIZER_SIZE) -f tokenizer-v2.json --top $(TOKENIZER_TOP))
+$(TOKENIZER_OUTPUT):
+	@if [ ! -f "$(TOKENIZER_OUTPUT)" ]; then \
+		$(MAKE) $(TOKENIZER_INPUT); \
+		cat $(TOKENIZER_INPUT) | (cd $(TOKENIZER_DIR) && go run . --target $(TOKENIZER_SIZE) -f tokenizer-v2.json --top $(TOKENIZER_TOP)); \
+	fi
 
 corpus: $(TOKENIZER_INPUT)
 

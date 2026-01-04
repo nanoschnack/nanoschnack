@@ -24,7 +24,7 @@ class TokenSchedulerTests(unittest.TestCase):
         optimizer.step()
         scheduler.last_epoch = -1
         scheduler.step()
-        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 1e-6, places=9)
+        self.assertAlmostEqual(optimizer.param_groups[0]["lr"], 0.05, places=6)
 
         scheduler.last_epoch = 9
         scheduler.step()

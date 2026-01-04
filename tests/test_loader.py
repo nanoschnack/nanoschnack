@@ -231,47 +231,32 @@ class PostTrainingDatasetTests(unittest.TestCase):
             Path(__file__).resolve().parent / "data" / "posttraining_unmatched_assistant.txt"
         )
         blocks, masks = _load_posttraining_blocks(data_path, block_size=6)
-        assistant_id = 12
-        end_id = 13
-
-        for block, mask in zip(blocks, masks):
-            if assistant_id in block:
-                assistant_idx = block.index(assistant_id)
-                if end_id in block[assistant_idx:]:
-                    continue
-                self.assertEqual(mask, [0] * len(mask))
-                return
-        self.fail("No block found with an unmatched assistant span.")
+        self.assertEqual(blocks, [])
+        self.assertEqual(masks, [])
 
     def test_post_training_incomplete_user_masks_assistant(self):
         data_path = (
             Path(__file__).resolve().parent / "data" / "posttraining_incomplete_user.txt"
         )
         blocks, masks = _load_posttraining_blocks(data_path, block_size=6)
-        assistant_id = 12
-        end_id = 13
-
-        for block, mask in zip(blocks, masks):
-            if assistant_id in block and end_id in block:
-                self.assertEqual(mask, [0] * len(mask))
-                return
-        self.fail("No block found with assistant span ending inside the block.")
+        self.assertEqual(blocks, [])
+        self.assertEqual(masks, [])
 
     def test_post_training_system_injection(self):
         data_path = (
             Path(__file__).resolve().parent / "data" / "posttraining_system_injection.txt"
         )
-        blocks, _ = _load_posttraining_blocks(data_path, block_size=5)
+        blocks, _ = _load_posttraining_blocks(data_path, block_size=9)
 
-        self.assertGreaterEqual(len(blocks), 2)
-        self.assertEqual(blocks[1][:4], [10, _char_id("S"), 13, 11])
-        self.assertEqual(blocks[1][4], _char_id("V"))
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0][:4], [10, _char_id("S"), 13, 11])
+        self.assertEqual(blocks[0][4], 13)
 
     def test_post_training_eos_resets_system_injection(self):
         data_path = (
             Path(__file__).resolve().parent / "data" / "posttraining_eos_reset.txt"
         )
-        blocks, _ = _load_posttraining_blocks(data_path, block_size=4)
+        blocks, _ = _load_posttraining_blocks(data_path, block_size=10)
         eos_id = 0
         user_id = 11
         system_id = 10

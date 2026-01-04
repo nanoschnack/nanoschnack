@@ -329,6 +329,8 @@ resume_total_tokens = sum(resume_tokens.values())
 warmup_tokens = getattr(scheduler, "warmup_tokens", 0)
 if checkpoint_specs and checkpoint_specs != config.DATASET_SPECS:
     spec_warmup_start_tokens = resume_total_tokens
+if os.getenv("FORCE_SPEC_WARMUP") == "1":
+    spec_warmup_start_tokens = resume_total_tokens
 if spec_warmup_start_tokens is not None and warmup_tokens:
     if resume_total_tokens >= spec_warmup_start_tokens + warmup_tokens:
         spec_warmup_start_tokens = None
@@ -728,11 +730,14 @@ for current_epoch in itertools.count(resume_epoch):
             targets = targets.masked_fill(loss_mask[:, 1:] == 0, pad_id)
 
         # Preview tokenization outputs for debugging.
-        if debug_level >= 2 and not printed_debug_sample and is_master:
+        if (debug_level >= 3 or (debug_level >= 2 and not printed_debug_sample)) and is_master:
             input_preview = inputs[0].tolist()
             target_preview = targets[0].tolist()
             print(f"Input tokens: {input_preview}")
             print(f"Target tokens: {target_preview}")
+            if loss_mask is not None:
+                loss_preview = loss_mask[0].tolist()
+                print(f"Loss mask: {loss_preview}")
             print(f"Input text: {tokenizer.decode(input_preview)}")
             print(f"Target text: {tokenizer.decode(target_preview)}")
             printed_debug_sample = True

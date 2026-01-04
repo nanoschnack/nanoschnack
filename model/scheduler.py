@@ -65,7 +65,7 @@ def build_warmup_cosine_tokens(
     warmup_tokens = min(warmup_tokens, total_tokens)
     base_lr = optimizer.param_groups[0]["lr"]
     min_lr = base_lr * min_lr_ratio
-    start_factor = 1e-6
+    start_factor = 0.05
 
     warmup_state = {"start": warmup_start_tokens}
 

@@ -829,6 +829,7 @@ def _pack_chat_blocks(tokens, block_size, eos_id, system_id, user_id, assistant_
     idx = 0
     while idx < len(tokens):
         block = []
+        started_in_user = state["in_user"]
         # Reserve one slot to ensure forward progress on the stream.
         if state["in_user"] and block_size > 1:
             injection_budget = block_size - 1
@@ -848,6 +849,9 @@ def _pack_chat_blocks(tokens, block_size, eos_id, system_id, user_id, assistant_
         loss_masks.append(
             _build_assistant_loss_mask(block, eos_id, system_id, user_id, assistant_id, end_id)
         )
+        # Stop after a block that still ends mid-user to avoid dangling assistant spans.
+        if started_in_user and state["in_user"]:
+            break
     return blocks, loss_masks
 
 def pack_tokens(
@@ -1011,6 +1015,9 @@ def build_packed_dataset(
     )
     # Drop empty packed samples to avoid zero-length batches in DDP.
     packed = packed.filter(lambda sample: len(sample["input_ids"]) > 0)
+    # Drop post-training blocks with no assistant loss targets.
+    if config.POST_TRAINING:
+        packed = packed.filter(lambda sample: sum(sample["loss_mask"]) > 0)
     packed_column_names = _resolve_column_names(packed)
     if packed_column_names:
         keep_columns = {"input_ids", "attention_mask", "row_count", "source_id"}

@@ -247,5 +247,8 @@ class ProgressLogger:
 
     def _format_lr(self, value, width=8):
         # Keep a fixed-width LR with six decimals.
-        text = f"{value:.6f}"
+        if value != 0 and abs(value) < 1e-6:
+            text = f"{value:.2e}"
+        else:
+            text = f"{value:.6f}"
         return text.rjust(width) if len(text) < width else text

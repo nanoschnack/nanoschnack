@@ -78,6 +78,9 @@ start with:
 The `<|ASSISTANT|> a2 <|END|>` span is masked unless the full `<|USER|> u2 <|END|>`
 appears inside this same block.
 
+If a block starts mid-user and still ends before `<|END|>`, stop packing the rest
+of that document to avoid dangling assistant spans.
+
 ## Training Flow
 
 - Shift targets for next-token prediction as usual.

@@ -141,7 +141,7 @@ DATASET_SPECS = _env_str(
 )
 
 # Tokenizer filename and path for training and chat.
-TOKENIZER_FILENAME = _env_str("TOKENIZER_FILENAME", "tokenizer-v2.json")
+TOKENIZER_FILENAME = _env_str("TOKENIZER_FILENAME", "tokenizer.json")
 TOKENIZER_JSON_PATH = _env_str("TOKENIZER_JSON_PATH", "")
 
 ###

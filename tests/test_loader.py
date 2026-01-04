@@ -55,19 +55,6 @@ class LoaderHelperTests(unittest.TestCase):
             "datasets/repo/subset=Web/source=One Million Posts",
         )
 
-    def test_select_hf_data_files_limits_repo(self):
-        # Only german-commons should opt into parquet file selection.
-        spec = {"repo_id": "other/repo", "split": "train", "name": None}
-        with mock.patch.object(loader, "_load_hf_parquet_index") as mocked:
-            self.assertIsNone(loader._select_hf_data_files(spec, cache_dir="cache"))
-            mocked.assert_not_called()
-
-    def test_select_hf_data_files_uses_parquet_index(self):
-        # Use parquet file list when present for german-commons.
-        spec = {"repo_id": "coral-nlp/german-commons", "split": "wiki", "name": "web"}
-        with mock.patch.object(loader, "_load_hf_parquet_index", return_value=(["file.parquet"], [10])):
-            self.assertEqual(loader._select_hf_data_files(spec, cache_dir="cache"), ["file.parquet"])
-
     def test_cap_streaming_rows_limits_stream(self):
         dataset = IterableDataset.from_generator(lambda: ({"x": i} for i in range(5)))
 
@@ -88,10 +75,26 @@ class LoaderHelperTests(unittest.TestCase):
             iterator = iter(wrapped)
             next(iterator)
             next(iterator)
+            mocked_print.assert_called_once()
+            printed = mocked_print.call_args[0][0]
+            self.assertIn("skip done rows=5", printed)
 
-        mocked_print.assert_called_once()
-        printed = mocked_print.call_args[0][0]
-        self.assertIn("skip done rows=5", printed)
+    def test_load_dataset_from_spec_falls_back_to_jsonl(self):
+        spec = {
+            "kind": "hf",
+            "repo_id": "org/repo",
+            "name": None,
+            "split": "train",
+            "text_key": "text",
+            "spec": "hf:org/repo:train:text",
+        }
+        with mock.patch.object(loader, "load_dataset_source") as mocked_load:
+            mocked_load.side_effect = [FileNotFoundError("missing"), "dataset"]
+            with mock.patch.object(loader, "_select_hf_jsonl_files", return_value=["data.jsonl"]):
+                dataset = loader.load_dataset_from_spec(spec, cache_dir="cache", streaming=True)
+
+        self.assertEqual(dataset, "dataset")
+        self.assertEqual(mocked_load.call_count, 2)
 
     def test_prefetch_batches_preserves_order(self):
         items = [{"x": 1}, {"x": 2}, {"x": 3}]

@@ -433,18 +433,6 @@ def _hf_parquet_files(repo_id, split, name=None):
     )
 
 
-def _select_hf_data_files(spec, cache_dir):
-    # Prefer parquet files for german-commons to unify normal and resume loads.
-    if spec.get("repo_id") != "coral-nlp/german-commons":
-        return None
-    files, _ = _load_hf_parquet_index(
-        spec["repo_id"],
-        spec.get("split", "train"),
-        cache_dir,
-        name=spec.get("name"),
-    )
-    return files or None
-
 def _hf_parquet_row_counts(repo_id, rel_files):
     # Read parquet metadata to get row counts per shard.
     from huggingface_hub import HfFileSystem
@@ -488,6 +476,26 @@ def _load_hf_parquet_index(repo_id, split, cache_dir, name=None):
     }
     _write_resume_cache(cache_path, payload)
     return files, row_counts
+
+def _select_hf_jsonl_files_from_entries(repo_id, entries):
+    # Pick JSONL files from a dataset repo listing.
+    rel_files = []
+    base_root = f"datasets/{repo_id}/"
+    for entry in entries:
+        if not entry.startswith(base_root):
+            continue
+        rel_path = entry[len(base_root):]
+        if rel_path.endswith(".jsonl") or rel_path.endswith(".jsonl.gz"):
+            rel_files.append(rel_path)
+    return sorted(rel_files)
+
+def _select_hf_jsonl_files(spec):
+    # Load JSONL files directly when a dataset repo exposes flat files.
+    from huggingface_hub import HfFileSystem
+
+    fs = HfFileSystem()
+    entries = fs.ls(f"datasets/{spec['repo_id']}", detail=False)
+    return _select_hf_jsonl_files_from_entries(spec["repo_id"], entries)
 
 def _resolve_text_files(path):
     # Expand a txt spec path into a sorted list of files.
@@ -580,26 +588,42 @@ def load_dataset_from_spec(spec, cache_dir=None, streaming=True, data_files=None
     if spec["kind"] == "hf":
         # HF datasets are loaded directly from the hub.
         split = spec.get("split", "train")
-        rel_files = data_files or _select_hf_data_files(spec, cache_dir)
-        sharded = hf_load_dataset_sharded(
-            spec["repo_id"],
-            split=split,
-            name=spec.get("name"),
-            cache_dir=cache_dir,
-            data_files=rel_files,
-        )
-        if sharded is not None:
-            return sharded
+        rel_files = data_files
+        sharded = None
         if rel_files is not None:
+            sharded = hf_load_dataset_sharded(
+                spec["repo_id"],
+                split=split,
+                name=spec.get("name"),
+                cache_dir=cache_dir,
+                data_files=rel_files,
+            )
+            if sharded is not None:
+                return sharded
             split = "train"
-        return load_dataset_source(
-            spec["repo_id"],
-            split=split,
-            data_files=rel_files,
-            cache_dir=cache_dir,
-            streaming=streaming,
-            name=spec.get("name"),
-        )
+        try:
+            return load_dataset_source(
+                spec["repo_id"],
+                split=split,
+                data_files=rel_files,
+                cache_dir=cache_dir,
+                streaming=streaming,
+                name=spec.get("name"),
+            )
+        except FileNotFoundError:
+            if rel_files is not None or spec.get("name") is not None:
+                raise
+            jsonl_files = _select_hf_jsonl_files(spec)
+            if not jsonl_files:
+                raise
+            return load_dataset_source(
+                spec["repo_id"],
+                split=split,
+                data_files=jsonl_files,
+                cache_dir=cache_dir,
+                streaming=streaming,
+                name=spec.get("name"),
+            )
     if spec["kind"] == "txt":
         # TXT datasets load line-delimited text from local files.
         dataset = load_dataset(

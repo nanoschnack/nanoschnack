@@ -414,6 +414,7 @@ for dataset_index, spec in enumerate(dataset_specs):
     if total_rows is not None:
         remaining_rows = max(total_rows - row_offset, 0)
     raw_streaming = cap_streaming_rows(raw_streaming, remaining_rows)
+
     if ddp_enabled:
         # Split the stream across ranks to avoid duplicate samples.
         raw_streaming = raw_streaming.filter(
@@ -618,6 +619,7 @@ printed_debug_sample = False
 
 # Track SIGINT so we can checkpoint after a safe step.
 stop_requested = False
+sample_enabled = False
 plot_requested = make_input_poller(is_master)
 sigint_installed = False
 # Default to immediate exit before the first batch.
@@ -722,6 +724,8 @@ for current_epoch in itertools.count(resume_epoch):
             plotter.request_plot()
         elif cmd == "i":
             input_requested = True
+        elif cmd == "s":
+            sample_enabled = not sample_enabled
 
         # Average the micro loss across ranks for consistent logging.
         # Sync per-spec row counts across ranks for plotting and resume logs.
@@ -824,6 +828,14 @@ for current_epoch in itertools.count(resume_epoch):
                     tokenizer,
                     source_ids=batch.get("source_id"),
                     dataset_specs=dataset_specs,
+                )
+            if sample_enabled and is_master:
+                progress.print_text_samples(
+                    inputs,
+                    attention_mask,
+                    tokenizer,
+                    sample_count=3,
+                    source_ids=batch.get("source_id"),
                 )
 
 

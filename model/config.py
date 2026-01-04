@@ -73,9 +73,11 @@ MACRO_BATCH_SIZE = _env_int("MACRO_BATCH_SIZE", 512)
 # https://arxiv.org/src/2005.14165
 LEARNING_RATE = _env_float("LEARNING_RATE", 6e-4)
 
+# Warmup-only schedule toggle (1 = warmup across full run).
+WARMUP = bool(_env_int("WARMUP", 0))
 # Warmup fraction of total training steps for LR ramp-up.
 # Use values between 0.01 and 0.05 for small warmups.
-WARMUP_PCT = _env_float("WARMUP_PCT", 0.03)
+WARMUP_PCT = 1.0 if WARMUP else _env_float("WARMUP_PCT", 0.03)
 
 # Maximum training tokens multiplier relative to parameter count (0 = unlimited).
 MAX_TRAINING_FACTOR = _env_int("MAX_TRAINING_FACTOR", 20)

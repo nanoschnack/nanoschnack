@@ -138,6 +138,38 @@ class ProgressLogger:
         snippet = truncate_to_width(escaped, max_len)
         print(f"{prefix}{snippet}")
 
+    def print_text_samples(
+        self,
+        inputs,
+        attention_mask,
+        tokenizer,
+        sample_count=3,
+        source_ids=None,
+    ):
+        # Print random decoded samples with source ids for dataset sanity checks.
+        if inputs.numel() == 0:
+            return
+        sample_count = max(1, sample_count)
+        batch_size = inputs.size(0)
+        chosen = random.sample(range(batch_size), min(sample_count, batch_size))
+        for index in chosen:
+            source_id = None
+            if source_ids is not None:
+                source_id = int(source_ids[index])
+            label = f"Sample (source {source_id}):" if source_id is not None else "Sample:"
+            print(label)
+            input_ids = inputs[index]
+            if attention_mask is not None:
+                mask = attention_mask[index]
+                if mask.size(0) == inputs.size(1) + 1:
+                    mask = mask[:-1]
+                if mask.size(0) == inputs.size(1):
+                    input_ids = input_ids[mask.bool()]
+            decoded = tokenizer.decode(input_ids.tolist())
+            lines = decoded.splitlines() or [""]
+            for line in lines:
+                print(f"  {line}")
+
     def _format_eta(self, remaining_units, units_per_sec):
         # Format an ETA string from remaining samples and throughput.
         if units_per_sec <= 0:

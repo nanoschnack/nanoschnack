@@ -100,6 +100,29 @@ DATASET_SPECS="hf:coral-nlp/german-commons:web:onemillionposts:text,txt:data/goe
 DATASET_SPECS="txt:data/goethe.txt:body" python model/training.py
 ```
 
+## Post-training
+
+Post-training runs on a narrower mix of datasets with a smaller, flat learning rate.
+Use a short warmup and freeze embeddings to avoid destroying the base model.
+
+Example (10% of pre-training peak LR, 3% warmup, flat schedule, weight decay 0.001):
+
+```sh
+DATASET_SPECS="hf:coral-nlp/german-commons:web:youtubecommons:text,hf:arnomatic/german-wikipedia-clean-2:train:text" \
+  LEARNING_RATE=6e-5 \
+  WARMUP_PCT=0.03 \
+  LEARNING_RATE_MIN_RATIO=1.0 \
+  DECAY=0.001 \
+  FREEZE_EMBEDDINGS=1 \
+  python model/training.py
+```
+
+Makefile target:
+
+```sh
+make post-train DATASET_SPECS="hf:coral-nlp/german-commons:web:youtubecommons:text,hf:arnomatic/german-wikipedia-clean-2:train:text"
+```
+
 ## Dataset pipeline
 
 1) parse_dataset_specs  

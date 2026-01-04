@@ -56,6 +56,25 @@ class GPTInitializationTests(unittest.TestCase):
         self.assertTrue(torch.allclose(model.ln.weight, torch.ones_like(model.ln.weight)))
         self.assertTrue(torch.all(model.ln.bias == 0))
 
+    def test_freeze_embeddings_disables_grads(self):
+        model = GPT(
+            vocab_size=64,
+            embed_size=32,
+            num_layers=1,
+            num_heads=4,
+            hidden_size=64,
+            context_len=16,
+            pos_embed_type="learned",
+        )
+
+        # Freeze embedding parameters for post-training.
+        model.freeze_embeddings()
+
+        self.assertFalse(model.tok.weight.requires_grad)
+        self.assertFalse(model.lm.weight.requires_grad)
+        self.assertFalse(model.pos.weight.requires_grad)
+        self.assertTrue(model.blocks[0].attn.qkv.weight.requires_grad)
+
 
 if __name__ == "__main__":
     unittest.main()

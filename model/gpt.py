@@ -240,6 +240,12 @@ class GPT(nn.Module):
             block.attn.proj.weight.data.normal_(mean=0.0, std=scaled_std)
             block.mlp.output.weight.data.normal_(mean=0.0, std=scaled_std)
 
+    def freeze_embeddings(self):
+        # Freeze token and positional embeddings for post-training runs.
+        self.tok.weight.requires_grad_(False)
+        self.lm.weight.requires_grad_(False)
+        self.pos.weight.requires_grad_(False)
+
     @staticmethod
     def _init_module_weights(module):
         # Use GPT-2 linear init: normal(0, 0.02) instead of PyTorch's Kaiming uniform.

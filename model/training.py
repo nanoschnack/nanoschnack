@@ -125,6 +125,9 @@ model = GPT(
     pos_embed_type=config.POS_EMBED_TYPE,
     rope_base=config.ROPE_BASE,
 ).to(device).train()
+# Freeze embeddings for post-training runs.
+if config.FREEZE_EMBEDDINGS:
+    model.freeze_embeddings()
 # Tune batch size on the master rank only.
 tuned_batch_size = None
 if is_master:

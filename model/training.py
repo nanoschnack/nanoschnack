@@ -101,10 +101,16 @@ model_dir, data_dir, checkpoint_dir = setup_paths()
 # Pull model sizes from the most recent checkpoint if present.
 import torch
 checkpoint_path = checkpoint_dir / "latest.pt"
+checkpoint_specs = None
+spec_warmup_start_tokens = None
 if checkpoint_path.exists():
     checkpoint_state = torch.load(checkpoint_path, map_location="cpu")
+    if isinstance(checkpoint_state, dict):
+        spec_warmup_start_tokens = checkpoint_state.get("spec_warmup_start_tokens")
     if isinstance(checkpoint_state, dict) and "config" in checkpoint_state:
-        apply_checkpoint_config(checkpoint_state["config"])
+        checkpoint_config = checkpoint_state["config"]
+        checkpoint_specs = checkpoint_config.get("DATASET_SPECS")
+        apply_checkpoint_config(checkpoint_config)
     elif isinstance(checkpoint_state, dict):
         config.POS_EMBED_TYPE = "learned"
         config.TOKENIZER_FILENAME = "tokenizer.json"
@@ -319,6 +325,16 @@ resume_tokens, seeded_specs = seed_missing_token_offsets(resume_tokens, resume_s
 # Sum token offsets for scheduler alignment and logging.
 resume_total_tokens = sum(resume_tokens.values())
 
+# Track an extra warmup window when dataset specs change mid-run.
+warmup_tokens = getattr(scheduler, "warmup_tokens", 0)
+if checkpoint_specs and checkpoint_specs != config.DATASET_SPECS:
+    spec_warmup_start_tokens = resume_total_tokens
+if spec_warmup_start_tokens is not None and warmup_tokens:
+    if resume_total_tokens >= spec_warmup_start_tokens + warmup_tokens:
+        spec_warmup_start_tokens = None
+    else:
+        scheduler.warmup_state["start"] = spec_warmup_start_tokens
+
 # Align the scheduler with the resumed token count.
 if resume_total_tokens:
     scheduler.last_epoch = resume_total_tokens # we misuse token's epoch count for tokens
@@ -335,6 +351,11 @@ if is_master and resume_info:
         f"tokenizer={config.TOKENIZER_FILENAME}",
         flush=True,
     )
+    if warmup_tokens and spec_warmup_start_tokens is not None:
+        print(
+            f"  Warmup: spec change tokens={warmup_tokens} start={spec_warmup_start_tokens}",
+            flush=True,
+        )
     print(
         f"  Optimizer: {resume_info['optimizer']}",
         flush=True,
@@ -907,6 +928,12 @@ for current_epoch in itertools.count(resume_epoch):
                         global_token_counts[spec_key] = global_token_counts.get(spec_key, 0) + int(value)
                     resume_state = build_resume_state(global_row_counts, dataset_specs, source_token_counts=global_token_counts)
 
+            # Clear spec warmup once the extra window has elapsed.
+            if warmup_tokens and spec_warmup_start_tokens is not None:
+                if next_total_tokens >= spec_warmup_start_tokens + warmup_tokens:
+                    spec_warmup_start_tokens = None
+                    scheduler.warmup_state["start"] = None
+
             # Persist checkpoints only from the master process.
             if is_master:
                 checkpointer.save_latest(
@@ -914,6 +941,7 @@ for current_epoch in itertools.count(resume_epoch):
                     progress.global_step,
                     progress.total_samples,
                     resume_state=resume_state,
+                    spec_warmup_start_tokens=spec_warmup_start_tokens,
                 )
             if ddp_enabled:
                 dist.barrier()

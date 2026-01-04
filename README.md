@@ -100,6 +100,9 @@ DATASET_SPECS="hf:coral-nlp/german-commons:web:onemillionposts:text,txt:data/goe
 DATASET_SPECS="txt:data/goethe.txt:body" python model/training.py
 ```
 
+Changing `DATASET_SPECS` mid-run triggers a warmup reset using the configured `WARMUP_PCT`
+and is persisted in checkpoints so resumes keep the warmup window intact.
+
 ## Post-training
 
 Post-training runs on a narrower mix of datasets with a smaller, flat learning rate.

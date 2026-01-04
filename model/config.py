@@ -194,6 +194,7 @@ def snapshot():
         "NUM_HEADS": NUM_HEADS,
         "HIDDEN_SIZE": HIDDEN_SIZE,
         "TOKENIZER_FILENAME": TOKENIZER_FILENAME,
+        "DATASET_SPECS": DATASET_SPECS,
     }
 
 

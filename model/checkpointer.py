@@ -397,7 +397,7 @@ class Checkpointer:
         resume_epoch = max(saved_epoch - 1, 0)
         return resume_epoch, global_step, samples, resume_state
 
-    def save_latest(self, epoch, global_step, samples, resume_state=None):
+    def save_latest(self, epoch, global_step, samples, resume_state=None, spec_warmup_start_tokens=None):
         # Persist the latest training state in the current checkpoint format.
         start_time = time.time()
         vocab_size = getattr(getattr(self.model, "tok", None), "num_embeddings", None)
@@ -411,6 +411,8 @@ class Checkpointer:
             "samples": samples,
             "resume_state": resume_state,
         }
+        if spec_warmup_start_tokens is not None:
+            ckpt["spec_warmup_start_tokens"] = spec_warmup_start_tokens
         if vocab_size is not None:
             ckpt["vocab_size"] = vocab_size
         # Save the rolling latest checkpoint.

@@ -32,6 +32,8 @@ def apply_checkpoint_config(ckpt_config):
     ):
         if name in ckpt_config:
             setattr(config, name, ckpt_config[name])
+    if "POST_TRAINING" in ckpt_config:
+        config.POST_TRAINING = ckpt_config["POST_TRAINING"]
     if "TOKENIZER_FILENAME" in ckpt_config:
         config.TOKENIZER_FILENAME = ckpt_config["TOKENIZER_FILENAME"]
     else:

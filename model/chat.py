@@ -1,5 +1,6 @@
 import argparse
 import os
+import textwrap
 
 import codecs
 import torch
@@ -207,6 +208,40 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if show_tokens:
             print(f"tokens> {tokenizer.encode(user_text).ids}")
         print("bot> ", end="", flush=True)
+        pending_backslash = False
+        current_line = ""
+        first_line = True
+        wrapper = textwrap.TextWrapper(
+            width=80,
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+
+        def flush_buffer(final=False):
+            nonlocal current_line, first_line
+            if not current_line:
+                return
+            lines = wrapper.wrap(current_line) or [""]
+            if final:
+                to_print = lines
+                current_line = ""
+            else:
+                if len(lines) <= 1:
+                    return
+                to_print = lines[:-1]
+                current_line = lines[-1]
+            for line in to_print:
+                if first_line:
+                    print(line, end="", flush=True)
+                    first_line = False
+                else:
+                    print("\n  " + line, end="", flush=True)
+
+        def start_new_line():
+            nonlocal first_line
+            flush_buffer(final=True)
+            print("\n  ", end="", flush=True)
+            first_line = False
         reply_parts = []
         try:
             for token in generate_reply_stream(
@@ -219,10 +254,28 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
                 top_k=top_k,
                 device=device,
             ):
-                print(token, end="", flush=True)
+                for char in token:
+                    if pending_backslash:
+                        if char == "n":
+                            start_new_line()
+                            pending_backslash = False
+                            continue
+                        print("\\", end="", flush=True)
+                        pending_backslash = False
+                    if char == "\\":
+                        pending_backslash = True
+                        continue
+                    if char == "\n":
+                        start_new_line()
+                        continue
+                    current_line += char
+                    flush_buffer()
                 reply_parts.append(token)
         except KeyboardInterrupt:
             print()
+        if pending_backslash:
+            current_line += "\\"
+        flush_buffer(final=True)
         if reply_parts:
             print()
         if debug_level >= 1 and reply_parts:

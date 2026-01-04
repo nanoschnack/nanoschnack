@@ -725,7 +725,7 @@ for current_epoch in itertools.count(resume_epoch):
         if config.POST_TRAINING:
             if loss_mask is None:
                 raise RuntimeError("POST_TRAINING requires loss_mask in the batch.")
-            targets = targets.masked_fill(loss_mask[:, 1:] == 0, -100)
+            targets = targets.masked_fill(loss_mask[:, 1:] == 0, pad_id)
 
         # Preview tokenization outputs for debugging.
         if debug_level >= 2 and not printed_debug_sample and is_master:

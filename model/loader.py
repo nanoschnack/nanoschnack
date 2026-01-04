@@ -769,34 +769,6 @@ def _update_chat_stream_state(token, state, eos_id, system_id, user_id, assistan
             _end_assistant(state)
             return
 
-def _update_loss_state(token, state, eos_id, system_id, user_id, assistant_id, end_id):
-    if token == eos_id or token == system_id:
-        state["in_user"] = False
-        state["in_assistant"] = False
-        state["user_complete"] = False
-        state["assistant_allowed"] = False
-        return
-    if token == user_id:
-        state["in_user"] = True
-        state["user_complete"] = False
-        state["in_assistant"] = False
-        state["assistant_allowed"] = False
-        return
-    if token == assistant_id:
-        state["in_assistant"] = True
-        state["assistant_allowed"] = state["user_complete"]
-        return
-    if token == end_id:
-        if state["in_assistant"]:
-            state["assistant_ended"] = state["assistant_allowed"]
-            state["in_assistant"] = False
-            state["assistant_allowed"] = False
-            return
-        if state["in_user"]:
-            state["in_user"] = False
-            state["user_complete"] = True
-        return
-
 def _build_assistant_loss_mask(block, eos_id, system_id, user_id, assistant_id, end_id):
     # Mask loss to assistant spans guarded by a complete user span in the block.
     mask = [0] * len(block)
@@ -805,15 +777,42 @@ def _build_assistant_loss_mask(block, eos_id, system_id, user_id, assistant_id, 
         "in_assistant": False,
         "user_complete": False,
         "assistant_allowed": False,
-        "assistant_ended": False,
+        "assistant_start": None,
     }
     for idx, token in enumerate(block):
-        _update_loss_state(token, state, eos_id, system_id, user_id, assistant_id, end_id)
-        if state["in_assistant"] and state["assistant_allowed"]:
-            mask[idx] = 1
-        if token == end_id and state["assistant_ended"]:
-            mask[idx] = 1
-            state["assistant_ended"] = False
+        if token == eos_id or token == system_id:
+            state["in_user"] = False
+            state["in_assistant"] = False
+            state["user_complete"] = False
+            state["assistant_allowed"] = False
+            state["assistant_start"] = None
+            continue
+        if token == user_id:
+            state["in_user"] = True
+            state["user_complete"] = False
+            state["in_assistant"] = False
+            state["assistant_allowed"] = False
+            state["assistant_start"] = None
+            continue
+        if token == assistant_id:
+            state["in_assistant"] = True
+            state["assistant_allowed"] = state["user_complete"]
+            if state["assistant_allowed"]:
+                state["assistant_start"] = idx
+            continue
+        if token == end_id:
+            if state["in_assistant"]:
+                if state["assistant_allowed"] and state["assistant_start"] is not None:
+                    for mark_idx in range(state["assistant_start"], idx + 1):
+                        mask[mark_idx] = 1
+                state["in_assistant"] = False
+                state["assistant_allowed"] = False
+                state["assistant_start"] = None
+                continue
+            if state["in_user"]:
+                state["in_user"] = False
+                state["user_complete"] = True
+            continue
     return mask
 
 def _pack_chat_blocks(tokens, block_size, eos_id, system_id, user_id, assistant_id, end_id):

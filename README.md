@@ -107,6 +107,8 @@ and is persisted in checkpoints so resumes keep the warmup window intact.
 
 Post-training runs on a narrower mix of datasets with a smaller, flat learning rate.
 Use a short warmup and freeze embeddings to avoid destroying the base model.
+Post-training chat datasets must store one complete conversation per line; the
+loader appends `<|EOS|>` after each line automatically.
 
 Example (10% of pre-training peak LR, 3% warmup, flat schedule, weight decay 0.001):
 

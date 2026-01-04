@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
-from datasets import IterableDataset
+from datasets import IterableDataset, load_dataset
 
 from model import loader
 
@@ -119,6 +119,168 @@ class LoaderHelperTests(unittest.TestCase):
             path.as_posix(),
             "/tmp/cache-root/hf_shards/org/repo/train/train-00001-of-00010.parquet",
         )
+
+
+class _ChatTokenizer:
+    """Tokenize post-training text with deterministic per-character ids.
+
+    Special chat tokens map to fixed ids for stable packing behavior.
+    Remaining characters become single tokens to keep lengths predictable.
+    """
+    def __init__(self):
+        self._token_ids = {
+            loader.EOS_TOKEN: 0,
+            loader.SYSTEM_TOKEN: 10,
+            loader.USER_TOKEN: 11,
+            loader.ASSISTANT_TOKEN: 12,
+            loader.END_TOKEN: 13,
+        }
+        self._tokens_by_length = sorted(self._token_ids.keys(), key=len, reverse=True)
+
+    def encode_batch(self, texts):
+        return [_Encoding(self._encode(text)) for text in texts]
+
+    def token_to_id(self, token):
+        return self._token_ids.get(token)
+
+    def _encode(self, text):
+        tokens = []
+        idx = 0
+        while idx < len(text):
+            matched = False
+            for token in self._tokens_by_length:
+                if text.startswith(token, idx):
+                    tokens.append(self._token_ids[token])
+                    idx += len(token)
+                    matched = True
+                    break
+            if matched:
+                continue
+            tokens.append(_char_id(text[idx]))
+            idx += 1
+        return tokens
+
+
+class _Encoding:
+    """Container for token ids returned by the fake tokenizer.
+
+    This mirrors the interface used by the loader tokenizer wrapper.
+    It keeps tests focused on packing behavior rather than tokenization.
+    """
+    def __init__(self, ids):
+        self.ids = ids
+
+
+def _char_id(value):
+    return 100 + ord(value)
+
+
+def _as_list(value):
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return value
+
+def _load_posttraining_blocks(data_path, block_size):
+    dataset = load_dataset("text", data_files=str(data_path), split="train")
+    tokenizer = _ChatTokenizer()
+
+    with mock.patch.object(loader.config, "POST_TRAINING", True):
+        packed = loader.build_packed_dataset(
+            dataset,
+            tokenizer=tokenizer,
+            block_size=block_size,
+            text_key="text",
+            pack_batch_size=1000,
+            source_id=0,
+        )
+
+    blocks = []
+    masks = []
+    for row in packed:
+        blocks.append(_as_list(row["input_ids"]))
+        masks.append(_as_list(row["loss_mask"]))
+    return blocks, masks
+
+
+class PostTrainingDatasetTests(unittest.TestCase):
+    """Validate post-training packing with generated chat text input.
+
+    These tests exercise the end-to-end packing logic on text lines.
+    They assert system/user injection and assistant loss masking rules.
+    """
+    def test_post_training_text_data_injects_and_masks(self):
+        data_path = Path(__file__).resolve().parent / "data" / "posttraining_complete_pair.txt"
+        blocks, masks = _load_posttraining_blocks(data_path, block_size=9)
+
+        expected_block = [
+            10,
+            _char_id("S"),
+            13,
+            11,
+            _char_id("U"),
+            13,
+            12,
+            _char_id("A"),
+            13,
+        ]
+        self.assertEqual(blocks[0], expected_block)
+        self.assertEqual(masks[0], [0, 0, 0, 0, 0, 0, 1, 1, 1])
+
+    def test_post_training_unmatched_assistant_masks_all(self):
+        data_path = (
+            Path(__file__).resolve().parent / "data" / "posttraining_unmatched_assistant.txt"
+        )
+        blocks, masks = _load_posttraining_blocks(data_path, block_size=6)
+        assistant_id = 12
+        end_id = 13
+
+        for block, mask in zip(blocks, masks):
+            if assistant_id in block:
+                assistant_idx = block.index(assistant_id)
+                if end_id in block[assistant_idx:]:
+                    continue
+                self.assertEqual(mask, [0] * len(mask))
+                return
+        self.fail("No block found with an unmatched assistant span.")
+
+    def test_post_training_incomplete_user_masks_assistant(self):
+        data_path = (
+            Path(__file__).resolve().parent / "data" / "posttraining_incomplete_user.txt"
+        )
+        blocks, masks = _load_posttraining_blocks(data_path, block_size=6)
+        assistant_id = 12
+        end_id = 13
+
+        for block, mask in zip(blocks, masks):
+            if assistant_id in block and end_id in block:
+                self.assertEqual(mask, [0] * len(mask))
+                return
+        self.fail("No block found with assistant span ending inside the block.")
+
+    def test_post_training_system_injection(self):
+        data_path = (
+            Path(__file__).resolve().parent / "data" / "posttraining_system_injection.txt"
+        )
+        blocks, _ = _load_posttraining_blocks(data_path, block_size=5)
+
+        self.assertGreaterEqual(len(blocks), 2)
+        self.assertEqual(blocks[1][:4], [10, _char_id("S"), 13, 11])
+        self.assertEqual(blocks[1][4], _char_id("V"))
+
+    def test_post_training_eos_resets_system_injection(self):
+        data_path = (
+            Path(__file__).resolve().parent / "data" / "posttraining_eos_reset.txt"
+        )
+        blocks, _ = _load_posttraining_blocks(data_path, block_size=4)
+        eos_id = 0
+        user_id = 11
+        system_id = 10
+
+        for idx, block in enumerate(blocks[:-1]):
+            if eos_id in block and blocks[idx + 1][0] == user_id:
+                self.assertNotEqual(blocks[idx + 1][0], system_id)
+                return
+        self.fail("No EOS boundary found with a following user block.")
 
     def test_cleanup_shard_cache_removes_untracked_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -17,7 +17,7 @@ from checkpointer import (
     resize_vocab_state_dict,
     select_state_dict,
 )
-from tokenizer import DATASET_EOS_TOKEN, load_tokenizer
+from tokenizer import EOS_TOKEN, load_tokenizer
 
 
 def load_model(checkpoint_path, vocab_size, device):
@@ -108,7 +108,7 @@ def generate_reply_stream(model, tokenizer, prompt, context_len, max_new_tokens,
     input_ids = torch.tensor([prompt_ids[-context_len:]], device=device, dtype=torch.long)
     id_to_bytes = _build_id_to_bytes(tokenizer)
     decoder = codecs.getincrementaldecoder("utf-8")()
-    eos_id = tokenizer.token_to_id(DATASET_EOS_TOKEN)
+    eos_id = tokenizer.token_to_id(EOS_TOKEN)
     use_byte_decoder = True
 
     with torch.no_grad():
@@ -212,7 +212,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
         if use_chat_template:
             prompt = f"User: {user_text}\nAssistant:"
         else:
-            prompt = f"{DATASET_EOS_TOKEN}{user_text}"
+            prompt = f"{EOS_TOKEN}{user_text}"
 
         if show_tokens:
             print(f"tokens> {tokenizer.encode(user_text).ids}")

@@ -9,7 +9,7 @@ import torch
 
 from chat import generate_reply_stream
 from text_format import format_compact
-from tokenizer import DATASET_EOS_TOKEN
+from tokenizer import EOS_TOKEN
 
 
 @dataclass
@@ -144,7 +144,7 @@ def plot_with_completion(points, model, tokenizer, config, device):
     if was_training:
         model.eval()
     try:
-        completion_prompt = f"{DATASET_EOS_TOKEN}{config.PLOT_COMPLETION_PROMPT}"
+        completion_prompt = f"{EOS_TOKEN}{config.PLOT_COMPLETION_PROMPT}"
         reply_parts = []
         for token in generate_reply_stream(
                 model,

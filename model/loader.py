@@ -19,7 +19,7 @@ import time
 
 import config
 
-from tokenizer import DATASET_EOS_TOKEN
+from tokenizer import EOS_TOKEN
 
 class _TokenizerPoolCache:
     """Cache the tokenizer worker pool for batch encoding.
@@ -689,7 +689,7 @@ def build_tokenizer(tokenizer, text_key="text"):
             token_batch = []
             for future in futures:
                 token_batch.extend(future.result())
-        eos_token_id = tokenizer.token_to_id(DATASET_EOS_TOKEN)
+        eos_token_id = tokenizer.token_to_id(EOS_TOKEN)
         input_ids = []
         for encoding in token_batch:
             ids = list(encoding.ids)

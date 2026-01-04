@@ -88,7 +88,11 @@ def print_vocab_alignment(tokenizer):
 
 
 PAD_TOKEN = "<|PAD|>"
-DATASET_EOS_TOKEN = "<|EOS|>"
+EOS_TOKEN = "<|EOS|>"
+SYSTEM_TOKEN = "<|SYSTEM|>"
+USER_TOKEN = "<|USER|>"
+ASSISTANT_TOKEN = "<|ASSISTANT|>"
+END_TOKEN = "<|END|>"
 BOS_TOKEN = "[BOS]"
 
 
@@ -103,10 +107,18 @@ def load_tokenizer():
     tokenizer = Tokenizer.from_file(tokenizer_path)
 
     # Keep the vocab aligned with training if a pad token was added.
-    if tokenizer.token_to_id(PAD_TOKEN) is None:
-        tokenizer.add_special_tokens([PAD_TOKEN])
-    if tokenizer.token_to_id(DATASET_EOS_TOKEN) is None:
-        tokenizer.add_special_tokens([DATASET_EOS_TOKEN])
+    # Register chat control tokens for post-training prompts.
+    special_tokens = [
+        PAD_TOKEN,
+        EOS_TOKEN,
+        SYSTEM_TOKEN,
+        USER_TOKEN,
+        ASSISTANT_TOKEN,
+        END_TOKEN,
+    ]
+    for token in special_tokens:
+        if tokenizer.token_to_id(token) is None:
+            tokenizer.add_special_tokens([token])
 
     # Align after adding special tokens so padding is counted in the base size.
     base_size = tokenizer.get_vocab_size()

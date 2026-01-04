@@ -123,14 +123,21 @@ HF_SHARD_CACHE_CLEANUP = _env_str("HF_SHARD_CACHE_CLEANUP", "auto")
 ###
 
 # Comma-separated dataset specs: hf:<repo_id>[:split][:text_key], hf:<repo_id>:<config>:<split>[:text_key], txt:<path>[:text_key]
+# Choose a post-training default only when POST_TRAINING is active and no override is set.
 DATASET_SPECS = _env_str(
     "DATASET_SPECS",
-    "hf:coral-nlp/german-commons:web:onemillionposts:text,"
-    # "hf:coral-nlp/german-commons:web:wikipedia:text,"
-    "hf:coral-nlp/german-commons:web:youtubecommons:text,"
-    "hf:coral-nlp/german-commons:cultural:wikivoyage:text,"
-    "hf:arnomatic/german-wikipedia-clean-2:train:text,"
-    "hf:PatrickHaller/fineweb-2-de-1B:train:text",
+    (
+        "txt:data/posttraining/OpenAssistant/OASST-DE.txt:text"
+        if POST_TRAINING
+        else (
+            "hf:coral-nlp/german-commons:web:onemillionposts:text,"
+            # "hf:coral-nlp/german-commons:web:wikipedia:text,"
+            "hf:coral-nlp/german-commons:web:youtubecommons:text,"
+            "hf:coral-nlp/german-commons:cultural:wikivoyage:text,"
+            "hf:arnomatic/german-wikipedia-clean-2:train:text,"
+            "hf:PatrickHaller/fineweb-2-de-1B:train:text"
+        )
+    ),
 )
 
 # Tokenizer filename and path for training and chat.

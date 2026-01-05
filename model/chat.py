@@ -334,15 +334,19 @@ def main():
     info = device_info(device)
     print_device_info(info)
     tokenizer = load_tokenizer()
-    mode = "chat" if config.POST_TRAINING else "completion"
-    print("Chat:")
-    print(f"  mode={mode}")
+
     # Confirm base tokenizer size before alignment padding.
     alignment = getattr(tokenizer, "vocab_alignment", None)
     base_size = alignment["base_size"] if alignment else tokenizer.get_vocab_size()
     print(f"Tokenizer vocab size (base): {base_size}")
 
+    # Load the model first so checkpoint config (including POST_TRAINING) is applied.
     model, model_context_len = load_model(checkpoint_path, tokenizer.get_vocab_size(), device)
+
+    # Determine mode after loading so checkpoint's POST_TRAINING value takes effect.
+    mode = "chat" if config.POST_TRAINING else "completion"
+    print("Chat:")
+    print(f"  mode={mode}")
     if args.context_len == config.CONTEXT_LEN:
         args.context_len = model_context_len
 

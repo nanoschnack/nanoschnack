@@ -331,6 +331,8 @@ if spec_warmup_start_tokens is not None and warmup_tokens:
         spec_warmup_start_tokens = None
     else:
         scheduler.warmup_state["start"] = spec_warmup_start_tokens
+        # Reset base_lrs to current config since checkpoint may have different LR.
+        scheduler.base_lrs = [config.LEARNING_RATE for _ in scheduler.base_lrs]
 
 # Align the scheduler with the resumed token count.
 if resume_total_tokens:

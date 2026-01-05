@@ -951,8 +951,10 @@ for current_epoch in itertools.count(resume_epoch):
             break
 
     else:
-        # Reset the sample index after a full epoch without interruption.
-                continue
+        # Stop after one epoch for post-training; continue for pre-training.
+        if config.POST_TRAINING:
+            break
+        continue
 
     # Stop training after an interrupted epoch.
     break

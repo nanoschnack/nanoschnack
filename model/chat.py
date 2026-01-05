@@ -121,9 +121,8 @@ def generate_reply_stream(
     input_ids = torch.tensor([prompt_ids[-context_len:]], device=device, dtype=torch.long)
     id_to_bytes = _build_id_to_bytes(tokenizer)
     decoder = codecs.getincrementaldecoder("utf-8")()
-    eos_id = tokenizer.token_to_id(EOS_TOKEN)
     if stop_id is None:
-        stop_id = eos_id
+        stop_id = tokenizer.token_to_id(EOS_TOKEN)
     use_byte_decoder = True
 
     with torch.no_grad():
@@ -261,9 +260,6 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
             first_line = False
         reply_parts = []
         try:
-            stop_id = None
-            if config.POST_TRAINING:
-                stop_id = tokenizer.token_to_id(END_TOKEN)
             for token in generate_reply_stream(
                 model,
                 tokenizer,
@@ -273,7 +269,7 @@ def run_repl(model, tokenizer, context_len, max_new_tokens, temperature, top_k, 
                 temperature=temperature,
                 top_k=top_k,
                 device=device,
-                stop_id=stop_id,
+                stop_id=tokenizer.token_to_id(END_TOKEN if config.POST_TRAINING else EOS_TOKEN),
             ):
                 for char in token:
                     if pending_backslash:

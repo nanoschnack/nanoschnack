@@ -9,7 +9,7 @@ import torch
 
 from chat import generate_reply_stream
 from text_format import format_compact
-from tokenizer import EOS_TOKEN
+from tokenizer import END_TOKEN, EOS_TOKEN
 
 
 @dataclass
@@ -161,6 +161,7 @@ def plot_with_completion(points, model, tokenizer, config, device):
                 temperature=config.TEMPERATURE,
                 top_k=config.TOP_K,
                 device=device,
+                stop_id=tokenizer.token_to_id(END_TOKEN if config.POST_TRAINING else EOS_TOKEN),
         ):
             reply_parts.append(token)
         completion = "".join(reply_parts)

@@ -88,7 +88,7 @@ from tokenizer import PAD_TOKEN, load_tokenizer, print_vocab_alignment
 # %%
 from gpt import GPT
 from autotune import find_max_batch_size
-from checkpointer import apply_checkpoint_config
+from checkpointer import load_checkpoint_config
 import config
 
 # Resolve model paths so relative data/checkpoint locations are stable.
@@ -99,21 +99,15 @@ except ModuleNotFoundError:
 model_dir, data_dir, checkpoint_dir = setup_paths()
 
 # Pull model sizes from the most recent checkpoint if present.
-import torch
 checkpoint_path = checkpoint_dir / "latest.pt"
+checkpoint_state = load_checkpoint_config(checkpoint_path)
 checkpoint_specs = None
 spec_warmup_start_tokens = None
-if checkpoint_path.exists():
-    checkpoint_state = torch.load(checkpoint_path, map_location="cpu")
-    if isinstance(checkpoint_state, dict):
-        spec_warmup_start_tokens = checkpoint_state.get("spec_warmup_start_tokens")
-    if isinstance(checkpoint_state, dict) and "config" in checkpoint_state:
-        checkpoint_config = checkpoint_state["config"]
+if isinstance(checkpoint_state, dict):
+    spec_warmup_start_tokens = checkpoint_state.get("spec_warmup_start_tokens")
+    checkpoint_config = checkpoint_state.get("config")
+    if checkpoint_config:
         checkpoint_specs = checkpoint_config.get("DATASET_SPECS")
-        apply_checkpoint_config(checkpoint_config)
-    elif isinstance(checkpoint_state, dict):
-        config.POS_EMBED_TYPE = "learned"
-        config.TOKENIZER_FILENAME = "tokenizer.json"
 
 # Load tokenizer after applying checkpoint config.
 tokenizer = load_tokenizer()
@@ -186,8 +180,6 @@ if is_master:
 # Avoid nested workers and tokenizer threads; use one form of parallelism.
 if config.DATA_LOADER_WORKERS > 0 and config.TOKENIZER_WORKERS > 0:
     raise ValueError("DATA_LOADER_WORKERS and TOKENIZER_WORKERS cannot both be > 0.")
-
-
 
 # %% [markdown]
 # ## Create vizualization of the model
@@ -328,8 +320,6 @@ resume_total_tokens = sum(resume_tokens.values())
 # Track an extra warmup window when dataset specs change mid-run.
 warmup_tokens = getattr(scheduler, "warmup_tokens", 0)
 if checkpoint_specs and checkpoint_specs != config.DATASET_SPECS:
-    spec_warmup_start_tokens = resume_total_tokens
-if os.getenv("FORCE_SPEC_WARMUP") == "1":
     spec_warmup_start_tokens = resume_total_tokens
 if spec_warmup_start_tokens is not None and warmup_tokens:
     if resume_total_tokens >= spec_warmup_start_tokens + warmup_tokens:
@@ -727,17 +717,14 @@ for current_epoch in itertools.count(resume_epoch):
         if config.POST_TRAINING:
             if loss_mask is None:
                 raise RuntimeError("POST_TRAINING requires loss_mask in the batch.")
-            targets = targets.masked_fill(loss_mask[:, 1:] == 0, pad_id)
+            targets = targets.masked_fill(loss_mask[:, 1:] == 0, -100)
 
         # Preview tokenization outputs for debugging.
-        if (debug_level >= 3 or (debug_level >= 2 and not printed_debug_sample)) and is_master:
+        if debug_level >= 2 and not printed_debug_sample and is_master:
             input_preview = inputs[0].tolist()
             target_preview = targets[0].tolist()
             print(f"Input tokens: {input_preview}")
             print(f"Target tokens: {target_preview}")
-            if loss_mask is not None:
-                loss_preview = loss_mask[0].tolist()
-                print(f"Loss mask: {loss_preview}")
             print(f"Input text: {tokenizer.decode(input_preview)}")
             print(f"Target text: {tokenizer.decode(target_preview)}")
             printed_debug_sample = True
@@ -885,7 +872,6 @@ for current_epoch in itertools.count(resume_epoch):
                     tokenizer,
                     sample_count=3,
                     source_ids=batch.get("source_id"),
-                    dataset_specs=dataset_specs,
                 )
 
 
@@ -966,10 +952,7 @@ for current_epoch in itertools.count(resume_epoch):
 
     else:
         # Reset the sample index after a full epoch without interruption.
-        # Stop after a full pass in post-training mode.
-        if config.POST_TRAINING:
-            break
-        continue
+                continue
 
     # Stop training after an interrupted epoch.
     break

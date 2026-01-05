@@ -14,12 +14,13 @@ import config
 from device import device_info, pick_device, print_device_info
 from gpt import GPT
 from checkpointer import (
+    load_checkpoint_config,
     load_model_state_dict,
     normalize_state_dict,
     resize_vocab_state_dict,
     select_state_dict,
 )
-from tokenizer import ASSISTANT_TOKEN, END_TOKEN, EOS_TOKEN, USER_TOKEN, load_tokenizer
+from tokenizer import ASSISTANT_TOKEN, END_TOKEN, EOS_TOKEN, USER_TOKEN, load_tokenizer, print_vocab_alignment
 
 
 def load_model(checkpoint_path, vocab_size, device):
@@ -333,17 +334,12 @@ def main():
     device = pick_device()
     info = device_info(device)
     print_device_info(info)
+
+    # Apply checkpoint config before loading tokenizer so TOKENIZER_FILENAME is correct.
+    load_checkpoint_config(checkpoint_path)
     tokenizer = load_tokenizer()
-
-    # Confirm base tokenizer size before alignment padding.
-    alignment = getattr(tokenizer, "vocab_alignment", None)
-    base_size = alignment["base_size"] if alignment else tokenizer.get_vocab_size()
-    print(f"Tokenizer vocab size (base): {base_size}")
-
-    # Load the model first so checkpoint config (including POST_TRAINING) is applied.
+    print_vocab_alignment(tokenizer)
     model, model_context_len = load_model(checkpoint_path, tokenizer.get_vocab_size(), device)
-
-    # Determine mode after loading so checkpoint's POST_TRAINING value takes effect.
     mode = "chat" if config.POST_TRAINING else "completion"
     print("Chat:")
     print(f"  mode={mode}")

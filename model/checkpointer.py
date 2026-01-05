@@ -44,6 +44,18 @@ def apply_checkpoint_config(ckpt_config):
         config.POS_EMBED_TYPE = "learned"
 
 
+def load_checkpoint_config(checkpoint_path):
+    """Load checkpoint and apply its config. Returns the checkpoint dict."""
+    if checkpoint_path is None or not Path(checkpoint_path).exists():
+        return None
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    if isinstance(ckpt, dict) and "config" in ckpt:
+        apply_checkpoint_config(ckpt.get("config"))
+    elif isinstance(ckpt, dict):
+        apply_checkpoint_config(None)
+    return ckpt
+
+
 def strip_state_dict_prefix(state_dict, prefix):
     # Strip a common prefix applied by wrappers like DataParallel.
     if not state_dict:

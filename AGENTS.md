@@ -24,4 +24,5 @@
 - Use `source .venv/bin/activate` and then `python -m unittest discover -s tests` for the test run.
 
 ## Notebook Sync
-- Note: notebook-exported `.py` files are generated; always edit the `.ipynb` and re-sync.
+- `model/training.py` is exported from `model/training.ipynb`. When editing `training.py`, sync changes back to the notebook before committing.
+- To sync: edit the corresponding cell in the `.ipynb` file with the same changes made to the `.py` file.

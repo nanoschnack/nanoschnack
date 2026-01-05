@@ -5,6 +5,7 @@ TOKENIZER_SIZE := 32000
 TOKENIZER_TOP := 50
 CORPUS_SIZE := 1000000000
 OASST_DE_OUTPUT := data/posttraining/OpenAssistant/OASST-DE.txt
+GERMANQUAD_OUTPUT := data/posttraining/Kaggle/GermanQuAD.txt
 
 .PHONY: tokenizer
 .PHONY: all
@@ -40,10 +41,13 @@ train-local: $(TOKENIZER_OUTPUT)
 post-train: $(TOKENIZER_OUTPUT) post-train-datasets
 	LEARNING_RATE=6e-5 WARMUP_PCT=0.03 LEARNING_RATE_MIN_RATIO=1.0 DECAY=0.001 FREEZE_EMBEDDINGS=1 POST_TRAINING=1 MACRO_BATCH_SIZE=64 python model/training.py
 
-post-train-datasets: $(OASST_DE_OUTPUT)
+post-train-datasets: $(OASST_DE_OUTPUT) $(GERMANQUAD_OUTPUT)
 
 $(OASST_DE_OUTPUT): scripts/build_oasst_de.py
 	python scripts/build_oasst_de.py --output $(OASST_DE_OUTPUT)
+
+$(GERMANQUAD_OUTPUT): scripts/build_germanquad.py
+	python scripts/build_germanquad.py --output $(GERMANQUAD_OUTPUT)
 
 chat:
 	python model/chat.py

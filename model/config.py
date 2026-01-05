@@ -127,7 +127,8 @@ HF_SHARD_CACHE_CLEANUP = _env_str("HF_SHARD_CACHE_CLEANUP", "auto")
 DATASET_SPECS = _env_str(
     "DATASET_SPECS",
     (
-        "txt:data/posttraining/OpenAssistant/OASST-DE.txt:text"
+        "txt:data/posttraining/OpenAssistant/OASST-DE.txt:text,"
+        "txt:data/posttraining/Kaggle/GermanQuAD.txt:text"
         if POST_TRAINING
         else (
             "hf:coral-nlp/german-commons:web:onemillionposts:text,"

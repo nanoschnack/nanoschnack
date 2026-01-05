@@ -227,30 +227,31 @@ class PostTrainingDatasetTests(unittest.TestCase):
         self.assertEqual(masks[0], [0, 0, 0, 0, 0, 0, 1, 1, 1])
 
     def test_post_training_unmatched_assistant_masks_all(self):
+        # No-loss blocks are kept (filtered in training loop for progress tracking).
         data_path = (
             Path(__file__).resolve().parent / "data" / "posttraining_unmatched_assistant.txt"
         )
         blocks, masks = _load_posttraining_blocks(data_path, block_size=6)
-        self.assertEqual(blocks, [])
-        self.assertEqual(masks, [])
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(sum(masks[0]), 0)
 
     def test_post_training_incomplete_user_masks_assistant(self):
         data_path = (
             Path(__file__).resolve().parent / "data" / "posttraining_incomplete_user.txt"
         )
         blocks, masks = _load_posttraining_blocks(data_path, block_size=6)
-        self.assertEqual(blocks, [])
-        self.assertEqual(masks, [])
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(sum(masks[0]), 0)
 
     def test_post_training_system_injection(self):
         data_path = (
             Path(__file__).resolve().parent / "data" / "posttraining_system_injection.txt"
         )
-        blocks, _ = _load_posttraining_blocks(data_path, block_size=9)
-
-        self.assertEqual(len(blocks), 1)
-        self.assertEqual(blocks[0][:4], [10, _char_id("S"), 13, 11])
-        self.assertEqual(blocks[0][4], 13)
+        blocks, masks = _load_posttraining_blocks(data_path, block_size=9)
+        blocks_with_loss = [(b, m) for b, m in zip(blocks, masks) if sum(m) > 0]
+        self.assertEqual(len(blocks_with_loss), 1)
+        self.assertEqual(blocks_with_loss[0][0][:4], [10, _char_id("S"), 13, 11])
+        self.assertEqual(blocks_with_loss[0][0][4], 13)
 
     def test_post_training_eos_resets_system_injection(self):
         data_path = (

@@ -696,6 +696,16 @@ for current_epoch in itertools.count(resume_epoch):
         attention_mask = batch["attention_mask"]
         loss_mask = batch.get("loss_mask")
 
+        # Skip batches with no loss targets but still count rows for progress.
+        if config.POST_TRAINING and loss_mask.sum() == 0:
+            row_counts = batch["row_count"].tolist()
+            source_ids = batch["source_id"].tolist()
+            for source_id, row_count in zip(source_ids, row_counts):
+                if row_count:
+                    spec_key = dataset_specs_keys[int(source_id)]
+                    source_row_counts[spec_key] += int(row_count)
+            continue
+
         # Compute token counts on CPU to avoid GPU sync on tolist.
         token_counts = attention_mask[:, 1:].sum(dim=1).tolist()
         token_count = int(sum(token_counts))

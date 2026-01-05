@@ -1015,9 +1015,6 @@ def build_packed_dataset(
     )
     # Drop empty packed samples to avoid zero-length batches in DDP.
     packed = packed.filter(lambda sample: len(sample["input_ids"]) > 0)
-    # Drop post-training blocks with no assistant loss targets.
-    if config.POST_TRAINING:
-        packed = packed.filter(lambda sample: sum(sample["loss_mask"]) > 0)
     packed_column_names = _resolve_column_names(packed)
     if packed_column_names:
         keep_columns = {"input_ids", "attention_mask", "row_count", "source_id"}

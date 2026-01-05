@@ -28,7 +28,12 @@ def _normalize_text(text):
     if text is None:
         return ""
     normalized = str(text).replace("\r\n", "\n").replace("\r", "\n")
-    normalized = normalized.replace("\xa0", " ")
+
+    # Normalize special whitespace. The Kaggle CSV stores answers as Python repr
+    # strings, so \xa0 appears as literal 4-char escape sequences, not bytes.
+    # Handle both forms in case actual bytes appear elsewhere.
+    normalized = normalized.replace("\xa0", " ").replace("\\xa0", " ")
+    normalized = normalized.replace("\xad", "").replace("\\xad", "")
     return normalized.replace("\n", "\\n").rstrip()
 
 

@@ -87,11 +87,13 @@ def build_warmup_cosine_tokens(
             return base_ratio
         warmup_progress = token_count - warmup_start
         if warmup_progress < warmup_tokens:
-            warmup_ratio = max(start_factor, warmup_progress / warmup_tokens)
-            return min(base_ratio, warmup_ratio)
+            # During spec warmup, ramp from 5% of peak to full LR.
+            warmup_frac = warmup_progress / warmup_tokens
+            return start_factor + (1.0 - start_factor) * warmup_frac
         return base_ratio
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     scheduler.warmup_state = warmup_state
     scheduler.warmup_tokens = warmup_tokens
+    scheduler.start_factor = start_factor
     return scheduler

@@ -250,11 +250,17 @@ for spec in dataset_specs:
 # Resolve model size for token budgeting.
 param_count, _ = config.model_info(model)
 
-# Derive the token cap and epoch count from the configured max-training factor.
-max_tokens = int(param_count * config.MAX_TRAINING_FACTOR) if config.MAX_TRAINING_FACTOR > 0 else 0
-target_tokens = max_tokens
+# Derive the token budget for the scheduler.
+if config.POST_TRAINING:
+    # For post-training, estimate tokens from total rows (one epoch through data).
+    total_rows = sum(total_rows_by_spec.values())
+    target_tokens = total_rows * config.CONTEXT_LEN
+    target_info = f"rows={total_rows:,} * ctx={config.CONTEXT_LEN}"
+else:
+    target_tokens = int(param_count * config.MAX_TRAINING_FACTOR) if config.MAX_TRAINING_FACTOR > 0 else 0
+    target_info = f"factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,}"
 if is_master:
-    print(f"  Target: epochs=1 target_tokens={target_tokens:,} (factor {config.MAX_TRAINING_FACTOR} of model size {param_count:,})")
+    print(f"  Target: target_tokens={target_tokens:,} ({target_info})")
 
 
 # %% [markdown]
@@ -331,8 +337,9 @@ if spec_warmup_start_tokens is not None and warmup_tokens:
         spec_warmup_start_tokens = None
     else:
         scheduler.warmup_state["start"] = spec_warmup_start_tokens
-        # Reset base_lrs to current config since checkpoint may have different LR.
-        scheduler.base_lrs = [config.LEARNING_RATE for _ in scheduler.base_lrs]
+
+# Always reset base_lrs to current config since checkpoint may have different LR.
+scheduler.base_lrs = [config.LEARNING_RATE for _ in scheduler.base_lrs]
 
 # Align the scheduler with the resumed token count.
 if resume_total_tokens:
@@ -344,22 +351,13 @@ if resume_total_tokens:
 if is_master and resume_info:
     lr_after = optimizer.param_groups[0]["lr"]
     display_epoch = max(resume_epoch + 1, 1)
-    print(
-        f"  Checkpoint: loaded epoch={display_epoch} "
-        f"step={global_step} tokens={resume_total_tokens} samples={resume_samples} "
-        f"tokenizer={config.TOKENIZER_FILENAME}",
-        flush=True,
-    )
+    print(f"  Checkpoint: epoch={display_epoch} step={global_step} tokens={resume_total_tokens} samples={resume_samples}")
     if warmup_tokens and spec_warmup_start_tokens is not None:
-        print(f"  Warmup: {warmup_reason} tokens={warmup_tokens} start={spec_warmup_start_tokens}")
-    print(
-        f"  Optimizer: {resume_info['optimizer']}",
-        flush=True,
-    )
-    print(
-        f"  Scheduler: {resume_info['scheduler']} lr={lr_after:.8f}",
-        flush=True,
-    )
+        warmup_pct = config.WARMUP_PCT * 100
+        min_lr = config.LEARNING_RATE * scheduler.start_factor
+        print(f"  Warmup: {warmup_reason} tokens={warmup_tokens:,} pct={warmup_pct:.0f}% min={min_lr:.6f} max={config.LEARNING_RATE:.6f}")
+    print(f"  Optimizer: {resume_info['optimizer']}")
+    print(f"  Scheduler: {resume_info['scheduler']} lr={lr_after:.8f}")
 
 # Cap resume offsets to the known total rows to avoid invalid states.
 for spec in dataset_specs:
@@ -368,10 +366,7 @@ for spec in dataset_specs:
     total_rows = total_rows_by_spec.get(spec_key)
     if total_rows is not None and row_offset > total_rows:
         if is_master:
-            print(
-                f"Clamping resume rows for {spec_key}: {row_offset} -> {total_rows}",
-                flush=True,
-            )
+            print(f"Clamping resume rows for {spec_key}: {row_offset} -> {total_rows}")
         resume_rows[spec_key] = total_rows
 
 # Track per-rank row counts for shard-aware resume.
@@ -381,7 +376,7 @@ source_token_counts = {spec["spec"]: 0 for spec in dataset_specs}
 # Pre-warm dataset shards on the master to avoid DDP startup stalls.
 if ddp_enabled:
     if is_master:
-        print("Warming dataset cache...", flush=True)
+        print("Warming dataset cache...")
         for spec in dataset_specs:
             warm_dataset = load_dataset_from_spec(
                 spec,
@@ -469,7 +464,7 @@ if not packed_datasets:
 token_counts_by_spec = [resume_tokens.get(spec_key, 0) for spec_key in packed_dataset_specs_keys]
 base_dataset = build_interleaved_dataset(packed_datasets, seed=42, token_counts=token_counts_by_spec)
 if is_master:
-    print(f"Packed dataset ready ({len(packed_datasets)} sources).", flush=True)
+    print(f"Packed dataset ready ({len(packed_datasets)} sources).")
 
 
 # %% [markdown]
@@ -663,7 +658,7 @@ def _request_stop(signum, frame):
     global stop_requested
     stop_requested = True
 
-print("Starting training loop...", flush=True) if is_master else None
+print("Starting training loop...") if is_master else None
 steps_remaining = config.MAX_STEPS
 
 for current_epoch in itertools.count(resume_epoch):

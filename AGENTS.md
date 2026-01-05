@@ -24,5 +24,6 @@
 - Use `source .venv/bin/activate` and then `python -m unittest discover -s tests` for the test run.
 
 ## Notebook Sync
-- `model/training.py` is exported from `model/training.ipynb`. When editing `training.py`, sync changes back to the notebook before committing.
-- To sync: edit the corresponding cell in the `.ipynb` file with the same changes made to the `.py` file.
+- `model/training.py` is paired with `model/training.ipynb` via jupytext.
+- The pre-commit hook syncs both directions when `.ipynb` files are staged.
+- When editing only the `.py` file, also stage the `.ipynb` to trigger the hook, or run `jupytext --sync model/training.py` manually.

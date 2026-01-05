@@ -319,8 +319,13 @@ resume_total_tokens = sum(resume_tokens.values())
 
 # Track an extra warmup window when dataset specs change mid-run.
 warmup_tokens = getattr(scheduler, "warmup_tokens", 0)
+warmup_reason = None
 if checkpoint_specs and checkpoint_specs != config.DATASET_SPECS:
     spec_warmup_start_tokens = resume_total_tokens
+    warmup_reason = "spec change"
+elif checkpoint_specs is None and config.POST_TRAINING and resume_total_tokens:
+    spec_warmup_start_tokens = resume_total_tokens
+    warmup_reason = "post-training on old checkpoint"
 if spec_warmup_start_tokens is not None and warmup_tokens:
     if resume_total_tokens >= spec_warmup_start_tokens + warmup_tokens:
         spec_warmup_start_tokens = None
@@ -344,10 +349,7 @@ if is_master and resume_info:
         flush=True,
     )
     if warmup_tokens and spec_warmup_start_tokens is not None:
-        print(
-            f"  Warmup: spec change tokens={warmup_tokens} start={spec_warmup_start_tokens}",
-            flush=True,
-        )
+        print(f"  Warmup: {warmup_reason} tokens={warmup_tokens} start={spec_warmup_start_tokens}")
     print(
         f"  Optimizer: {resume_info['optimizer']}",
         flush=True,

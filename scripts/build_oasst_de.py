@@ -33,6 +33,7 @@ def _normalize_text(text):
     if text is None:
         return ""
     normalized = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.replace("\xa0", " ")
     return normalized.replace("\n", "\\n").rstrip()
 
 

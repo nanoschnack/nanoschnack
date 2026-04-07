@@ -319,7 +319,7 @@ def align_micro_batch_size(micro_batch_size, macro_batch_size):
     return 1
 
 
-def print_chat_hyperparams(param_count=None, quantization=None):
+def print_chat_hyperparams(param_count=None, quantization=None, kv_cache=None):
     """Print the inference-related hyperparameters."""
     lines = _architecture_lines() + [
         "Inference:",
@@ -327,6 +327,8 @@ def print_chat_hyperparams(param_count=None, quantization=None):
         f"  temperature={TEMPERATURE}",
         f"  top_k={TOP_K}",
     ]
+    if kv_cache is not None:
+        lines.append(f"  kv_cache={kv_cache}")
     if param_count is not None or quantization is not None:
         lines += [
             "Model:",

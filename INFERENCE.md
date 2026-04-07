@@ -74,13 +74,13 @@ Future model lines may use:
 
 ## Validation
 
-The first validation target is greedy autoregressive parity against the existing PyTorch reference path.
+The first validation target is greedy autoregressive parity against a PyTorch KV-cached reference path in `model/gpt_kv_cached.py`.
 
 Minimum parity checks:
 
 - Checkpoint loading succeeds for all supported snapshots.
 - Tokenizer resolution produces the expected aligned vocab size.
-- Greedy token-by-token generation matches the reference path on fixed prompts.
+- Greedy token-by-token generation matches the KV-cached reference path on fixed prompts.
 
 ## Non-Goals
 
@@ -95,7 +95,7 @@ Minimum parity checks:
 - [x] Create `inference/` package for serving-specific code.
 - [ ] Add inference spec loader for checkpoint config, tokenizer choice, and normalized state dict handling.
 - [ ] Add inference tokenizer loader that reproduces NanoSchnack runtime vocab augmentation.
-- [ ] Add PyTorch reference autoregressive generator for parity checks.
+- [ ] Add an inference-only PyTorch KV-cached decode path in `model/gpt_kv_cached.py`.
 - [ ] Add tests for `_orig_mod.` checkpoint normalization.
 - [ ] Add tests for tokenizer family selection and aligned vocab size.
 - [ ] Add greedy parity tests on fixed prompts.

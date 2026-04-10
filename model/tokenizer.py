@@ -135,15 +135,10 @@ def _resolve_tokenizer_path():
         tokenizer_dir = Path(__file__).resolve().parent.parent / "tokenizer"
         tokenizer_name = getattr(_local_config, "TOKENIZER_FILENAME", "tokenizer.json")
         candidate = (tokenizer_dir / tokenizer_name).resolve()
-        if candidate.is_file():
-            return str(candidate)
-        fallback = (tokenizer_dir / "tokenizer.json").resolve()
-        if fallback.is_file():
-            return str(fallback)
-        return str(candidate)
-    candidate = Path(tokenizer_path)
-    if not candidate.is_absolute():
-        candidate = (Path(__file__).resolve().parent.parent / candidate).resolve()
+    else:
+        candidate = Path(tokenizer_path)
+        if not candidate.is_absolute():
+            candidate = (Path(__file__).resolve().parent.parent / candidate).resolve()
     if candidate.is_file():
         return str(candidate)
     raise FileNotFoundError(f"Tokenizer JSON not found at {candidate}")

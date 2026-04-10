@@ -143,7 +143,9 @@ DATASET_SPECS = _env_str(
 )
 
 # Tokenizer filename and path for training and chat.
-TOKENIZER_FILENAME = _env_str("TOKENIZER_FILENAME", "tokenizer.json")
+# New runs default to the UTF-8-safe v3 tokenizer, while older checkpoints
+# keep their original tokenizer filename via checkpoint config.
+TOKENIZER_FILENAME = _env_str("TOKENIZER_FILENAME", "tokenizer-v3.json")
 TOKENIZER_JSON_PATH = _env_str("TOKENIZER_JSON_PATH", "")
 
 ###

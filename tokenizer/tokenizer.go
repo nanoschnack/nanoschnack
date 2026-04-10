@@ -18,15 +18,15 @@ import (
 //
 // Here’s what GPT4Pattern is doing (left-to-right alternatives, first match wins):
 //
-//  - '(?i:[sdmt]|ll|ve|re): contractions starting with an apostrophe followed by s/d/m/t or the suffixes ll/ve/re (case-insensitive inside the group).
-//  - (?>[^\r\n\p{L}\p{N}]?)\p{L}+: a word: optional leading non-letter/number (e.g., a leading period in “.word”), then one or more Unicode letters. The atomic group (?>) prevents
-//    backtracking.
-//  - \p{N}{1,3}: a number chunk of 1–3 Unicode digits (splits long numbers into 3-digit pieces).
-//  -  ?(?>[^\s\p{L}\p{N}]+)[\r\n]*: optional leading space, then a run of symbols/punctuation (no letters/numbers/whitespace), then optional trailing newlines—captures things like " --"
-//    or " ##\n".
-//  - \s*[\r\n]: optional whitespace followed by a newline (CR or LF) to ensure newlines are isolated.
-//  - \s+(?!\S): trailing whitespace at end of string (whitespace not followed by a non-space).
-//  - \s+: any remaining whitespace runs.
+//   - '(?i:[sdmt]|ll|ve|re): contractions starting with an apostrophe followed by s/d/m/t or the suffixes ll/ve/re (case-insensitive inside the group).
+//   - (?>[^\r\n\p{L}\p{N}]?)\p{L}+: a word: optional leading non-letter/number (e.g., a leading period in “.word”), then one or more Unicode letters. The atomic group (?>) prevents
+//     backtracking.
+//   - \p{N}{1,3}: a number chunk of 1–3 Unicode digits (splits long numbers into 3-digit pieces).
+//   - ?(?>[^\s\p{L}\p{N}]+)[\r\n]*: optional leading space, then a run of symbols/punctuation (no letters/numbers/whitespace), then optional trailing newlines—captures things like " --"
+//     or " ##\n".
+//   - \s*[\r\n]: optional whitespace followed by a newline (CR or LF) to ensure newlines are isolated.
+//   - \s+(?!\S): trailing whitespace at end of string (whitespace not followed by a non-space).
+//   - \s+: any remaining whitespace runs.
 const GPT4Pattern = `'(?i:[sdmt]|ll|ve|re)|(?>[^\r\n\p{L}\p{N}]?)\p{L}+|\p{N}{1,3}| ?(?>[^\s\p{L}\p{N}]+)[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+`
 
 type Pair struct {
@@ -133,6 +133,16 @@ func pairLess(a, b Pair) bool {
 		return a.B < b.B
 	}
 	return a.A < b.A
+}
+
+// chunkToIDs converts a UTF-8 string chunk into byte-level token IDs.
+func chunkToIDs(chunk string) []uint32 {
+	bytes := []byte(chunk)
+	ids := make([]uint32, len(bytes))
+	for i, b := range bytes {
+		ids[i] = uint32(b)
+	}
+	return ids
 }
 
 // heap.Interface implementation
@@ -363,11 +373,7 @@ func (t *Tokenizer) TrainFromIterator(iter func() (string, bool), vocabSize uint
 	words := make([]Word, 0, len(counts))
 	cvec := make([]int64, 0, len(counts))
 	for chunk, c := range counts {
-		ids := make([]uint32, len(chunk))
-		for i := range chunk {
-			ids[i] = uint32(chunk[i])
-		}
-		words = append(words, Word{ids: ids})
+		words = append(words, Word{ids: chunkToIDs(chunk)})
 		cvec = append(cvec, c)
 	}
 
@@ -504,10 +510,7 @@ func (t *Tokenizer) Encode(text string) ([]uint32, error) {
 	}
 	for match != nil {
 		chunk := match.String()
-		ids := make([]uint32, len(chunk))
-		for i := range chunk {
-			ids[i] = uint32(chunk[i])
-		}
+		ids := chunkToIDs(chunk)
 
 		for len(ids) >= 2 {
 			found := false

@@ -134,6 +134,22 @@ class GPTKVCached(GPTBase):
         #   v_full: (B, H, past_T + new_T, D)
         #
         # Only q/k/v for the new chunk are projected. Old k/v come from cache.
+        #
+        # Compare the work done here to plain full-sequence attention:
+        #
+        #   plain step N:
+        #     x      = [h0 h1 h2 ... hN]
+        #     q/k/v  = project all h0..hN again
+        #
+        #   cached step N:
+        #     cache  = [k0..kN-1], [v0..vN-1]
+        #     x      = [hN]                  or, more generally, the new chunk
+        #     q/k/v  = project only hN
+        #     full_k = [k0..kN-1 | kN]
+        #     full_v = [v0..vN-1 | vN]
+        #
+        # So the saving is simple: old keys/values are reused instead of
+        # reprojected.
         batch_size, seq_len, embed_size = x.shape
         q, k, v = project_qkv(attn, x)
 
@@ -157,6 +173,15 @@ class GPTKVCached(GPTBase):
         #
         # Queries are *not* cached because we only need queries for the current
         # step. Future steps will produce their own fresh queries.
+        #
+        # Intuition:
+        #
+        #   past tokens ask old questions about old prefixes
+        #   new token asks one new question about the full prefix
+        #
+        # Once a token's query has been used to produce its hidden state, we do
+        # not need that query again. Future decode steps only need the token's
+        # key/value so later queries can attend to it.
         if layer_cache is not None:
             full_k = torch.cat((layer_cache.key, k), dim=-2)
             full_v = torch.cat((layer_cache.value, v), dim=-2)
@@ -177,6 +202,25 @@ class GPTKVCached(GPTBase):
         #   keys:    [0 1 2 3 4]
         #   query 3: [1 1 1 1 0]
         #   query 4: [1 1 1 1 1]
+        #
+        # Score matrix view:
+        #
+        #              keys / values
+        #            k0  k1  k2  k3  k4
+        #   q(new=3)  *   *   *   *   .
+        #   q(new=4)  *   *   *   *   *
+        #
+        #   * = allowed attention score
+        #   . = masked future position
+        #
+        # For the common one-token decode case (new_T=1), the matrix collapses
+        # to a single row:
+        #
+        #            k0  k1  k2  k3
+        #   q(new=3)  *   *   *   *
+        #
+        # That is why this method "only computes the last token": the query
+        # side has one row, but that row still attends over the full prefix.
         attn_mask = build_causal_mask(seq_len, full_k.shape[-2], past_len, x.device)
         dropout_p = attn.dropout.p if self.training else 0.0
         y = F.scaled_dot_product_attention(
@@ -189,11 +233,27 @@ class GPTKVCached(GPTBase):
         )
 
         # Merge heads and run the output projection exactly like plain attention.
+        #
+        # The SDPA output still has head structure:
+        #
+        #   y: (B, H, new_T, D)
+        #
+        # We fold heads back into the model dimension and apply the same output
+        # projection as the plain attention path:
+        #
+        #   per-head outputs -> concat heads -> linear proj -> dropout
         y = merge_attention_heads(y, batch_size, seq_len, embed_size)
         y = attn.proj(y)
 
         # Store detached K/V tensors so the cache is a pure inference artifact,
         # not part of the backward graph.
+        #
+        # After this layer, the cache timeline has advanced from:
+        #
+        #   before: [past................]
+        #   after:  [past................|new.]
+        #
+        # The caller passes this updated cache into the next decode step.
         next_layer_cache = KVLayerCache(key=full_k.detach(), value=full_v.detach())
         return attn.dropout(y), next_layer_cache
 

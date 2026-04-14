@@ -1,15 +1,9 @@
 from huggingface_hub import hf_hub_download
-import importlib.util
 from pathlib import Path
 from tokenizers import Tokenizer
 import math
-# Load the local config module directly to avoid cross-project name collisions.
-_CONFIG_PATH = Path(__file__).resolve().parent / "config.py"
-_spec = importlib.util.spec_from_file_location("nanoschnack_config", _CONFIG_PATH)
-if _spec is None or _spec.loader is None:
-    raise ImportError(f"Unable to load config from {_CONFIG_PATH}")
-_local_config = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_local_config)
+
+import config
 
 
 def _alignment_report(base_size, aligned_size):
@@ -47,7 +41,7 @@ def ensure_vocab_size(tokenizer, target_size):
     resolved_size = target_size
     if not resolved_size:
         resolved_size = _aligned_vocab_size(current_size)
-        _local_config.VOCAB_SIZE = resolved_size
+        config.VOCAB_SIZE = resolved_size
     if resolved_size == current_size:
         return current_size
     if resolved_size < current_size:
@@ -75,7 +69,7 @@ def print_vocab_alignment(tokenizer):
     if not alignment:
         return
     print("Tokenizer:")
-    print(f"  file={_local_config.TOKENIZER_FILENAME}")
+    print(f"  file={config.TOKENIZER_FILENAME}")
     base_size = alignment["base_size"]
     print(f"  Tokenizer vocab size (base): {base_size}")
     print(
@@ -122,7 +116,7 @@ def load_tokenizer():
 
     # Align after adding special tokens so padding is counted in the base size.
     base_size = tokenizer.get_vocab_size()
-    resolved_size = ensure_vocab_size(tokenizer, _local_config.VOCAB_SIZE)
+    resolved_size = ensure_vocab_size(tokenizer, config.VOCAB_SIZE)
     # Attach alignment metadata for training diagnostics.
     tokenizer.vocab_alignment = _alignment_report(base_size, resolved_size)
     return tokenizer
@@ -130,10 +124,10 @@ def load_tokenizer():
 
 def _resolve_tokenizer_path():
     # Resolve TOKENIZER_JSON_PATH relative to the repo root when needed.
-    tokenizer_path = getattr(_local_config, "TOKENIZER_JSON_PATH", "")
+    tokenizer_path = getattr(config, "TOKENIZER_JSON_PATH", "")
     if not tokenizer_path:
         tokenizer_dir = Path(__file__).resolve().parent.parent / "tokenizer"
-        tokenizer_name = getattr(_local_config, "TOKENIZER_FILENAME", "tokenizer.json")
+        tokenizer_name = getattr(config, "TOKENIZER_FILENAME", "tokenizer.json")
         candidate = (tokenizer_dir / tokenizer_name).resolve()
     else:
         candidate = Path(tokenizer_path)

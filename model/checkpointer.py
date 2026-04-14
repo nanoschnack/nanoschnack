@@ -5,6 +5,13 @@ import copy
 import torch
 
 import config
+from checkpoint_metadata import (
+    apply_checkpoint_config,
+    load_checkpoint_config,
+    normalize_state_dict,
+    select_state_dict,
+    strip_state_dict_prefix,
+)
 
 # Retain periodic checkpoint snapshots for easy rollback.
 SNAPSHOT_INTERVALS = (
@@ -16,80 +23,6 @@ SNAPSHOT_INTERVALS = (
 
 # Do not keep checkpoint files older than this threshold.
 MAX_CHECKPOINT_AGE_SECS = 12 * 60 * 60
-
-def apply_checkpoint_config(ckpt_config):
-    # Apply checkpoint hyperparameters to global config.
-    if not ckpt_config:
-        return
-    for name in (
-        "CONTEXT_LEN",
-        "VOCAB_SIZE",
-        "EMBED_SIZE",
-        "NUM_LAYERS",
-        "NUM_HEADS",
-        "HIDDEN_SIZE",
-        "ROPE_BASE",
-    ):
-        if name in ckpt_config:
-            setattr(config, name, ckpt_config[name])
-    if "POST_TRAINING" in ckpt_config:
-        config.POST_TRAINING = ckpt_config["POST_TRAINING"]
-    if "TOKENIZER_FILENAME" in ckpt_config:
-        config.TOKENIZER_FILENAME = ckpt_config["TOKENIZER_FILENAME"]
-    else:
-        # Older checkpoints predate tokenizer filename pinning, so keep them on
-        # the legacy tokenizer instead of inheriting the newer default.
-        config.TOKENIZER_FILENAME = "tokenizer.json"
-    if "POS_EMBED_TYPE" in ckpt_config:
-        config.POS_EMBED_TYPE = ckpt_config["POS_EMBED_TYPE"]
-    else:
-        config.POS_EMBED_TYPE = "learned"
-
-
-def load_checkpoint_config(checkpoint_path):
-    """Load checkpoint and apply its config. Returns the checkpoint dict."""
-    if checkpoint_path is None or not Path(checkpoint_path).exists():
-        return None
-    ckpt = torch.load(checkpoint_path, map_location="cpu")
-    if isinstance(ckpt, dict) and "config" in ckpt:
-        apply_checkpoint_config(ckpt.get("config"))
-    elif isinstance(ckpt, dict):
-        apply_checkpoint_config(None)
-    return ckpt
-
-
-def strip_state_dict_prefix(state_dict, prefix):
-    # Strip a common prefix applied by wrappers like DataParallel.
-    if not state_dict:
-        return state_dict
-    keys = list(state_dict.keys())
-    if all(key.startswith(prefix) for key in keys):
-        return {key[len(prefix):]: value for key, value in state_dict.items()}
-    return state_dict
-
-
-def normalize_state_dict(state_dict):
-    # Normalize wrapper prefixes to support older checkpoint formats.
-    state_dict = strip_state_dict_prefix(state_dict, "module.")
-    state_dict = strip_state_dict_prefix(state_dict, "_orig_mod.")
-    return strip_state_dict_prefix(state_dict, "model.")
-
-
-def select_state_dict(ckpt):
-    # Extract the model weights from known checkpoint layouts.
-    if isinstance(ckpt, dict):
-        if "model" in ckpt:
-            if "config" in ckpt:
-                apply_checkpoint_config(ckpt.get("config"))
-            else:
-                config.POS_EMBED_TYPE = "learned"
-            return ckpt["model"]
-        for key in ("model_state_dict", "state_dict"):
-            if key in ckpt:
-                return ckpt[key]
-        return None
-    return ckpt
-
 
 def _resolve_vocab_size(state_dict):
     # Derive vocab size from known token embedding weights.

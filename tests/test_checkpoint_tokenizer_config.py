@@ -1,9 +1,15 @@
 import importlib
 import os
+from pathlib import Path
 import unittest
+
+from model import setup_paths
+
+setup_paths()
 
 from checkpointer import apply_checkpoint_config
 import config
+import tokenizer
 
 
 class CheckpointTokenizerConfigTests(unittest.TestCase):
@@ -21,6 +27,15 @@ class CheckpointTokenizerConfigTests(unittest.TestCase):
     def test_apply_checkpoint_config_respects_explicit_tokenizer_filename(self):
         apply_checkpoint_config({"TOKENIZER_FILENAME": "tokenizer-v3.json"})
         self.assertEqual(config.TOKENIZER_FILENAME, "tokenizer-v3.json")
+
+    def test_tokenizer_module_uses_runtime_config_after_checkpoint_apply(self):
+        config.TOKENIZER_FILENAME = "tokenizer-v3.json"
+        apply_checkpoint_config({"TOKENIZER_FILENAME": "tokenizer.json"})
+
+        resolved = tokenizer._resolve_tokenizer_path()
+
+        self.assertEqual(config.TOKENIZER_FILENAME, "tokenizer.json")
+        self.assertEqual(Path(resolved).name, "tokenizer.json")
 
 
 class TokenizerDefaultConfigTests(unittest.TestCase):

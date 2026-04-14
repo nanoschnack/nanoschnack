@@ -172,12 +172,27 @@ def generate_reply_stream(
             if chunk:
                 yield chunk
             next_input = torch.tensor([[next_id]], device=device)
+
+            # Keep a sliding token window for both cached and uncached decode.
+            input_ids = torch.cat([input_ids, next_input], dim=1)
+            if input_ids.size(1) > context_len:
+                input_ids = input_ids[:, -context_len:]
+
             if use_cache and hasattr(model, "forward_cached"):
+                # Rebuild cache from the trimmed window once we slide past the
+                # context limit so cache length and position semantics stay in
+                # sync with the plain full-sequence path.
+                if cache is not None and input_ids.size(1) == context_len:
+                    if hasattr(model, "cache_seq_len"):
+                        cache_len = model.cache_seq_len(cache[0]) if cache else 0
+                    else:
+                        cache_len = input_ids.size(1)
+                    if cache_len >= context_len:
+                        cache = None
+                        logits, cache = model.forward_cached(input_ids)
+                        continue
                 logits, cache = model.forward_cached(next_input, cache)
             else:
-                input_ids = torch.cat([input_ids, next_input], dim=1)
-                if input_ids.size(1) > context_len:
-                    input_ids = input_ids[:, -context_len:]
                 logits = model(input_ids)
 
 

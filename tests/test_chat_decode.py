@@ -121,6 +121,62 @@ class ChatDecodeTests(unittest.TestCase):
         self.assertEqual(model.calls[0][0].shape, (1, 1))
         self.assertEqual(model.calls[1][0].shape, (1, 1))
 
+    def test_generate_reply_stream_rebuilds_cache_after_context_window_slides(self):
+        class _Tokenizer:
+            def get_vocab(self):
+                return {"a": 0, "<|EOS|>": 1}
+
+            def encode(self, text):
+                return types.SimpleNamespace(ids=[0])
+
+            def decode(self, ids):
+                return "a"
+
+            def token_to_id(self, token):
+                return {"<|EOS|>": 1}.get(token)
+
+        class _CachedModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.calls = []
+
+            @staticmethod
+            def cache_seq_len(layer_cache):
+                return layer_cache["seq_len"]
+
+            def forward(self, input_ids):
+                raise AssertionError("full forward should not be used when cache is enabled")
+
+            def forward_cached(self, input_ids, cache=None):
+                self.calls.append((input_ids.clone(), cache))
+                logits = torch.full((1, input_ids.shape[1], 2), -1.0, device=input_ids.device)
+                logits[..., 0] = 1.0
+                next_cache = [{"seq_len": input_ids.shape[1] if cache is None else cache[0]["seq_len"] + input_ids.shape[1]}]
+                return logits, next_cache
+
+        model = _CachedModel()
+        tokenizer = _Tokenizer()
+
+        reply = "".join(
+            generate_reply_stream(
+                model,
+                tokenizer,
+                prompt="hi",
+                context_len=2,
+                max_new_tokens=3,
+                temperature=0.0,
+                top_k=0,
+                device=torch.device("cpu"),
+                stop_id=None,
+                use_cache=True,
+            )
+        )
+
+        self.assertEqual(reply, "aaa")
+        self.assertEqual([call[0].shape for call in model.calls], [(1, 1), (1, 1), (1, 2), (1, 2)])
+        self.assertIsNone(model.calls[2][1])
+        self.assertIsNone(model.calls[3][1])
+
     def test_handle_repl_command_toggles_cache(self):
         class _CachedModel:
             def forward_cached(self):

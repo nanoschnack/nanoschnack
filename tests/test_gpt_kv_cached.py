@@ -60,6 +60,15 @@ class GPTKVCachedTests(unittest.TestCase):
         self.assertEqual(cache[0].key.shape, (2, 4, 4, 4))
         self.assertEqual(cache[0].value.shape, (2, 4, 4, 4))
 
+    def test_full_forward_matches_plain_gpt(self):
+        base, cached = self._build_models(pos_embed_type="learned")
+        tokens = torch.tensor([[1, 2, 3, 4], [4, 3, 2, 1]], dtype=torch.long)
+
+        expected = base(tokens)
+        actual = cached(tokens)
+
+        self.assertTrue(torch.allclose(actual, expected, atol=self._ATOL, rtol=self._RTOL))
+
     def test_incremental_decode_matches_last_token_logits(self):
         base, cached = self._build_models(pos_embed_type="rope")
         prompt = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)

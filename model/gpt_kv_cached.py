@@ -23,6 +23,14 @@ class GPTKVCached(GPTBase):
         # Start with no layer cache entries before prompt prefill.
         return [None] * len(self.blocks)
 
+    def forward(self, x, attention_mask=None):
+        # Preserve the plain GPT full-sequence path when cache use is disabled.
+        x = self.embed_inputs(x, start_pos=0)
+        for block in self.blocks:
+            x = block(x, attention_mask=attention_mask)
+        x = self.ln(x)
+        return self.lm(x)
+
     @staticmethod
     def cache_seq_len(layer_cache):
         if layer_cache is None:

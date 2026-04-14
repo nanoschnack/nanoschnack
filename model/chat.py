@@ -14,12 +14,11 @@ import config
 from device import device_info, pick_device, print_device_info
 from gpt import GPT
 from gpt_kv_cached import GPTKVCached
+from checkpoint_metadata import load_checkpoint_metadata
 from checkpointer import (
     load_checkpoint_config,
     load_model_state_dict,
-    normalize_state_dict,
     resize_vocab_state_dict,
-    select_state_dict,
 )
 from tokenizer import ASSISTANT_TOKEN, END_TOKEN, EOS_TOKEN, USER_TOKEN, load_tokenizer, print_vocab_alignment
 
@@ -30,12 +29,10 @@ def load_model(checkpoint_path, vocab_size, device):
     ckpt_vocab_size = None
 
     if checkpoint_path is not None:
-        ckpt = torch.load(checkpoint_path, map_location=device)
-        if isinstance(ckpt, dict):
-            ckpt_vocab_size = ckpt.get("vocab_size")
-        state_dict = select_state_dict(ckpt)
-        if state_dict is not None:
-            state_dict = normalize_state_dict(state_dict)
+        metadata = load_checkpoint_metadata(checkpoint_path, map_location=device)
+        if metadata is not None:
+            ckpt_vocab_size = metadata.vocab_size
+            state_dict = metadata.state_dict
 
     model = GPTKVCached(
         vocab_size=vocab_size,

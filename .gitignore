@@ -37,3 +37,7 @@ nanoschnack.egg-info/
 checkpoints/
 models
 samples-*.txt
+.beads/
+.dolt/
+*.db
+.beads-credential-key

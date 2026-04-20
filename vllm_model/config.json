@@ -1,0 +1,18 @@
+{
+  "model_type": "nanoschnack",
+  "architectures": [
+    "NanoSchnackForCausalLM"
+  ],
+  "auto_map": {
+    "AutoConfig": "configuration_nanoschnack.NanoSchnackConfig",
+    "AutoModel": "modeling_nanoschnack.NanoSchnackModel",
+    "AutoModelForCausalLM": "modeling_nanoschnack.NanoSchnackForCausalLM"
+  },
+  "checkpoint_path": "../checkpoints/latest.pt",
+  "context_len": 1024,
+  "vocab_size": 0,
+  "embed_size": 768,
+  "num_layers": 12,
+  "num_heads": 8,
+  "hidden_size": 3072
+}

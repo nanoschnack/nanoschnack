@@ -1,9 +1,10 @@
 TOKENIZER_DIR := tokenizer
-TOKENIZER_INPUT := data/german.txt
-TOKENIZER_OUTPUT := $(TOKENIZER_DIR)/tokenizer-v2.json
+TOKENIZER_INPUT := data/icelandic-1b.txt
+TOKENIZER_OUTPUT := $(TOKENIZER_DIR)/tokenizer-icelandic-v1.json
 TOKENIZER_SIZE := 32000
 TOKENIZER_TOP := 50
 CORPUS_SIZE := 1000000000
+ICELANDIC_SAGAS_OUTPUT := data/icelandic-sagas.txt
 OASST_DE_OUTPUT := data/posttraining/OpenAssistant/OASST-DE.txt
 GERMANQUAD_OUTPUT := data/posttraining/Kaggle/GermanQuAD.txt
 MLQA_DE_OUTPUT := data/posttraining/Facebook/MLQA-de.txt
@@ -22,14 +23,17 @@ tokenizer: $(TOKENIZER_OUTPUT)
 $(TOKENIZER_OUTPUT):
 	@if [ ! -f "$(TOKENIZER_OUTPUT)" ]; then \
 		$(MAKE) $(TOKENIZER_INPUT); \
-		cat $(TOKENIZER_INPUT) | (cd $(TOKENIZER_DIR) && go run . --target $(TOKENIZER_SIZE) -f tokenizer-v2.json --top $(TOKENIZER_TOP)); \
+		cat $(TOKENIZER_INPUT) | (cd $(TOKENIZER_DIR) && go run . --target $(TOKENIZER_SIZE) -f tokenizer-icelandic-v1.json --top $(TOKENIZER_TOP)); \
 	fi
 
 corpus: $(TOKENIZER_INPUT)
 
-$(TOKENIZER_INPUT): build_tokenizer_corpus.py
+$(TOKENIZER_INPUT): build_tokenizer_corpus.py $(ICELANDIC_SAGAS_OUTPUT)
 	mkdir -p $(dir $(TOKENIZER_INPUT))
 	python build_tokenizer_corpus.py --size $(CORPUS_SIZE) --output $(TOKENIZER_INPUT)
+
+$(ICELANDIC_SAGAS_OUTPUT): scripts/build_icelandic_sagas.py
+	python scripts/build_icelandic_sagas.py --output $(ICELANDIC_SAGAS_OUTPUT)
 
 all: $(TOKENIZER_OUTPUT)
 

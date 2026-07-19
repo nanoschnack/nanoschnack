@@ -142,10 +142,21 @@ DATASET_SPECS = _env_str(
     ),
 )
 
+# Keep tokenizer training focused on Icelandic saga and contemporary text.
+TOKENIZER_DATASET_SPECS = _env_str(
+    "TOKENIZER_DATASET_SPECS",
+    (
+        "txt:data/icelandic-sagas.txt:text,"
+        "hf:arnastofnun/IGC-2024:news1_ruv:train:document,"
+        "hf:arnastofnun/IGC-2024:news1_visir:train:document,"
+        "hf:mideind/icelandic-common-crawl-corpus-IC3-v2:train:document"
+    ),
+)
+
 # Tokenizer filename and path for training and chat.
-# New runs default to the UTF-8-safe v3 tokenizer, while older checkpoints
+# New runs default to the Icelandic v1 tokenizer, while older checkpoints
 # keep their original tokenizer filename via checkpoint config.
-TOKENIZER_FILENAME = _env_str("TOKENIZER_FILENAME", "tokenizer-v3.json")
+TOKENIZER_FILENAME = _env_str("TOKENIZER_FILENAME", "tokenizer-icelandic-v1.json")
 TOKENIZER_JSON_PATH = _env_str("TOKENIZER_JSON_PATH", "")
 
 ###

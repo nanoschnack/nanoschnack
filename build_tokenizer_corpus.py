@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a mixed German text corpus with equal character contributions per dataset."""
+"""Build a mixed Icelandic text corpus with equal character contributions per dataset."""
 
 import argparse
 import random
@@ -123,7 +123,7 @@ def build_corpus(
 def main(argv=None):
     # Parse CLI arguments.
     parser = argparse.ArgumentParser(
-        description="Build a German tokenizer corpus with equal tokens per dataset."
+        description="Build an Icelandic tokenizer corpus with equal characters per dataset."
     )
     parser.add_argument(
         "--output",
@@ -138,7 +138,7 @@ def main(argv=None):
     )
     parser.add_argument(
         "--specs",
-        default=config.DATASET_SPECS,
+        default=config.TOKENIZER_DATASET_SPECS,
         help="comma-separated dataset specs",
     )
     parser.add_argument(

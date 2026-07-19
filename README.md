@@ -40,17 +40,25 @@ pre-commit install
 
 ## Data download
 
-The training data is sourced from the `arnomatic/german-wikipedia-clean-no-lists` dataset:
-https://huggingface.co/datasets/arnomatic/german-wikipedia-clean-no-lists
-
 Training downloads parquet shards on demand into `data/` and caches them locally.
 
 ## Tokenizer corpus
 
-Build a German text corpus with equal character contributions per dataset:
+Build an Icelandic text corpus with equal character contributions per dataset. The default
+collection combines the 49-text Icelandic Saga Corpus with contemporary RÚV and Vísir news
+from IGC-2024 and the quality-filtered IC3-v2 Icelandic web corpus:
 
 ```sh
-python build_tokenizer_corpus.py --size 1000000000 --output data/german_corpus.txt
+make corpus
+```
+
+Override the collection with `--specs` or `TOKENIZER_DATASET_SPECS` without changing the
+model training sources in `DATASET_SPECS`.
+
+Build the UTF-8-safe Icelandic tokenizer as `tokenizer/tokenizer-icelandic-v1.json`:
+
+```sh
+make tokenizer
 ```
 
 ## Training

@@ -39,12 +39,12 @@ class CheckpointTokenizerConfigTests(unittest.TestCase):
 
 
 class TokenizerDefaultConfigTests(unittest.TestCase):
-    def test_default_tokenizer_filename_is_v3(self):
+    def test_default_tokenizer_filename_is_icelandic_v1(self):
         old_filename = os.environ.get("TOKENIZER_FILENAME")
         try:
             os.environ.pop("TOKENIZER_FILENAME", None)
             importlib.reload(config)
-            self.assertEqual(config.TOKENIZER_FILENAME, "tokenizer-v3.json")
+            self.assertEqual(config.TOKENIZER_FILENAME, "tokenizer-icelandic-v1.json")
         finally:
             if old_filename is None:
                 os.environ.pop("TOKENIZER_FILENAME", None)

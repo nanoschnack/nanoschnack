@@ -3,7 +3,7 @@ from unittest import mock
 
 import torch
 
-from model.gpt import RotaryEmbedding
+from model.gpt_base import RotaryEmbedding
 
 
 class RotaryEmbeddingTests(unittest.TestCase):
